@@ -1,6 +1,6 @@
 ---
 title: show when a ui update is available
-status: review
+status: done
 priority: 100
 ---
 
