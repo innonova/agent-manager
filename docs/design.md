@@ -257,12 +257,16 @@ reads the file (spec, earlier reports, the human's responses), sets
 what changed, what was verified and what is left open, and sets
 `status: review` (or `blocked`, with the reason in the report). The human
 reads the report in the UI, answers under a dated `## Response` and sets
-the status back to `planned`, or marks it `done`. This is spelled out for
-agents in each repository's `CLAUDE.md`.
+the status back to `planned`, or marks it `done`. An agent asked to
+work through several features re-reads the directory before finishing
+and takes up anything planned that appeared meanwhile. This is spelled
+out for agents in each repository's `CLAUDE.md`.
 
 Ownership of `status`: `in-progress` is the agent's; `planned`, `review`,
 `blocked` and `done` are set by either side, the human through the API.
-The manager never sets a status on its own.
+The manager never sets a status on its own. The human can also edit
+title, body, priority and dependencies through the API; the UI offers
+that for planned features, before or between rounds of work.
 
 Because agents (and humans with an editor) write the files directly, the
 manager polls every project's feature files every few seconds and emits
@@ -377,7 +381,7 @@ GET    /api/projects/:id/file?path=<file>                       -> { path, size,
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, review, blocked, planned, done, then priority
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary
 GET    /api/projects/:id/features/:slug
-PATCH  /api/projects/:id/features/:slug  { status }             -> the human's transitions: planned, review, blocked, done (in-progress is the agent's)
+PATCH  /api/projects/:id/features/:slug  { status?, title?, body?, priority?, dependsOn? } -> the human's edits; status may be planned, review, blocked or done (in-progress is the agent's)
 POST   /api/projects/:id/features/:slug/respond { text, status? } -> appends a dated "## Response" section; status defaults to planned
 ```
 

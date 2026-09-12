@@ -30,9 +30,9 @@ export class FeaturesController {
   async patch(
     @Param('id') id: string,
     @Param('slug') slug: string,
-    @Body() body: { status?: unknown },
+    @Body() body: Record<string, unknown>,
   ): Promise<{ feature: Feature }> {
-    return { feature: await this.features.setStatus(id, slug, body?.status) };
+    return { feature: await this.features.update(id, slug, body ?? {}) };
   }
 
   @Post(':slug/respond')

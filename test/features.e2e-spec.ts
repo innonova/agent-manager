@@ -229,6 +229,33 @@ describe('features', () => {
     ).toBe(404);
   });
 
+  it('edits title, body, priority and dependencies; refuses bad values and empty edits', async () => {
+    const r = await api.patch(`/api/projects/${projectId}/features/reports`, {
+      title: 'Monthly reports',
+      body: 'Reports, monthly.',
+      priority: 12,
+      dependsOn: ['db'],
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.feature).toMatchObject({
+      title: 'Monthly reports',
+      body: 'Reports, monthly.\n',
+      priority: 12,
+      dependsOn: ['db'],
+      status: 'planned',
+    });
+    expect(read('reports')).toBe(
+      '---\ntitle: Monthly reports\nstatus: planned\npriority: 12\ndependsOn:\n  - db\n---\n\nReports, monthly.\n',
+    );
+    const bad = async (body: unknown) =>
+      (await api.patch(`/api/projects/${projectId}/features/reports`, body))
+        .status;
+    expect(await bad({ title: ' ' })).toBe(400);
+    expect(await bad({ priority: 'x' })).toBe(400);
+    expect(await bad({ dependsOn: ['Bad!'] })).toBe(400);
+    expect(await bad({})).toBe(400);
+  });
+
   it('a response is appended as a dated section and sends the feature back to planned unless told otherwise', async () => {
     const r = await api.post(
       `/api/projects/${projectId}/features/login/respond`,

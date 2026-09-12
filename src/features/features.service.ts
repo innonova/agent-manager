@@ -223,21 +223,67 @@ export class FeaturesService
     return feature;
   }
 
-  /** The human's transitions: anything but `in-progress`, which the agent sets. */
-  async setStatus(
+  /**
+   * The human's edits: any of status, title, body, priority and dependsOn.
+   * `in-progress` is the agent's status and is refused. Content can be
+   * edited at any time (the UI offers it for planned features, i.e. before
+   * or between rounds of work); the body is the whole file below the
+   * frontmatter, reports and responses included.
+   */
+  async update(
     projectId: string,
     slug: string,
-    status: unknown,
+    input: {
+      status?: unknown;
+      title?: unknown;
+      body?: unknown;
+      priority?: unknown;
+      dependsOn?: unknown;
+    },
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
-    if (!HUMAN_STATUSES.includes(status as FeatureStatus))
+    if (
+      input.status !== undefined &&
+      !HUMAN_STATUSES.includes(input.status as FeatureStatus)
+    )
       throw new BadRequestException(
         `"status" must be one of ${HUMAN_STATUSES.join(', ')}`,
       );
+    if (
+      input.title !== undefined &&
+      (typeof input.title !== 'string' || !input.title.trim())
+    )
+      throw new BadRequestException('"title" must be a non-empty string');
+    if (input.body !== undefined && typeof input.body !== 'string')
+      throw new BadRequestException('"body" must be a string');
+    if (
+      input.priority !== undefined &&
+      !Number.isFinite(Number(input.priority))
+    )
+      throw new BadRequestException('"priority" must be a number');
+    if (
+      input.dependsOn !== undefined &&
+      !(Array.isArray(input.dependsOn) && input.dependsOn.every(isSlug))
+    )
+      throw new BadRequestException('"dependsOn" must be a list of slugs');
+    if (
+      input.status === undefined &&
+      input.title === undefined &&
+      input.body === undefined &&
+      input.priority === undefined &&
+      input.dependsOn === undefined
+    )
+      throw new BadRequestException('nothing to change');
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
-    found.file.status = status as FeatureStatus;
-    await writeFeature(found.repoPath, found.file);
+    const f = found.file;
+    if (input.status !== undefined) f.status = input.status as FeatureStatus;
+    if (input.title !== undefined) f.title = (input.title as string).trim();
+    if (input.body !== undefined) f.body = input.body as string;
+    if (input.priority !== undefined) f.priority = Number(input.priority);
+    if (input.dependsOn !== undefined)
+      f.dependsOn = input.dependsOn as string[];
+    await writeFeature(found.repoPath, f);
     const feature = await this.get(projectId, slug);
     this.announce(projectId, feature);
     return feature;
