@@ -51,6 +51,7 @@ const deferred = () => {
     const promise = new Promise((r) => (resolve = r));
     return { promise, resolve };
 };
+const live_of = (svc, agent) => svc.ensureLiveFor(agent);
 const busy = () => new HttpException({ statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' }, 409);
 const unavailable = (why) => new HttpException({
     statusCode: 503,
@@ -187,24 +188,24 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 await this.startSession(agent, live);
                 agent = this.get(id);
             }
+            const attached = live.sessions.get(agent.currentSessionId);
+            if (!attached)
+                throw unavailable('session not tracked');
+            if (!attached.replayed) {
+                await this.attachSession(agent, live, attached);
+                if (!attached.replayed)
+                    throw unavailable('the session log could not be read');
+                this.reconcileTurnState(agent, live, attached);
+                agent = this.get(id);
+                if (!agent.currentSessionId)
+                    throw unavailable('the session had ended; send the turn again to resume');
+            }
             await this.awaitStarting(live);
             if (live.status.state === 'working' || live.status.state === 'starting')
                 throw busy();
             const sl = live.sessions.get(agent.currentSessionId);
             if (!sl)
                 throw unavailable('session not tracked');
-            if (!sl.replayed) {
-                await this.attachSession(agent, live, sl);
-                if (!sl.replayed)
-                    throw unavailable('the session log could not be read');
-                agent = this.get(id);
-                if (!agent.currentSessionId)
-                    throw unavailable('the session had ended; send the turn again to resume');
-                await this.awaitStarting(live);
-                const now = live.status.state;
-                if (now === 'working' || now === 'starting')
-                    throw busy();
-            }
             const before = live.status;
             this.setState(agent, live, 'working', null);
             try {
@@ -212,7 +213,8 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                     await this.daemon.input(agent.currentSessionId, line);
             }
             catch (err) {
-                if (live.status.state === 'working')
+                const uncertain = err instanceof DaemonError && err.code === 'disconnected';
+                if (!uncertain && live.status.state === 'working')
                     this.setState(agent, live, before.state, before.error);
                 throw asHttp(err);
             }
@@ -278,6 +280,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         this.deleting.delete(projectId);
     }
     async stopLocked(agent, wait = false) {
+        if (!agent.currentSessionId && live_of(this, agent).syncPending) {
+            this.adoptSessions(agent, await this.daemon.listSessions());
+        }
         const id = agent.currentSessionId;
         if (!id)
             return;
@@ -409,6 +414,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         }
         catch (err) {
             sl.replayed = false;
+            sl.complete = false;
             this.logger.warn(`replay of ${sl.id} for agent ${agent.id} failed: ${err.message}`);
             this.appendItem(agent.id, live, sl.id, 0, {
                 kind: 'system',
@@ -441,6 +447,15 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             text: `session ended${exitWhy(session)}`,
         });
         sl.endedBoundary = true;
+    }
+    reconcileTurnState(agent, live, sl) {
+        const open = sl.adapter.turnInProgress?.();
+        if (open === undefined)
+            return;
+        if (live.status.state === 'working' && !open)
+            this.setState(agent, live, 'idle', null);
+        if (live.status.state === 'idle' && open)
+            this.setState(agent, live, 'working', null);
     }
     async reconcileCurrent(agent, live) {
         const fresh = this.find(agent.id);
@@ -646,8 +661,11 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                     }
                     if (!sl.replayed ||
                         sl.lastSeq < s.lastSeq ||
-                        (isCurrent && s.state === 'running'))
+                        (isCurrent && s.state === 'running')) {
                         await this.attachSession(agent, live, sl);
+                        if (isCurrent && s.state === 'running')
+                            this.reconcileTurnState(agent, live, sl);
+                    }
                     if (s.state === 'exited' && !sl.pendingExit) {
                         if (isCurrent)
                             this.applyExit(agent, live, s);
@@ -696,6 +714,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 }
             }
         }
+    }
+    ensureLiveFor(agent) {
+        return this.ensureLive(agent);
     }
     ensureLive(agent) {
         let live = this.live.get(agent.id);

@@ -6,6 +6,9 @@ export class FakeAdapter {
     startArgs({ resume }) {
         return resume ? ['--resume', resume] : [];
     }
+    turnInProgress() {
+        return this.turnOpen;
+    }
     turn(text) {
         return [{ type: 'user', text }];
     }

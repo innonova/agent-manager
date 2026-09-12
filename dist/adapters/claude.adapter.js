@@ -9,6 +9,9 @@ export class ClaudeAdapter {
             args.push('--resume', resume);
         return args;
     }
+    turnInProgress() {
+        return this.turnOpen;
+    }
     turn(text) {
         return [{ type: 'user', message: { role: 'user', content: text } }];
     }

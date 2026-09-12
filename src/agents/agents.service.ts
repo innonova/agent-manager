@@ -160,11 +160,6 @@ const deferred = (): { promise: Promise<void>; resolve: () => void } => {
   return { promise, resolve };
 };
 
-const live_of = (
-  svc: { ensureLiveFor(agent: Agent): Live },
-  agent: Agent,
-): Live => svc.ensureLiveFor(agent);
-
 const busy = () =>
   new HttpException(
     { statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' },
@@ -486,7 +481,7 @@ export class AgentsService
    * it being gone. Losing the daemon meanwhile is an error, not an exit.
    */
   private async stopLocked(agent: Agent, wait = false): Promise<void> {
-    if (!agent.currentSessionId && live_of(this, agent).syncPending) {
+    if (!agent.currentSessionId && this.ensureLive(agent).syncPending) {
       // The resync has not reached this agent yet; an empty pointer proves
       // nothing until adoption has had its say.
       this.adoptSessions(agent, await this.daemon.listSessions());
@@ -1032,11 +1027,6 @@ export class AgentsService
   }
 
   // ---- helpers ------------------------------------------------------------
-
-  /** Exposed for helpers outside the class. */
-  ensureLiveFor(agent: Agent): Live {
-    return this.ensureLive(agent);
-  }
 
   private ensureLive(agent: Agent): Live {
     let live = this.live.get(agent.id);

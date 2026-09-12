@@ -54,6 +54,7 @@ export interface AgentAdapter {
     }): string[];
     turn(text: string): unknown[];
     interrupt?(): unknown[];
+    turnInProgress?(): boolean;
     ingest(record: LogRecord): Ingest;
 }
 export interface AdapterFactory {

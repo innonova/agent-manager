@@ -223,7 +223,15 @@ ended, history unavailable) have `seqFrom` 0.
   request refused before it was sent (`not-connected`) is certain, and
   create then leaves nothing behind.
 - Stop-like commands give a pending resync a moment to adopt sessions
-  before deciding there is nothing to stop.
+  and, if it has not reached the agent by then, adopt under the agent's
+  own lock before deciding there is nothing to stop.
+- A turn whose acknowledgement was lost in flight keeps the agent
+  `working`; the next catch-up asks the adapter whether the log actually
+  shows an open turn and settles the state from that. Turns catch up the
+  current session before judging busy, so a turn that finished during an
+  outage is seen. A failed catch-up marks the session incomplete, which
+  defers its ended boundary and triggers the rebuild if newer history
+  already follows.
 - A turn is refused with `agent-unavailable` (503) while the current
   session's output is not attached; the attach is retried first. Any
   daemon failure surfaces as 503 `agent-unavailable`; creating an agent

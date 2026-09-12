@@ -1,8 +1,8 @@
 import { OnModuleInit } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
-import type { AgentState, Item } from '../adapters/adapter.js';
+import type { AgentAdapter, AgentState, Item } from '../adapters/adapter.js';
 import { AdaptersService } from '../adapters/adapters.service.js';
-import { DaemonClient } from '../daemon/daemon-client.js';
+import { DaemonClient, DaemonSession } from '../daemon/daemon-client.js';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
 export interface Agent {
@@ -34,6 +34,29 @@ export interface StoredItem {
     item: Item;
 }
 export type AgentCounts = Record<AgentState, number>;
+interface SessionLive {
+    id: string;
+    adapter: AgentAdapter;
+    lastSeq: number;
+    replayed: boolean;
+    complete: boolean;
+    attaching: boolean;
+    pendingExit: DaemonSession | null;
+    pendingBoundary: DaemonSession | null;
+    suspended: boolean;
+    startedBoundary: boolean;
+    endedBoundary: boolean;
+    keys: Map<string, number>;
+}
+interface Live {
+    sessions: Map<string, SessionLive>;
+    status: AgentStatus;
+    items: StoredItem[];
+    lock: Promise<unknown>;
+    synced: Promise<void>;
+    markSynced: () => void;
+    syncPending: boolean;
+}
 export interface AgentEvents {
     state: [agentId: string, projectId: string, status: AgentStatus];
     item: [agentId: string, item: StoredItem];
@@ -86,6 +109,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private trackSession;
     private attachSession;
     private endBoundary;
+    private reconcileTurnState;
     private reconcileCurrent;
     private onOutput;
     private apply;
@@ -97,6 +121,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private onDaemonLost;
     private resync;
     private adoptSessions;
+    ensureLiveFor(agent: Agent): Live;
     private ensureLive;
     private withLock;
     private withLockOrForce;
@@ -104,3 +129,4 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private appendItem;
     private setState;
 }
+export {};

@@ -8,6 +8,7 @@ export declare class FakeAdapter implements AgentAdapter {
     startArgs({ resume }: {
         resume?: string | null;
     }): string[];
+    turnInProgress(): boolean;
     turn(text: string): unknown[];
     interrupt(): unknown[];
     ingest(record: LogRecord): Ingest;
