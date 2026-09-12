@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  OnModuleDestroy,
   OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -36,7 +37,7 @@ const VERIFY_CONCURRENCY = 4;
 @Injectable()
 export class AuthService
   extends EventEmitter<{ revoked: [sessionId: string] }>
-  implements OnModuleInit
+  implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(AuthService.name);
   private readonly attempts = new Map<
@@ -46,6 +47,7 @@ export class AuthService
   private verifying = 0;
   private readonly verifyQueue: (() => void)[] = [];
   private dummyHash = '';
+  private cleanup: NodeJS.Timeout | null = null;
 
   constructor(
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
@@ -79,6 +81,18 @@ export class AuthService
     this.db
       .prepare('DELETE FROM login_sessions WHERE expires_at < ?')
       .run(Date.now());
+    this.cleanup = setInterval(
+      () =>
+        this.db
+          .prepare('DELETE FROM login_sessions WHERE expires_at < ?')
+          .run(Date.now()),
+      3600_000,
+    );
+    this.cleanup.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.cleanup) clearInterval(this.cleanup);
   }
 
   async createUser(name: string, password: string): Promise<User> {

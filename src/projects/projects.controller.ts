@@ -55,7 +55,11 @@ export class ProjectsController {
   async remove(@Param('id') id: string): Promise<{ ok: true }> {
     this.projects.get(id);
     await this.agents.removeProject(id);
-    this.projects.remove(id);
+    try {
+      this.projects.remove(id);
+    } finally {
+      this.agents.releaseProject(id);
+    }
     return { ok: true };
   }
 }

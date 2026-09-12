@@ -75,14 +75,13 @@ interface AgentRow {
   archived_at: number | null;
 }
 
-/** Per daemon session: its adapter, its cursor, and whether its log has been fully replayed. */
+/** Per daemon session: its adapter, its cursor, and whether its log has been caught up. */
 interface SessionLive {
   id: string;
   adapter: AgentAdapter;
   lastSeq: number;
-  /** Every record up to the daemon's lastSeq at the time of the last attach has been ingested. */
+  /** The last attach with replay succeeded; the cursor is at the daemon's boundary as of then. */
   replayed: boolean;
-  /** An attach with replay is in flight. */
   attaching: boolean;
   /** Exit notice that arrived while replaying; applied once replay completes. */
   pendingExit: DaemonSession | null;
@@ -96,19 +95,20 @@ interface Live {
   items: StoredItem[];
   /** Serialises commands and rebuilds for this agent. */
   lock: Promise<unknown>;
-  /** True once every known session has been replayed at least once. */
-  rebuilt: boolean;
 }
 
 export interface AgentEvents {
   state: [agentId: string, projectId: string, status: AgentStatus];
   item: [agentId: string, item: StoredItem];
+  /** The transcript was rebuilt from scratch; clients must refetch items. */
+  reset: [agentId: string];
   session: [agentId: string, session: AgentSessionRef];
   counts: [projectId: string, counts: AgentCounts];
 }
 
 export const LABEL_PREFIX = 'agent-manager:';
 const STARTING_GRACE_MS = 5000;
+const LOCK_PATIENCE_MS = 2000;
 
 const toAgent = (r: AgentRow): Agent => ({
   id: r.id,
@@ -141,13 +141,30 @@ export function emptyCounts(): AgentCounts {
   };
 }
 
+const busy = () =>
+  new HttpException(
+    { statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' },
+    409,
+  );
+const unavailable = (why: string) =>
+  new HttpException(
+    {
+      statusCode: 503,
+      message: `agent unavailable: ${why}`,
+      code: 'agent-unavailable',
+    },
+    503,
+  );
+
 /**
  * Agents: definitions in SQLite, everything live rebuilt from the daemon.
  * Each daemon session has its own adapter and cursor; records flow through
  * them into items and state. Commands and rebuilds are serialised per
- * agent. On (re)connect every session is replayed from where its cursor
- * stands (from the start after a manager restart), and sessions whose
- * replay failed are retried on the next resync.
+ * agent, and every command re-reads the agent row under the lock. On
+ * (re)connect every session whose cursor trails the daemon's boundary is
+ * caught up; a session whose replay failed is retried, and if it lies
+ * before newer history the transcript is rebuilt from scratch so order is
+ * preserved.
  */
 @Injectable()
 export class AgentsService
@@ -158,6 +175,8 @@ export class AgentsService
   private readonly live = new Map<string, Live>();
   /** daemon session id -> agent id, for routing output */
   private readonly sessionOwner = new Map<string, string>();
+  /** projects being deleted; creates and turns are refused meanwhile */
+  private readonly deleting = new Set<string>();
   private resyncChain: Promise<void> = Promise.resolve();
   private resyncGeneration = 0;
 
@@ -202,6 +221,12 @@ export class AgentsService
     return toAgent(row);
   }
 
+  private find(id: string): Agent | null {
+    const row = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
+      AgentRow | undefined;
+    return row ? toAgent(row) : null;
+  }
+
   status(id: string): AgentStatus {
     return this.ensureLive(this.get(id)).status;
   }
@@ -242,6 +267,8 @@ export class AgentsService
     input: { name?: unknown; profile?: unknown; cwd?: unknown },
   ): Promise<{ agent: Agent; status: AgentStatus }> {
     const project = this.projects.get(projectId);
+    if (this.deleting.has(projectId))
+      throw new ConflictException('project is being deleted');
     const profile = input.profile ?? project.defaultProfile;
     if (typeof input.name !== 'string' || input.name.trim() === '')
       throw new BadRequestException('"name" is required');
@@ -282,15 +309,15 @@ export class AgentsService
       )
       .run(agent.id, projectId, agent.name, profile, cwd, agent.createdAt);
     const live = this.ensureLive(agent);
-    live.rebuilt = true; // nothing to rebuild for a brand new agent
     await this.withLock(live, () => this.startSession(agent, live));
     return { agent: this.get(agent.id), status: live.status };
   }
 
   /**
    * Sends a user turn. Refused while a turn is in progress (`agent-busy`),
-   * since neither vendor lets us represent a queue faithfully. Starts or
-   * resumes a session first if none is live.
+   * since neither vendor lets us represent a queue faithfully, and while
+   * the current session's output is not attached (`agent-unavailable`).
+   * Starts or resumes a session first if none is live.
    */
   async turn(id: string, text: unknown): Promise<void> {
     if (typeof text !== 'string' || text.length === 0)
@@ -299,51 +326,60 @@ export class AgentsService
     await this.withLock(live, async () => {
       let agent = this.get(id);
       if (agent.archivedAt) throw new ConflictException('agent is archived');
-      await this.awaitStarting(live);
-      if (live.status.state === 'working' || live.status.state === 'starting') {
-        throw new HttpException(
-          {
-            statusCode: 409,
-            message: 'a turn is in progress',
-            code: 'agent-busy',
-          },
-          409,
-        );
-      }
+      if (this.deleting.has(agent.projectId))
+        throw new ConflictException('project is being deleted');
       if (!agent.currentSessionId) {
         await this.startSession(agent, live);
         agent = this.get(id);
       }
-      const sl = live.sessions.get(agent.currentSessionId!)!;
-      for (const line of sl.adapter.turn(text))
-        await this.daemon.input(agent.currentSessionId!, line);
+      await this.awaitStarting(live);
+      if (live.status.state === 'working' || live.status.state === 'starting')
+        throw busy();
+      const sl = live.sessions.get(agent.currentSessionId!);
+      if (!sl) throw unavailable('session not tracked');
+      if (!sl.replayed) {
+        // Never accept input for output we cannot see; try once more right now.
+        await this.attachSession(agent, live, sl);
+        if (!sl.replayed)
+          throw unavailable('the session log could not be read');
+      }
+      // Working from the moment we commit to sending; the logged input
+      // confirms it and a fast result may already move on to idle.
+      const before = live.status;
       this.setState(agent, live, 'working', null);
+      try {
+        for (const line of sl.adapter.turn(text))
+          await this.daemon.input(agent.currentSessionId!, line);
+      } catch (err) {
+        if ((live.status as AgentStatus).state === 'working')
+          this.setState(agent, live, before.state, before.error);
+        throw err instanceof DaemonError ? unavailable(err.message) : err;
+      }
     });
   }
 
   async interrupt(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
-    await this.withLock(live, async () => {
-      const agent = this.get(id);
-      const sl = agent.currentSessionId
-        ? live.sessions.get(agent.currentSessionId)
-        : undefined;
-      if (!sl?.adapter.interrupt)
-        throw new ConflictException('nothing to interrupt');
-      for (const line of sl.adapter.interrupt())
-        await this.daemon.input(agent.currentSessionId!, line);
-    });
+    const agent = this.get(id);
+    const sl = agent.currentSessionId
+      ? live.sessions.get(agent.currentSessionId)
+      : undefined;
+    if (!sl?.adapter.interrupt)
+      throw new ConflictException('nothing to interrupt');
+    // Deliberately outside the lock: an interrupt must reach a turn that is blocked on stdin.
+    for (const line of sl.adapter.interrupt())
+      await this.daemon.input(agent.currentSessionId!, line);
   }
 
   /** Ends the current session politely; the agent stays resumable. */
   async stop(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
-    await this.withLock(live, () => this.stopLocked(this.get(id)));
+    await this.withLockOrForce(live, id, () => this.stopLocked(this.get(id)));
   }
 
   async archive(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
-    await this.withLock(live, async () => {
+    await this.withLockOrForce(live, id, async () => {
       const agent = this.get(id);
       await this.stopLocked(agent, true);
       this.db
@@ -353,26 +389,45 @@ export class AgentsService
     });
   }
 
-  /** Stops every agent of a project and forgets it; called before the project row is deleted. */
+  /**
+   * Stops every agent of a project and forgets it; called before the
+   * project row is deleted. The project is fenced against new agents and
+   * turns for the duration, and the caller keeps the fence until the row
+   * is gone (`releaseProject`).
+   */
   async removeProject(projectId: string): Promise<void> {
-    const rows = this.db
-      .prepare('SELECT * FROM agents WHERE project_id = ?')
-      .all(projectId) as AgentRow[];
-    for (const row of rows) {
-      const agent = toAgent(row);
-      const live = this.ensureLive(agent);
-      await this.withLock(live, async () => {
-        await this.stopLocked(agent, true);
-        for (const sid of live.sessions.keys()) this.sessionOwner.delete(sid);
-        this.live.delete(agent.id);
-      });
+    this.deleting.add(projectId);
+    try {
+      for (;;) {
+        const row = this.db
+          .prepare(
+            'SELECT * FROM agents WHERE project_id = ? ORDER BY created_at LIMIT 1',
+          )
+          .get(projectId) as AgentRow | undefined;
+        if (!row) return;
+        const live = this.ensureLive(toAgent(row));
+        await this.withLockOrForce(live, row.id, async () => {
+          const agent = this.get(row.id); // fresh: a resume may have happened while we waited
+          await this.stopLocked(agent, true);
+          for (const sid of live.sessions.keys()) this.sessionOwner.delete(sid);
+          this.live.delete(agent.id);
+          this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
+        });
+      }
+    } catch (err) {
+      this.deleting.delete(projectId);
+      throw err;
     }
+  }
+
+  releaseProject(projectId: string): void {
+    this.deleting.delete(projectId);
   }
 
   /**
    * Ends the current session: close stdin, and when `wait` is set, escalate
    * to SIGTERM and SIGKILL if the process lingers, so the caller can rely on
-   * it being gone.
+   * it being gone. Losing the daemon meanwhile is an error, not an exit.
    */
   private async stopLocked(agent: Agent, wait = false): Promise<void> {
     const id = agent.currentSessionId;
@@ -382,7 +437,8 @@ export class AgentsService
     } catch (err) {
       if (!(err instanceof DaemonError) || err.code === 'disconnected')
         throw err;
-      await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
+      if (err.code !== 'unknown-session')
+        await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
     }
     if (!wait) return;
     for (const [signal, ms] of [
@@ -393,11 +449,18 @@ export class AgentsService
       if (signal) await this.daemon.signal(id, signal).catch(() => undefined);
       const until = Date.now() + ms;
       while (Date.now() < until) {
-        const s = await this.daemon.getSession(id).catch(() => null);
-        if (!s || s.state === 'exited') return;
+        try {
+          const s = await this.daemon.getSession(id);
+          if (s.state === 'exited') return;
+        } catch (err) {
+          if (err instanceof DaemonError && err.code === 'unknown-session')
+            return;
+          throw err instanceof DaemonError ? unavailable(err.message) : err;
+        }
         await new Promise((r) => setTimeout(r, 50));
       }
     }
+    throw unavailable('the process did not exit');
   }
 
   // ---- sessions -----------------------------------------------------------
@@ -493,14 +556,16 @@ export class AgentsService
 
   /** After attaching to the current session, make sure a session that already died is treated as such. */
   private async reconcileCurrent(agent: Agent, live: Live): Promise<void> {
-    if (!agent.currentSessionId) return;
+    const fresh = this.find(agent.id);
+    if (!fresh?.currentSessionId) return;
+    agent.currentSessionId = fresh.currentSessionId;
     try {
-      const s = await this.daemon.getSession(agent.currentSessionId);
+      const s = await this.daemon.getSession(fresh.currentSessionId);
       if (s.state === 'exited') this.applyExit(agent, live, s);
     } catch (err) {
       if (err instanceof DaemonError && err.code === 'unknown-session') {
         this.applyExit(agent, live, {
-          id: agent.currentSessionId,
+          id: fresh.currentSessionId,
           state: 'exited',
           exitReason: 'removed',
           exitCode: null,
@@ -521,11 +586,9 @@ export class AgentsService
     if (!live || !sl) return;
     if (record.seq <= sl.lastSeq) return; // overlap after a reconnect
     sl.lastSeq = record.seq;
-    const row = this.db
-      .prepare('SELECT * FROM agents WHERE id = ?')
-      .get(agentId) as AgentRow | undefined;
-    if (!row) return;
-    this.apply(toAgent(row), live, sl, record, sl.adapter.ingest(record));
+    const agent = this.find(agentId);
+    if (!agent) return;
+    this.apply(agent, live, sl, record, sl.adapter.ingest(record));
   }
 
   private apply(
@@ -581,11 +644,8 @@ export class AgentsService
         ? session.label.slice(LABEL_PREFIX.length)
         : undefined);
     if (!agentId) return;
-    const row = this.db
-      .prepare('SELECT * FROM agents WHERE id = ?')
-      .get(agentId) as AgentRow | undefined;
-    if (!row) return;
-    const agent = toAgent(row);
+    const agent = this.find(agentId);
+    if (!agent) return;
     const live = this.ensureLive(agent);
     const sl = live.sessions.get(session.id);
     if (sl?.attaching) {
@@ -595,18 +655,25 @@ export class AgentsService
     this.applyExit(agent, live, session);
   }
 
+  /**
+   * Records a session's exit. The current pointer is cleared only if it
+   * still points at this session (a resume may have moved it), which is
+   * decided by the database, not by a possibly stale in-memory row.
+   */
   private applyExit(agent: Agent, live: Live, session: DaemonSession): void {
     this.db
       .prepare(
         'UPDATE agent_sessions SET ended_at = ? WHERE daemon_session_id = ? AND ended_at IS NULL',
       )
       .run(session.exitedAt ?? Date.now(), session.id);
-    if (agent.currentSessionId !== session.id) return;
-    this.db
-      .prepare('UPDATE agents SET current_session_id = NULL WHERE id = ?')
-      .run(agent.id);
+    const cleared = this.db
+      .prepare(
+        'UPDATE agents SET current_session_id = NULL WHERE id = ? AND current_session_id = ?',
+      )
+      .run(agent.id, session.id).changes;
+    if (cleared === 0) return;
     agent.currentSessionId = null;
-    this.appendItem(agent.id, live, session.id, session.lastSeq, {
+    this.appendItem(agent.id, live, session.id, 0, {
       kind: 'system',
       text: `session ended${exitWhy(session)}`,
     });
@@ -630,23 +697,51 @@ export class AgentsService
   }
 
   /**
-   * After (re)connecting to the daemon: rebuild every agent from its
-   * sessions. Runs one agent at a time under that agent's lock, so commands
-   * wait for the rebuild. A newer resync supersedes an older one mid-way.
+   * After (re)connecting to the daemon: bring every agent up to date with
+   * its sessions. Runs one agent at a time under that agent's lock (so
+   * commands wait), re-reading the agent row and the daemon's session
+   * records inside the lock. A newer resync supersedes an older one.
    */
   private async resync(generation: number): Promise<void> {
-    const sessions = await this.daemon.listSessions();
-    const byId = new Map(sessions.map((s) => [s.id, s]));
-    const rows = this.db.prepare('SELECT * FROM agents').all() as AgentRow[];
+    const ids = (
+      this.db.prepare('SELECT id FROM agents').all() as { id: string }[]
+    ).map((r) => r.id);
     let done = 0;
-    for (const row of rows) {
+    for (const id of ids) {
       if (generation !== this.resyncGeneration) return;
-      const agent = toAgent(row);
-      const live = this.ensureLive(agent);
+      const stale = this.find(id);
+      if (!stale) continue;
+      const live = this.ensureLive(stale);
       await this.withLock(live, async () => {
+        const agent = this.find(id);
+        if (!agent || generation !== this.resyncGeneration) return;
+        const sessions = await this.daemon.listSessions();
+        const byId = new Map(sessions.map((s) => [s.id, s]));
         this.adoptSessions(agent, sessions);
-        const refs = this.sessions(agent.id);
-        for (const ref of refs) {
+        let refs = this.sessions(agent.id);
+
+        // An earlier session whose replay failed, with newer history already
+        // shown after it: the only way to keep order is to start over.
+        const failedEarlier = refs.some(
+          (ref, i) =>
+            i < refs.length - 1 &&
+            live.sessions.get(ref.daemonSessionId)?.replayed === false,
+        );
+        if (failedEarlier && live.items.length > 0) {
+          this.logger.log(
+            `agent ${agent.id}: rebuilding transcript so recovered history keeps its order`,
+          );
+          live.items = [];
+          for (const sl of live.sessions.values()) {
+            sl.lastSeq = 0;
+            sl.replayed = false;
+            sl.keys.clear();
+            sl.adapter = this.adapters.create(agent.profile);
+          }
+          this.emit('reset', agent.id);
+        }
+        refs = this.sessions(agent.id);
+        for (const [i, ref] of refs.entries()) {
           if (generation !== this.resyncGeneration) return;
           const s = byId.get(ref.daemonSessionId);
           if (!s) continue;
@@ -658,18 +753,37 @@ export class AgentsService
             live.sessions.get(s.id)?.adapter ??
               this.adapters.create(agent.profile),
           );
-          if (isNew)
-            this.appendItem(agent.id, live, s.id, 0, {
-              kind: 'system',
-              text: `${ref === refs[0] ? 'session started' : 'session resumed'} (${s.id})`,
-            });
+          if (isNew || sl.lastSeq === 0) {
+            if (isNew || live.items.length === 0)
+              this.appendItem(agent.id, live, s.id, 0, {
+                kind: 'system',
+                text: `${i === 0 ? 'session started' : 'session resumed'} (${s.id})`,
+              });
+          }
           const isCurrent = s.id === agent.currentSessionId;
-          if (!sl.replayed || (isCurrent && s.state === 'running'))
+          if (
+            isCurrent &&
+            s.state === 'running' &&
+            live.status.state === 'starting'
+          ) {
+            this.setState(
+              agent,
+              live,
+              sl.adapter.initialState ?? 'starting',
+              null,
+            );
+          }
+          // Catch up whenever the cursor trails the daemon, exited or not.
+          if (
+            !sl.replayed ||
+            sl.lastSeq < s.lastSeq ||
+            (isCurrent && s.state === 'running')
+          )
             await this.attachSession(agent, live, sl);
           if (s.state === 'exited' && !sl.pendingExit) {
             if (isCurrent) this.applyExit(agent, live, s);
             else if (isNew)
-              this.appendItem(agent.id, live, s.id, s.lastSeq, {
+              this.appendItem(agent.id, live, s.id, 0, {
                 kind: 'system',
                 text: `session ended${exitWhy(s)}`,
               });
@@ -681,16 +795,14 @@ export class AgentsService
                 .run(s.exitedAt ?? Date.now(), s.id);
           }
         }
-        live.rebuilt = [...live.sessions.values()].every((sl) => sl.replayed);
         await this.reconcileCurrent(agent, live);
-        if (!agent.currentSessionId && live.status.state !== 'exited')
+        const fresh = this.find(agent.id);
+        if (fresh && !fresh.currentSessionId && live.status.state !== 'exited')
           this.setState(agent, live, 'exited', null);
       });
       done++;
     }
-    this.logger.log(
-      `resynced ${done} agent(s) against ${sessions.length} daemon session(s)`,
-    );
+    this.logger.log(`resynced ${done} agent(s)`);
   }
 
   /** Sessions the daemon labelled for this agent that the database does not know: record them, and pick a live one as current if we have none. */
@@ -715,9 +827,11 @@ export class AgentsService
       if (running.length) {
         const current = running[running.length - 1];
         this.db
-          .prepare('UPDATE agents SET current_session_id = ? WHERE id = ?')
+          .prepare(
+            'UPDATE agents SET current_session_id = ? WHERE id = ? AND current_session_id IS NULL',
+          )
           .run(current.id, agent.id);
-        agent.currentSessionId = current.id;
+        agent.currentSessionId = this.find(agent.id)?.currentSessionId ?? null;
         for (const extra of running.slice(0, -1)) {
           this.logger.warn(
             `agent ${agent.id} has a second live session ${extra.id}; ending it`,
@@ -742,7 +856,6 @@ export class AgentsService
         },
         items: [],
         lock: Promise.resolve(),
-        rebuilt: false,
       };
       this.live.set(agent.id, live);
     }
@@ -755,7 +868,36 @@ export class AgentsService
     return run;
   }
 
-  /** Gives a freshly started process a moment to report ready before a turn is judged. */
+  /**
+   * For stop-like commands: if the lock does not free up quickly (a turn
+   * blocked on a stdin write the agent is not reading), signal the process
+   * first so that write fails and the lock is released, then proceed.
+   */
+  private async withLockOrForce<T>(
+    live: Live,
+    agentId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const free = await Promise.race([
+      live.lock.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((r) => setTimeout(() => r(false), LOCK_PATIENCE_MS)),
+    ]);
+    if (!free) {
+      const sid = this.find(agentId)?.currentSessionId;
+      if (sid) {
+        this.logger.warn(
+          `agent ${agentId}: a command is blocked; signalling the process to free it`,
+        );
+        await this.daemon.signal(sid, 'SIGTERM').catch(() => undefined);
+      }
+    }
+    return this.withLock(live, fn);
+  }
+
+  /** Gives a freshly started or resumed process a moment to report ready before a turn is judged. */
   private async awaitStarting(live: Live): Promise<void> {
     const until = Date.now() + STARTING_GRACE_MS;
     while (live.status.state === 'starting' && Date.now() < until)

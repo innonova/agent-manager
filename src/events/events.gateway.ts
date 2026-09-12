@@ -51,6 +51,9 @@ export class EventsGateway
     this.agents.on('session', (agentId, session) =>
       this.broadcast({ type: 'agent.session', agentId, session }),
     );
+    this.agents.on('reset', (agentId) =>
+      this.broadcast({ type: 'agent.reset', agentId }),
+    );
     this.agents.on('counts', (projectId, counts) =>
       this.broadcast({ type: 'project.counts', projectId, counts }),
     );

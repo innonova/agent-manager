@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { DaemonClient } from '../src/daemon/daemon-client.js';
 import { DbService } from '../src/db/db.service.js';
 import {
   Api,
@@ -396,13 +397,24 @@ describe('agents', () => {
     expect(got.body.sessions).toHaveLength(1);
     expect(got.body.sessions[0].endedAt).toBeTruthy();
 
-    await api.post(`/api/agents/${agent.id}/turn`, { text: 'back again' });
+    const resumeMark = events.mark();
+    expect(
+      (await api.post(`/api/agents/${agent.id}/turn`, { text: 'back again' }))
+        .status,
+    ).toBe(202);
+    // the resumed session is working, not idle, even though its init line arrives after our input
+    expect(
+      (await api.post(`/api/agents/${agent.id}/turn`, { text: 'too soon' }))
+        .status,
+    ).toBe(409);
     await events.waitFor(
       (f) =>
         f.type === 'agent.item' &&
         f.agentId === agent.id &&
         f.item.item.kind === 'turn_end' &&
         f.item.sessionId !== first,
+      10000,
+      resumeMark,
     );
     got = await api.get(`/api/agents/${agent.id}`);
     expect(got.body.agent.currentSessionId).not.toBe(first);
@@ -483,6 +495,82 @@ describe('agents', () => {
   });
 });
 
+describe('resilience', () => {
+  it('recovers output produced while the daemon link was down, including an exit', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'linkdrop');
+    const mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'slow then exit' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'working',
+      10000,
+      mark,
+    );
+    // drop only the manager's socket to the daemon; the agent keeps talking and then exits
+    (m.app.get(DaemonClient) as unknown as { ws: WebSocket }).ws.terminate();
+    await events.waitFor(
+      (f) => f.type === 'daemon' && f.connected === false,
+      10000,
+      mark,
+    );
+    await events.waitFor(
+      (f) => f.type === 'daemon' && f.connected === true,
+      15000,
+      mark,
+    );
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'exited',
+      20000,
+      mark,
+    );
+    const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as any[];
+    const kinds = items.map((i) => i.item.kind);
+    expect(kinds.slice(-3)).toEqual(['text', 'turn_end', 'system']); // the answer, its end, then the exit boundary
+    expect(items[items.length - 3].item.streaming).toBe(false);
+    expect(items[items.length - 1].item.text).toMatch(/^session ended/);
+    expect(items.filter((i) => i.item.kind === 'user')).toHaveLength(1);
+  }, 40000);
+
+  it('stop breaks through a turn blocked on stdin the agent no longer reads', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'blocked');
+    await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'block stdin please',
+    });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    // a turn large enough to fill the pipe never gets its ok; it holds the agent's lock
+    const stuck = api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'x'.repeat(512 * 1024),
+    });
+    await sleep(300);
+    const t0 = Date.now();
+    const stopped = await api.post(`/api/agents/${agent.id}/stop`);
+    expect(stopped.status).toBe(201);
+    expect(Date.now() - t0).toBeLessThan(8000);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'exited',
+      10000,
+    );
+    const turn = await stuck;
+    expect([503, 409]).toContain(turn.status);
+  }, 30000);
+});
+
 describe('manager restart', () => {
   it('keeps exited and archived agents right, and adopts a session the database lost', async () => {
     const p = await createProject();
@@ -552,12 +640,30 @@ describe('manager restart', () => {
     expect(o.body.agent.currentSessionId).toBe(orphan.currentSessionId); // adopted, not restarted
     expect(o.body.status.state).toBe('idle');
     expect(o.body.sessions).toHaveLength(1);
-    await api.post(`/api/agents/${orphan.id}/turn`, { text: 'after adoption' });
+    const adoptMark = events.mark();
+    expect(
+      (
+        await api.post(`/api/agents/${orphan.id}/turn`, {
+          text: 'after adoption',
+        })
+      ).status,
+    ).toBe(202);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === orphan.id &&
+        f.item.item.kind === 'user' &&
+        f.item.item.text === 'after adoption',
+      10000,
+      adoptMark,
+    );
     const end = await events.waitFor(
       (f) =>
         f.type === 'agent.item' &&
         f.agentId === orphan.id &&
         f.item.item.kind === 'turn_end',
+      10000,
+      adoptMark,
     );
     expect(end.item.sessionId).toBe(orphan.currentSessionId);
   }, 30000);

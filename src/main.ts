@@ -20,6 +20,9 @@ export async function createApp(
   app.useWebSocketAdapter(new WsAdapter(app));
   app.use(express.json({ limit: '1mb' }));
   const config = app.get<ManagerConfig>(MANAGER_CONFIG);
+  // Only a configured proxy may tell us the client address (login throttling keys on it).
+  if (config.trustedProxies.length)
+    app.set('trust proxy', config.trustedProxies);
   // Cross-site protection for cookie-authenticated mutations: an Origin
   // that is not ours is refused, and bodies must be JSON objects.
   app.use(

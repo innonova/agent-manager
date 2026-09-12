@@ -201,6 +201,22 @@ ended, history unavailable) have `seqFrom` 0.
   (turn, interrupt, stop, archive) are serialised.
 - A session exit moves the agent to `exited`; an exit that arrives while
   that session is still being replayed is applied after the replay. The
+  current pointer is cleared with a conditional update, so a session that
+  was already resumed is never un-pointed by a late exit.
+- After a reconnect every session whose cursor trails the daemon's
+  boundary is caught up, exited or not, so output produced while the link
+  was down is not lost. If an earlier session's replay had failed and
+  newer history is already shown, the transcript is rebuilt from scratch
+  (`agent.reset`) so order is preserved.
+- A turn is refused with `agent-unavailable` (503) while the current
+  session's output is not attached; the attach is retried first. Stop,
+  archive and project deletion wait briefly for the agent's lock and, if a
+  turn is stuck on a stdin write the agent no longer reads, signal the
+  process so the write fails and the command can proceed. Losing the
+  daemon during a stop is an error, never taken as an exit.
+- Project deletion fences the project (no new agents or turns), stops each
+  agent under its lock with a fresh row, deletes the rows, then lifts the
+  fence. The
   next turn starts a new session with the adapter's resume args, records
   it under the agent, and sends the turn.
 - The manager never sends `session.remove`; logs are kept until a later
@@ -225,7 +241,7 @@ GET    /api/projects/:id/agents                                 -> [{ agent, sta
 POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=<n>                           -> { items: StoredItem[] }, n a non-negative integer index
-POST   /api/agents/:id/turn         { text }                    -> 202, or 409 { code: 'agent-busy' } while a turn runs
+POST   /api/agents/:id/turn         { text }                    -> 202; 409 { code: 'agent-busy' } while a turn runs; 503 { code: 'agent-unavailable' } if the session's output cannot be attached
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/archive
@@ -261,6 +277,7 @@ project.counts   { projectId, counts }
 agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt }
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
+agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0
 ```
 
 Clients subscribe to nothing; they receive everything for the projects
@@ -295,6 +312,7 @@ swept once a minute.
 | `AGENT_MANAGER_PUBLIC_ORIGIN` | unset | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies |
 | `AGENT_MANAGER_SECURE_COOKIE` | `0` | force Secure cookies |
 | `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
+| `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
 
 The built UI's static assets and the SPA fallback are served without

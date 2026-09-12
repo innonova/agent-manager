@@ -17,6 +17,8 @@ export interface ManagerConfig {
   sessionTtlMs: number;
   /** Login attempts allowed per client address per minute. */
   loginAttemptsPerMinute: number;
+  /** Reverse proxies whose X-Forwarded-For is trusted (express trust proxy values). */
+  trustedProxies: string[];
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -61,5 +63,9 @@ export function loadConfig(
     loginAttemptsPerMinute: Number(
       env.AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE ?? 10,
     ),
+    trustedProxies: (env.AGENT_MANAGER_TRUSTED_PROXIES ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   };
 }

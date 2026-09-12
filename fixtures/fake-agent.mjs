@@ -40,10 +40,14 @@ async function handle(text) {
     out({ type: 'error', message: "You've hit your usage limit (fake)." });
     return;
   }
-  if (text.includes('exit')) {
+  if (text.includes('block stdin')) {
+    // stop reading stdin for good; the daemon's next large write blocks
     out({ type: 'result', durationMs: 1 });
     await sleep(20);
-    process.exit(0);
+    process.stdin.pause();
+    rl.pause();
+    setInterval(() => {}, 1000);
+    return;
   }
   if (text.includes('tool')) {
     out({ type: 'thinking', text: 'I should look at the file first.' });
@@ -71,6 +75,11 @@ async function handle(text) {
     text.includes('slow') ? 60 : 15,
   );
   out({ type: 'result', durationMs: Date.now() - t0 });
+  if (text.includes('exit')) {
+    // answer first, then leave: "please exit" is quick, "slow then exit" streams first
+    await sleep(20);
+    process.exit(0);
+  }
 }
 
 const rl = readline.createInterface({ input: process.stdin });

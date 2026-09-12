@@ -16,6 +16,7 @@ export class FakeAdapter implements AgentAdapter {
   private streamingText = '';
   private textKey = '';
   private texts = 0;
+  private turnOpen = false;
 
   startArgs({ resume }: { resume?: string | null }): string[] {
     return resume ? ['--resume', resume] : [];
@@ -39,11 +40,13 @@ export class FakeAdapter implements AgentAdapter {
       return { ops: [append({ kind: 'system', text: record.d })] };
     }
     if (record.s === 'in') {
-      if (line.type === 'user')
+      if (line.type === 'user') {
+        this.turnOpen = true;
         return {
           state: 'working',
           ops: [append({ kind: 'user', text: line.text })],
         };
+      }
       if (line.type === 'interrupt')
         return {
           ops: [append({ kind: 'system', text: 'interrupt requested' })],
@@ -52,7 +55,10 @@ export class FakeAdapter implements AgentAdapter {
     }
     switch (line.type) {
       case 'init':
-        return { conversationId: line.conversationId, state: 'idle' };
+        return {
+          conversationId: line.conversationId,
+          state: this.turnOpen ? 'working' : 'idle',
+        };
       case 'text_start':
         this.streamingText = '';
         this.textKey = `t${++this.texts}`;
@@ -115,6 +121,7 @@ export class FakeAdapter implements AgentAdapter {
           ],
         };
       case 'result':
+        this.turnOpen = false;
         return {
           state: 'idle',
           ops: [
@@ -126,6 +133,7 @@ export class FakeAdapter implements AgentAdapter {
           ],
         };
       case 'error':
+        this.turnOpen = false;
         return {
           state: 'error',
           error: line.message,
