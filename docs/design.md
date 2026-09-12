@@ -127,6 +127,17 @@ One model for all vendors, derived by the adapter from the line stream:
 | `error` | the vendor reported an error that ended the turn (usage limit, auth, API error); the process may still be alive |
 | `exited` | no live session; resumable |
 
+The status also carries `background`, the number of jobs the agent has
+left running (Claude Code's background shell commands and scheduled
+wake-ups, announced as a list on every change). The turn ends while they
+run and the agent starts a new turn by itself when they finish, so an
+idle agent with jobs pending is not ready for more; the UI shows the
+count on the badge and holds its "ready" notification until the
+self-started turn ends. A turn the vendor starts by itself (an `init`
+with no input from the manager) is `working` like any other and gets a
+"resumed on its own" transcript item; the jobs' start and completion are
+transcript items too.
+
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
 the `errors` array of an error result, then `result`, then the subtype).

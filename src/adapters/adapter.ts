@@ -38,6 +38,13 @@ export interface Ingest {
   state?: AgentState;
   /** The vendor's error message when state is 'error'. */
   error?: string;
+  /**
+   * Number of background jobs the agent has pending (a shell command it
+   * left running, a wake-up it scheduled). The turn ends while they run
+   * and the agent starts a new turn by itself when they finish, so an idle
+   * agent with jobs pending is not "ready for more".
+   */
+  background?: number;
   ops?: ItemOp[];
   /** The vendor conversation id, once known. */
   conversationId?: string;

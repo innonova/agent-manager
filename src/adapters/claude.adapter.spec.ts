@@ -346,4 +346,41 @@ describe('ClaudeAdapter', () => {
       request: { subtype: 'interrupt' },
     });
   });
+
+  it('a background job keeps the agent from looking ready, and the turn it triggers is a turn', () => {
+    const { items, states } = run(
+      new ClaudeAdapter(),
+      load('background-task.ndjson'),
+    );
+    // working (our turn, then its init), idle at its result, working again when Claude resumes by itself, idle at the end
+    expect(states).toEqual(['working', 'working', 'idle', 'working', 'idle']);
+    expect(items.map((i) => i.kind)).toEqual([
+      'user',
+      'text',
+      'system',
+      'turn_end',
+      'system',
+      'system',
+      'text',
+      'turn_end',
+    ]);
+    const system = items.filter((i) => i.kind === 'system') as {
+      text: string;
+    }[];
+    expect(system[0]!.text).toMatch(
+      /^background task started: After three minutes/,
+    );
+    expect(system[1]!.text).toMatch(/^background task completed: /);
+    expect(system[2]!.text).toBe('resumed on its own');
+  });
+
+  it('reports the number of pending background jobs as it changes', () => {
+    const adapter = new ClaudeAdapter();
+    const seen: number[] = [];
+    for (const r of load('background-task.ndjson')) {
+      const ing = adapter.ingest(r);
+      if (ing.background !== undefined) seen.push(ing.background);
+    }
+    expect(seen).toEqual([1, 0]);
+  });
 });

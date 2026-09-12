@@ -49,6 +49,8 @@ export interface AgentStatus {
   error: string | null;
   /** Milliseconds of the last item or state change. */
   lastActivityAt: number;
+  /** Background jobs the agent left running; it starts a turn by itself when they finish. */
+  background: number;
 }
 
 export interface StoredItem {
@@ -814,6 +816,8 @@ export class AgentsService
     }
     // State from a session that is no longer current is history, not now;
     // state from a replay in flight is applied but announced only at its end.
+    if (ingest.background !== undefined && sl.id === agent.currentSessionId)
+      this.setBackground(agent, live, ingest.background, sl.attaching);
     if (ingest.state && sl.id === agent.currentSessionId)
       this.setState(
         agent,
@@ -1113,6 +1117,7 @@ export class AgentsService
           state: agent.currentSessionId ? 'starting' : 'exited',
           error: null,
           lastActivityAt: agent.createdAt,
+          background: 0,
         },
         items: [],
         lock: Promise.resolve(),
@@ -1214,7 +1219,12 @@ export class AgentsService
     quiet = false,
   ): void {
     if (live.status.state === state && live.status.error === error) return;
-    live.status = { state, error, lastActivityAt: Date.now() };
+    live.status = {
+      state,
+      error,
+      lastActivityAt: Date.now(),
+      background: live.status.background,
+    };
     if (quiet) {
       live.stateHeld = true;
       return;
@@ -1222,6 +1232,23 @@ export class AgentsService
     live.stateHeld = false;
     this.emit('state', agent.id, agent.projectId, live.status);
     this.emit('counts', agent.projectId, this.counts(agent.projectId));
+  }
+
+  /** The count of background jobs is part of the status and announced like a state change. */
+  private setBackground(
+    agent: Agent,
+    live: Live,
+    background: number,
+    quiet = false,
+  ): void {
+    if (live.status.background === background) return;
+    live.status = { ...live.status, background, lastActivityAt: Date.now() };
+    if (quiet) {
+      live.stateHeld = true;
+      return;
+    }
+    live.stateHeld = false;
+    this.emit('state', agent.id, agent.projectId, live.status);
   }
 
   /** Announces a status that replay applied silently, once the replay is over. */

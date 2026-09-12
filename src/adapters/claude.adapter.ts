@@ -41,6 +41,9 @@ export class ClaudeAdapter implements AgentAdapter {
     return args;
   }
 
+  /** Ids of tasks reported as backgrounded, so their completion notices can be told apart from foreground ones. */
+  private backgrounded = new Set<string>();
+
   turnInProgress(): boolean {
     return this.turnOpen;
   }
@@ -71,12 +74,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (record.s === 'in') return this.ingestInput(line);
     switch (line?.type) {
       case 'system':
-        if (line.subtype === 'init')
-          return {
-            conversationId: line.session_id,
-            state: this.turnOpen ? 'working' : 'idle',
-          };
-        return {};
+        return this.ingestSystem(line);
       case 'stream_event':
         return this.ingestStreamEvent(line.event);
       case 'assistant':
@@ -92,6 +90,57 @@ export class ClaudeAdapter implements AgentAdapter {
           state: 'error',
           error: message,
           ops: [append({ kind: 'error', message })],
+        };
+      }
+      default:
+        return {};
+    }
+  }
+
+  /**
+   * `init` opens every turn. One that arrives while no turn is open was
+   * not sent by us: Claude Code starts a turn by itself when a background
+   * job finishes or a scheduled wake-up fires. Background jobs are
+   * announced as a full list on every change, and their start and end
+   * become transcript items so the user can see what is pending.
+   */
+  private ingestSystem(line: any): Ingest {
+    switch (line.subtype) {
+      case 'init': {
+        if (this.turnOpen)
+          return { conversationId: line.session_id, state: 'working' };
+        this.turnOpen = true;
+        this.streaming = null;
+        return {
+          conversationId: line.session_id,
+          state: 'working',
+          ops: [append({ kind: 'system', text: 'resumed on its own' })],
+        };
+      }
+      case 'background_tasks_changed':
+        return {
+          background: Array.isArray(line.tasks) ? line.tasks.length : 0,
+        };
+      case 'task_started':
+        if (!line.is_backgrounded) return {};
+        this.backgrounded.add(String(line.task_id));
+        return {
+          ops: [
+            append({
+              kind: 'system',
+              text: `background task started: ${line.description ?? line.task_id}`,
+            }),
+          ],
+        };
+      case 'task_notification': {
+        if (!this.backgrounded.delete(String(line.task_id))) return {};
+        return {
+          ops: [
+            append({
+              kind: 'system',
+              text: `background task ${line.status ?? 'finished'}: ${line.summary ?? line.task_id}`,
+            }),
+          ],
         };
       }
       default:
