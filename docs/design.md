@@ -183,6 +183,41 @@ range (`seqFrom`, `seqTo`) it was built from, so a client can always go
 back to the raw lines. Synthetic boundary items (session started, resumed,
 ended, history unavailable) have `seqFrom` 0.
 
+## Features
+
+A feature is `features/<slug>.md` in the project repository:
+
+```markdown
+---
+title: Login page
+status: planned          # planned | queued | in-progress | review | blocked | done
+priority: 2              # lower runs first; default 100
+dependsOn: [db]          # slugs that must be done before this can be queued
+---
+
+Add a login page with a form. (The body is the spec the agent is given.)
+```
+
+Unknown frontmatter keys and the body are preserved when the manager
+rewrites the file. A missing title falls back to the first heading, then
+the slug; a missing or unknown status is `planned`.
+
+Ownership of `status`: the manager owns `queued` and `in-progress`; the
+human sets `planned`, `review`, `blocked` and `done` through the API or by
+editing the file. The manager moves a feature to `review` when the agent's
+turn ends normally and to `blocked` when it ends in error or the session
+ends; a human then marks it `done` or reopens it.
+
+Queueing puts the feature on one agent's queue (SQLite `feature_queue`)
+and, if that agent is not busy, starts it at once: a `feature_runs` row is
+opened, the file goes to `in-progress`, and the agent receives one turn
+containing the title, the path, the body, and the instruction not to edit
+the status field. When the agent's state changes, the open run on that
+agent gets its outcome (`review`, or `blocked: <reason>`), and the next
+queued feature starts. A queued feature can be dequeued back to
+`planned`. Dependencies are checked at queue time only. Nothing here is
+agent-specific: the feature is an ordinary turn.
+
 ## Daemon integration
 
 - One websocket to the daemon, reconnecting with backoff. On (re)connect a
@@ -278,8 +313,12 @@ GET    /api/health                  (public)                    -> { status: 'ok
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime }] }, directories first
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
-GET    /api/projects/:id/features                               -> parsed feature files (milestone 3)
-POST   /api/projects/:id/features/:slug/queue                                           (milestone 3)
+GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, queued, review, blocked, planned, done, then priority
+POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn? } -> creates features/<slug>.md as planned
+GET    /api/projects/:id/features/:slug
+PATCH  /api/projects/:id/features/:slug  { status }             -> the human's transitions: planned, review, blocked, done (never queued or in-progress)
+POST   /api/projects/:id/features/:slug/queue { agentId }       -> 202; 409 if already queued/running, done, or a dependency is not done
+POST   /api/projects/:id/features/:slug/dequeue                 -> back to planned
 ```
 
 File paths are relative to the project root, normalised, and `..` is
@@ -306,6 +345,7 @@ agent.state      { agentId, projectId, status }    // status = { state, error, l
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
 agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0
+feature.changed  { projectId, feature }            // a feature's status or run changed
 ```
 
 Clients subscribe to nothing; they receive everything for the projects
@@ -373,8 +413,9 @@ running in the daemon and are re-adopted on start.
    input.
 2. **Files** (done): tree and file endpoints; UI file browser with Monaco,
    read-only, refreshed when an agent in the project finishes a turn.
-3. **Features**: `features/*.md` convention, parsing, listing, queueing a
-   feature as a turn for a chosen agent, manager-owned status updates.
+3. **Features** (done): `features/*.md` convention, parsing, listing,
+   queueing a feature as a turn for a chosen agent, manager-owned status
+   updates. See "Features" below.
 4. Later, each needing its own discussion: git status and diff per agent;
    worktrees and multi-agent coordination; interactive permissions;
    idle timeout and automatic resume; Codex and Copilot adapters (the

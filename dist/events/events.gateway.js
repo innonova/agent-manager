@@ -18,26 +18,30 @@ import { sessionIdFromCookieHeader } from '../auth/auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import { DaemonClient } from '../daemon/daemon-client.js';
+import { FeaturesService } from '../features/features.service.js';
 import { originAllowed } from '../origin.js';
 let EventsGateway = EventsGateway_1 = class EventsGateway {
     config;
     auth;
     agents;
     daemon;
+    features;
     logger = new Logger(EventsGateway_1.name);
     clients = new Map();
     sweep = null;
-    constructor(config, auth, agents, daemon) {
+    constructor(config, auth, agents, daemon, features) {
         this.config = config;
         this.auth = auth;
         this.agents = agents;
         this.daemon = daemon;
+        this.features = features;
     }
     afterInit() {
         this.agents.on('state', (agentId, projectId, status) => this.broadcast({ type: 'agent.state', agentId, projectId, status }));
         this.agents.on('item', (agentId, item) => this.broadcast({ type: 'agent.item', agentId, item }));
         this.agents.on('session', (agentId, session) => this.broadcast({ type: 'agent.session', agentId, session }));
         this.agents.on('reset', (agentId) => this.broadcast({ type: 'agent.reset', agentId }));
+        this.features.on('changed', (projectId, feature) => this.broadcast({ type: 'feature.changed', projectId, feature }));
         this.agents.on('counts', (projectId, counts) => this.broadcast({ type: 'project.counts', projectId, counts }));
         this.daemon.on('connected', () => this.broadcast({ type: 'daemon', connected: true }));
         this.daemon.on('disconnected', () => this.broadcast({ type: 'daemon', connected: false }));
@@ -98,7 +102,8 @@ EventsGateway = EventsGateway_1 = __decorate([
     __param(0, Inject(MANAGER_CONFIG)),
     __metadata("design:paramtypes", [Object, AuthService,
         AgentsService,
-        DaemonClient])
+        DaemonClient,
+        FeaturesService])
 ], EventsGateway);
 export { EventsGateway };
 //# sourceMappingURL=events.gateway.js.map

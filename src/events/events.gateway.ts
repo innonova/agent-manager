@@ -13,6 +13,7 @@ import { AuthService } from '../auth/auth.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DaemonClient } from '../daemon/daemon-client.js';
+import { FeaturesService } from '../features/features.service.js';
 import { originAllowed } from '../origin.js';
 
 /**
@@ -39,6 +40,7 @@ export class EventsGateway
     private readonly auth: AuthService,
     private readonly agents: AgentsService,
     private readonly daemon: DaemonClient,
+    private readonly features: FeaturesService,
   ) {}
 
   afterInit(): void {
@@ -53,6 +55,9 @@ export class EventsGateway
     );
     this.agents.on('reset', (agentId) =>
       this.broadcast({ type: 'agent.reset', agentId }),
+    );
+    this.features.on('changed', (projectId, feature) =>
+      this.broadcast({ type: 'feature.changed', projectId, feature }),
     );
     this.agents.on('counts', (projectId, counts) =>
       this.broadcast({ type: 'project.counts', projectId, counts }),

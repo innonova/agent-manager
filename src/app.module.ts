@@ -7,6 +7,7 @@ import { ManagerConfig } from './config/config.js';
 import { DaemonModule } from './daemon/daemon.module.js';
 import { DbModule } from './db/db.module.js';
 import { EventsModule } from './events/events.module.js';
+import { FeaturesModule } from './features/features.module.js';
 import { FilesModule } from './files/files.module.js';
 import { HealthController } from './health.controller.js';
 import { ProfilesController } from './profiles.controller.js';
@@ -27,6 +28,7 @@ export class AppModule {
         AgentsModule,
         EventsModule,
         FilesModule,
+        FeaturesModule,
       ],
       controllers: [ProfilesController, HealthController],
     };
