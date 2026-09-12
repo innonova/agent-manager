@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,6 +52,40 @@ afterAll(async () => {
 });
 
 describe('files', () => {
+  it('flags entries git ignores, and .git itself; nothing outside a repository', async () => {
+    const r0 = await api.get(`/api/projects/${projectId}/files?path=main`);
+    expect(r0.body.entries.every((e: any) => e.ignored === false)).toBe(true);
+
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'am-ignored-'));
+    execFileSync('git', ['init', '-q', repo]);
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'dist/\n*.log\n');
+    fs.mkdirSync(path.join(repo, 'dist'));
+    fs.writeFileSync(path.join(repo, 'dist', 'bundle.js'), '');
+    fs.writeFileSync(path.join(repo, 'app.log'), '');
+    fs.writeFileSync(path.join(repo, 'index.ts'), '');
+    const created = await api.post('/api/projects', {
+      name: 'ignored',
+      repos: [{ name: 'repo', path: repo }],
+    });
+    const id = created.body.project.id;
+    const r = await api.get(`/api/projects/${id}/files?path=repo`);
+    const flags = Object.fromEntries(
+      r.body.entries.map((e: any) => [e.name, e.ignored]),
+    );
+    expect(flags).toEqual({
+      '.git': true,
+      dist: true,
+      '.gitignore': false,
+      'app.log': true,
+      'index.ts': false,
+    });
+    // inside an ignored directory everything is ignored
+    const inner = await api.get(`/api/projects/${id}/files?path=repo/dist`);
+    expect(inner.body.entries).toMatchObject([
+      { name: 'bundle.js', ignored: true },
+    ]);
+  });
+
   it('lists the repos at the root, then each repo with directories first and every entry typed', async () => {
     const root = await api.get(`/api/projects/${projectId}/files`);
     expect(root.status).toBe(200);

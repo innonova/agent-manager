@@ -348,7 +348,7 @@ POST   /api/agents/:id/archive
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean }
 
-GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime }] }, directories first; the root lists one dir per repository
+GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself), false outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, queued, review, blocked, planned, done, then priority
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary

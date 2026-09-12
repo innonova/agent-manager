@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectsService } from '../projects/projects.service.js';
@@ -14,6 +15,13 @@ export interface DirEntry {
   type: 'file' | 'dir' | 'symlink' | 'other';
   size: number;
   mtime: number;
+  /**
+   * Matched by the repository's ignore rules (`git check-ignore`, so
+   * `.gitignore`, `.git/info/exclude` and the global excludes all count).
+   * `.git` itself is reported as ignored too, since it is not part of the
+   * tree in any useful sense. Always false outside a git repository.
+   */
+  ignored: boolean;
 }
 
 export interface FileContent {
@@ -89,6 +97,7 @@ export class FilesService {
             type: 'dir',
             size: 0,
             mtime: st?.mtimeMs ?? 0,
+            ignored: false,
           };
         }),
       );
@@ -128,13 +137,19 @@ export class FilesService {
               type: st.isDirectory() ? 'dir' : 'symlink',
               size,
               mtime,
+              ignored: false,
             };
         } catch {
           /* dangling symlink or vanished entry: reported as is */
         }
-        return { name: d.name, path: p, type, size, mtime };
+        return { name: d.name, path: p, type, size, mtime, ignored: false };
       }),
     );
+    const ignored = await gitIgnored(
+      abs,
+      entries.map((e) => e.name),
+    );
+    for (const e of entries) e.ignored = ignored.has(e.name);
     entries.sort((a, b) =>
       (a.type === 'dir') === (b.type === 'dir')
         ? a.name.localeCompare(b.name)
@@ -173,4 +188,35 @@ export class FilesService {
       truncated: false,
     };
   }
+}
+
+/**
+ * Which of `names` (entries of directory `dir`) git ignores. One
+ * `git check-ignore` per listing, names on stdin. Exit code 1 means none
+ * matched; 128 (not a repository) or a missing git means nothing is
+ * ignored, which is the honest answer outside a repo.
+ */
+export function gitIgnored(dir: string, names: string[]): Promise<Set<string>> {
+  const result = new Set<string>();
+  if (names.includes('.git')) result.add('.git');
+  const candidates = names.filter((n) => n !== '.git');
+  if (candidates.length === 0) return Promise.resolve(result);
+  return new Promise((resolve) => {
+    const child = execFile(
+      'git',
+      ['check-ignore', '-z', '--stdin'],
+      { cwd: dir, timeout: 5000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => {
+        // 0: some matched, 1: none matched, anything else: not a repo, no git, timeout.
+        if (!err || (err as { code?: number | string }).code === 1) {
+          for (const n of String(stdout).split('\0')) if (n) result.add(n);
+        }
+        resolve(result);
+      },
+    );
+    child.stdin?.on('error', () => {
+      /* git exited before reading; the callback reports the outcome */
+    });
+    child.stdin?.end(candidates.join('\0') + '\0');
+  });
 }
