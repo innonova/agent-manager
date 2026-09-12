@@ -167,4 +167,23 @@ describe('CodexAdapter', () => {
       ),
     ).toMatchObject({ state: 'error', error: 'thread gone' });
   });
+
+  it('a command backgrounded past the turn is a pending job until its item completes', () => {
+    const { items, states, backgrounds } = replay(
+      new CodexAdapter(),
+      loadFixture('codex', 'background-command.ndjson'),
+    );
+    expect(states[0]).toBe('idle');
+    expect(states).toContain('working');
+    expect(states[states.length - 1]).toBe('idle');
+    expect(backgrounds).toEqual([1, 0]); // one open command at turn end; none once it completes
+    const kinds = items.map((i) => i.kind);
+    expect(kinds.indexOf('tool_result')).toBeGreaterThan(
+      kinds.indexOf('turn_end'),
+    );
+    const result = items.find((i) => i.kind === 'tool_result') as {
+      output: string;
+    };
+    expect(result.output).toContain('BACKGROUND_DONE');
+  });
 });

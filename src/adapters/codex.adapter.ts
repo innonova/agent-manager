@@ -18,6 +18,12 @@ export class CodexAdapter implements AgentAdapter {
   private threadId: string | null = null;
   private turnId: string | null = null;
   private turnOpen = false;
+  /**
+   * Commands started and not yet completed. Codex runs a command the model
+   * backgrounds past the end of the turn and completes its item later,
+   * without starting a new turn; those are the agent's background jobs.
+   */
+  private openCommands = new Set<string>();
   /** JSON-RPC ids we sent and what they were for. */
   private pending = new Map<
     number,
@@ -102,8 +108,13 @@ export class CodexAdapter implements AgentAdapter {
         return { state: 'working' };
       case 'item/started':
         return this.ingestItem(line.params?.item, false);
-      case 'item/completed':
-        return this.ingestItem(line.params?.item, true);
+      case 'item/completed': {
+        const ing = this.ingestItem(line.params?.item, true);
+        // A command completing after the turn ended was a background job.
+        if (line.params?.item?.type === 'commandExecution' && !this.turnOpen)
+          ing.background = this.openCommands.size;
+        return ing;
+      }
       case 'item/agentMessage/delta': {
         const id = String(line.params?.itemId);
         const key = this.textKeys.get(id);
@@ -140,7 +151,8 @@ export class CodexAdapter implements AgentAdapter {
           };
         }
         return {
-          state: turn?.status === 'interrupted' ? 'idle' : 'idle',
+          state: 'idle',
+          background: this.openCommands.size,
           ops: [append(end)],
         };
       }
@@ -272,6 +284,8 @@ export class CodexAdapter implements AgentAdapter {
           ? { ops: [append({ kind: 'thinking', text: String(item.text) })] }
           : {};
       case 'commandExecution':
+        if (completed) this.openCommands.delete(String(item.id));
+        else this.openCommands.add(String(item.id));
         if (!completed)
           return {
             ops: [

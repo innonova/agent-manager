@@ -150,4 +150,23 @@ describe('CopilotAdapter', () => {
     expect(r).toMatchObject({ state: 'error', error: 'quota exceeded' });
     expect(r.ops?.map((o) => o.item.kind)).toEqual(['error', 'turn_end']);
   });
+
+  it('a "started in background" call is a pending job until its output arrives; text after the turn is marked', () => {
+    const { items, states, backgrounds } = replay(
+      new CopilotAdapter(),
+      loadFixture('copilot', 'background-command.ndjson'),
+    );
+    expect(states).toEqual(['idle', 'working', 'idle']);
+    expect(backgrounds).toEqual([1, 0]);
+    const kinds = items.map((i) => i.kind);
+    const end = kinds.indexOf('turn_end');
+    expect(kinds.slice(end + 1)).toEqual(['tool_result', 'system', 'text']);
+    expect((items[end + 1] as { output: string }).output).toContain(
+      'BACKGROUND_DONE',
+    );
+    expect((items[end + 2] as { text: string }).text).toBe(
+      'continued on its own',
+    );
+    expect((items[end + 3] as { text: string }).text).toBe('FINISHED');
+  });
 });

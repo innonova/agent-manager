@@ -19,6 +19,13 @@ export class CopilotAdapter implements AgentAdapter {
   private nextId = 1;
   private sessionId: string | null = null;
   private turnOpen = false;
+  /**
+   * Tool calls whose completed result said the command was started in the
+   * background. Copilot reports the call completed at once, then sends the
+   * job's output as a status-less update after the turn, and may go on
+   * talking without a new turn. ACP has no other signal for this.
+   */
+  private backgroundCalls = new Set<string>();
   private pending = new Map<
     number,
     'initialize' | 'session' | 'prompt' | 'cancel'
@@ -214,6 +221,9 @@ export class CopilotAdapter implements AgentAdapter {
           this.text = chunk;
           return {
             ops: [
+              ...(this.turnOpen
+                ? []
+                : [append({ kind: 'system', text: 'continued on its own' })]),
               {
                 op: 'append',
                 key: this.textKey,
@@ -274,18 +284,38 @@ export class CopilotAdapter implements AgentAdapter {
         };
       }
       case 'tool_call_update': {
+        const id = String(u.toolCallId);
+        if (u.status === undefined && this.backgroundCalls.has(id)) {
+          // The background job's output, delivered after the turn.
+          this.backgroundCalls.delete(id);
+          return {
+            background: this.backgroundCalls.size,
+            ops: [
+              append({
+                kind: 'tool_result',
+                toolUseId: id,
+                output: this.updateText(u),
+                isError: false,
+              }),
+            ],
+          };
+        }
         if (u.status !== 'completed' && u.status !== 'failed') return {};
-        const output = Array.isArray(u.content)
-          ? u.content
-              .map((c: any) =>
-                c.type === 'content' && c.content?.type === 'text'
-                  ? c.content.text
-                  : c.type === 'diff'
-                    ? `--- ${c.path}\n${c.newText ?? ''}`
-                    : JSON.stringify(c),
-              )
-              .join('\n')
-          : String(u.rawOutput?.content ?? '');
+        const output = this.updateText(u);
+        if (u.status === 'completed' && /started in background/i.test(output)) {
+          this.backgroundCalls.add(id);
+          return {
+            background: this.backgroundCalls.size,
+            ops: [
+              append({
+                kind: 'tool_result',
+                toolUseId: id,
+                output,
+                isError: false,
+              }),
+            ],
+          };
+        }
         return {
           ops: [
             append({
@@ -300,6 +330,20 @@ export class CopilotAdapter implements AgentAdapter {
       default:
         return {};
     }
+  }
+
+  private updateText(u: any): string {
+    return Array.isArray(u.content)
+      ? u.content
+          .map((c: any) =>
+            c.type === 'content' && c.content?.type === 'text'
+              ? c.content.text
+              : c.type === 'diff'
+                ? `--- ${c.path}\n${c.newText ?? ''}`
+                : JSON.stringify(c),
+          )
+          .join('\n')
+      : String(u.rawOutput?.content ?? '');
   }
 
   /** A streamed text item ends when something else arrives. */

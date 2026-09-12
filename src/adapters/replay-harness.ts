@@ -22,6 +22,7 @@ export function replay(adapter: AgentAdapter, records: LogRecord[]) {
   const items: Item[] = [];
   const keys = new Map<string, number>();
   const states: AgentState[] = [];
+  const backgrounds: number[] = [];
   const sent: { afterSeq: number; line: any }[] = [];
   let conversationId: string | undefined;
   let error: string | undefined;
@@ -38,7 +39,8 @@ export function replay(adapter: AgentAdapter, records: LogRecord[]) {
     }
     for (const line of ing.send ?? []) sent.push({ afterSeq: r.seq, line });
     if (ing.state) states.push(ing.state);
+    if (ing.background !== undefined) backgrounds.push(ing.background);
     if (ing.error) error = ing.error;
   }
-  return { items, states, sent, conversationId, error };
+  return { items, states, backgrounds, sent, conversationId, error };
 }

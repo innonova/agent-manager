@@ -136,7 +136,16 @@ count on the badge and holds its "ready" notification until the
 self-started turn ends. A turn the vendor starts by itself (an `init`
 with no input from the manager) is `working` like any other and gets a
 "resumed on its own" transcript item; the jobs' start and completion are
-transcript items too.
+transcript items too. Each vendor signals this differently, verified
+2026-09-12 by asking each to background `sleep 25` and end its turn:
+Claude Code lists its tasks (`background_tasks_changed`) and resumes with
+a new turn; Codex leaves the command item open past `turn/completed`,
+completes it later and does nothing else, so the count is the open
+command items at turn end; Copilot reports the call completed at once
+with "started in background" in the result, sends the output as a
+status-less `tool_call_update` after the turn and may go on talking
+without a turn ("continued on its own" item), so the count is those
+calls until their output arrives.
 
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
