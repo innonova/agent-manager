@@ -22,6 +22,26 @@ directory and reloads it, so agents can be tried without spending tokens.
 Restarting the manager never affects running agents; they live in the
 daemon and are re-adopted on start.
 
+## Deploying
+
+`npm run install:service` is the only deploy step, for manager and UI
+changes alike:
+
+1. builds the manager from this checkout;
+2. copies `dist/`, `fixtures/` and the package files to
+   `~/.local/lib/agent-manager` and installs production dependencies there;
+3. copies `../agent-manager-ui/dist` to `~/.local/lib/agent-manager/ui` if
+   it exists (build the UI first, or a stale UI ships silently; without a
+   build the manager runs API-only);
+4. writes the daemon's `fake` profile and reloads the daemon's profiles
+   (a reload, not a restart: running sessions are untouched);
+5. rewrites the unit file and restarts the manager service.
+
+It leaves the database and the drop-ins under
+`~/.config/systemd/user/agent-manager.service.d/` alone;
+`AGENT_MANAGER_ADMIN_PASSWORD` is only needed on first install or to
+change the password. Restarting the manager is a non-event for agents.
+
 ## Development
 
 ```
