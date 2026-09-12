@@ -71,6 +71,22 @@ CREATE TABLE IF NOT EXISTS feature_runs (
   outcome TEXT
 );
 CREATE INDEX IF NOT EXISTS feature_runs_open ON feature_runs(agent_id, ended_at);
+CREATE TABLE IF NOT EXISTS read_cursors (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  repo TEXT NOT NULL,
+  commit_hash TEXT NOT NULL,
+  read_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, project_id, repo)
+);
+CREATE TABLE IF NOT EXISTS feature_ranges (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  slug TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  base_commit TEXT NOT NULL,
+  end_commit TEXT,
+  PRIMARY KEY (project_id, slug, repo)
+);
 `;
 
 /** The SQLite handle plus schema setup. Queries live in the services that own the tables. */

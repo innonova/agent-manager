@@ -61,6 +61,7 @@ Copilot's ACP.
 | One turn at a time per agent | Neither vendor lets a queued turn be represented faithfully in the transcript, so a second turn while one runs is refused with 409 `agent-busy`; the UI offers interrupt instead. |
 | Archived agents keep their history | Archival hides an agent from lists and refuses commands; its transcript is still rebuilt and readable. |
 | Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
+| Changes are a diff from a base to the working tree | Git already answers "what changed since": committed, staged, unstaged and untracked in one `git diff <base>` plus `git status`. The base is a read cursor per user and repository, a feature's recorded range, or any commit; nothing is written to the tree, so an agent mid-turn is only a staleness concern. No per-hunk keep/undo: agents commit as they go, undo is a conversation or git. |
 | No feature queue; the human asks the agent in conversation | An injected turn arrives without context and cannot be given a caveat or refused; the file carries spec, report and response instead, and the agent edits it itself. See Features. |
 | A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
 | Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
@@ -282,6 +283,13 @@ work through several features re-reads the directory before finishing
 and takes up anything planned that appeared meanwhile. This is spelled
 out for agents in each repository's `CLAUDE.md`.
 
+A feature's work spans a range of commits per repository: the manager
+records HEAD as the base when it first sees the feature in progress
+(the agent sets that; the poller notices within seconds, before any
+commit of the work) and HEAD as the end when it is marked done. Later
+rounds keep the first base. The range is exposed on the feature and is
+one of the bases the changes view accepts (`feature:<slug>`).
+
 Ownership of `status`: `in-progress` is the agent's; `planned`, `review`,
 `blocked` and `done` are set by either side, the human through the API.
 The manager never sets a status on its own. The human can also edit
@@ -398,6 +406,9 @@ GET    /api/health                  (public)                    -> { status: 'ok
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
+GET    /api/projects/:id/changes?base=<spec>                    -> { base, repos: [{ repo, base, head, note, files: [{ path, status: modified|added|deleted|renamed|untracked, oldPath? }] }] }; spec is `read` (the caller's cursor, default), `feature:<slug>` or a commit-ish; measured against the working tree; `note` says when the base fell back to HEAD (nothing read yet, history rewritten, no range recorded)
+GET    /api/projects/:id/changes/file?path=<repo/path>&base=<spec> -> { path, base, before, after, binary, truncated }; before is the file at the base (null if absent there), after the working file (null if gone)
+POST   /api/projects/:id/changes/read { repo? }                 -> sets the caller's read cursor to HEAD in one or every repository
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, review, blocked, planned, done, then priority
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary
 GET    /api/projects/:id/features/:slug
@@ -510,10 +521,11 @@ running in the daemon and are re-adopted on start.
    injected turns; replaced, see "Features" below.
 4. **Codex and Copilot adapters** (done): tested against recorded
    sessions, and end to end by `npm run smoke:agents`.
-5. Later, each needing its own discussion: git diff per agent, including
-   "what did the last turn change" (the file tree could highlight entries
-   whose mtime moved since its previous refresh, fading after a while, but
-   that is a view of the same question a diff answers properly);
+5. **Changes** (done): a diff from a base to the working tree per
+   repository, with a read cursor per user ("what changed since I last
+   looked") and a range per feature; the UI shows the changed files and a
+   Monaco diff. See "Changes" in the API and the decisions table.
+6. Later, each needing its own discussion:
    worktrees and multi-agent coordination; interactive permissions;
    idle timeout and automatic resume; clone-from-URL; roles; log
    retention.

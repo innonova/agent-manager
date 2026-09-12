@@ -8,7 +8,9 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
+import { DbService } from '../db/db.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
+import { head } from '../changes/git.js';
 import {
   FEATURE_STATUSES,
   FeatureFile,
@@ -19,7 +21,10 @@ import {
   writeFeature,
 } from './feature-file.js';
 
-export type Feature = Omit<FeatureFile, 'extra'>;
+export type Feature = Omit<FeatureFile, 'extra'> & {
+  /** Per repository, the commits the work spans: recorded at in-progress and at done. */
+  range: Record<string, { base: string; end: string | null }> | null;
+};
 
 interface Found {
   file: FeatureFile;
@@ -57,9 +62,18 @@ export class FeaturesService
   private timer: NodeJS.Timeout | null = null;
   /** project id -> slug -> mtime as last announced, so the poller announces only edits. */
   private seen = new Map<string, Map<string, number>>();
+  /** "project/slug" -> status last seen, to notice transitions made by editing the file. */
+  private lastStatus = new Map<string, FeatureStatus>();
 
-  constructor(private readonly projects: ProjectsService) {
+  constructor(
+    private readonly dbs: DbService,
+    private readonly projects: ProjectsService,
+  ) {
     super();
+  }
+
+  private get db() {
+    return this.dbs.db;
   }
 
   onModuleInit(): void {
@@ -109,7 +123,9 @@ export class FeaturesService
 
   async list(projectId: string): Promise<Feature[]> {
     const project = this.projects.get(projectId);
-    const features = (await this.readAll(project.repos)).map(strip);
+    const features = (await this.readAll(project.repos)).map((f) =>
+      this.decorate(projectId, f),
+    );
     const order: Record<FeatureStatus, number> = {
       'in-progress': 0,
       review: 1,
@@ -129,7 +145,64 @@ export class FeaturesService
     const project = this.projects.get(projectId);
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
-    return strip(found.file);
+    return this.decorate(projectId, found.file);
+  }
+
+  /** The commits a feature's work spans, per repository; empty when nothing was recorded. */
+  range(
+    projectId: string,
+    slug: string,
+  ): Record<string, { base: string; end: string | null }> {
+    const rows = this.db
+      .prepare(
+        'SELECT repo, base_commit, end_commit FROM feature_ranges WHERE project_id = ? AND slug = ?',
+      )
+      .all(projectId, slug) as {
+      repo: string;
+      base_commit: string;
+      end_commit: string | null;
+    }[];
+    const out: Record<string, { base: string; end: string | null }> = {};
+    for (const r of rows)
+      out[r.repo] = { base: r.base_commit, end: r.end_commit };
+    return out;
+  }
+
+  private decorate(projectId: string, f: FeatureFile): Feature {
+    const range = this.range(projectId, f.slug);
+    return { ...strip(f), range: Object.keys(range).length ? range : null };
+  }
+
+  /**
+   * Bookends for the diff view. The base is HEAD of each repository when
+   * the feature first goes in progress (the agent sets that status; the
+   * poller notices within seconds, before any commit of the work); the end
+   * is HEAD when it is marked done. Later rounds keep the first base, so a
+   * feature's range covers all its rounds.
+   */
+  private async recordRange(
+    projectId: string,
+    slug: string,
+    status: FeatureStatus,
+  ): Promise<void> {
+    if (status !== 'in-progress' && status !== 'done') return;
+    const project = this.projects.get(projectId);
+    for (const repo of project.repos) {
+      const h = await head(repo.path);
+      if (!h) continue;
+      if (status === 'in-progress')
+        this.db
+          .prepare(
+            'INSERT OR IGNORE INTO feature_ranges (project_id, slug, repo, base_commit) VALUES (?, ?, ?, ?)',
+          )
+          .run(projectId, slug, repo.name, h);
+      else
+        this.db
+          .prepare(
+            'UPDATE feature_ranges SET end_commit = ? WHERE project_id = ? AND slug = ? AND repo = ?',
+          )
+          .run(h, projectId, slug, repo.name);
+    }
   }
 
   /**
@@ -146,8 +219,13 @@ export class FeaturesService
       for (const f of files) {
         next.set(f.slug, f.mtime);
         // The first pass only records what is there.
-        if (known && known.get(f.slug) !== f.mtime)
-          this.emit('changed', project.id, strip(f));
+        if (known && known.get(f.slug) !== f.mtime) {
+          const was = this.lastStatus.get(`${project.id}/${f.slug}`);
+          if (was !== f.status)
+            await this.recordRange(project.id, f.slug, f.status);
+          this.emit('changed', project.id, this.decorate(project.id, f));
+        }
+        this.lastStatus.set(`${project.id}/${f.slug}`, f.status);
       }
       this.seen.set(project.id, next);
     }
@@ -158,7 +236,21 @@ export class FeaturesService
     let known = this.seen.get(projectId);
     if (!known) this.seen.set(projectId, (known = new Map()));
     known.set(feature.slug, feature.mtime);
+    this.lastStatus.set(`${projectId}/${feature.slug}`, feature.status);
     this.emit('changed', projectId, feature);
+  }
+
+  /** After a human write: bookend the range if the status moved, then re-read and announce. */
+  private async finish(
+    projectId: string,
+    slug: string,
+    before: FeatureStatus,
+    after: FeatureStatus,
+  ): Promise<Feature> {
+    if (before !== after) await this.recordRange(projectId, slug, after);
+    const feature = await this.get(projectId, slug);
+    this.announce(projectId, feature);
+    return feature;
   }
 
   // ---- the human's writes ---------------------------------------------------
@@ -277,6 +369,7 @@ export class FeaturesService
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
     const f = found.file;
+    const before = f.status;
     if (input.status !== undefined) f.status = input.status as FeatureStatus;
     if (input.title !== undefined) f.title = (input.title as string).trim();
     if (input.body !== undefined) f.body = input.body as string;
@@ -284,9 +377,7 @@ export class FeaturesService
     if (input.dependsOn !== undefined)
       f.dependsOn = input.dependsOn as string[];
     await writeFeature(found.repoPath, f);
-    const feature = await this.get(projectId, slug);
-    this.announce(projectId, feature);
-    return feature;
+    return this.finish(projectId, slug, before, f.status);
   }
 
   /**
@@ -311,16 +402,15 @@ export class FeaturesService
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
     const f = found.file;
+    const before = f.status;
     f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${today()})\n\n${input.text.trim()}\n`;
     f.status = status as FeatureStatus;
     await writeFeature(found.repoPath, f);
-    const feature = await this.get(projectId, slug);
-    this.announce(projectId, feature);
-    return feature;
+    return this.finish(projectId, slug, before, f.status);
   }
 }
 
-function strip(f: FeatureFile): Feature {
+function strip(f: FeatureFile): Omit<Feature, 'range'> {
   const { extra: _extra, ...rest } = f;
   return rest;
 }

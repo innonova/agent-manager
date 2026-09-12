@@ -2,6 +2,7 @@ import { DynamicModule, Module } from '@nestjs/common';
 import { AdaptersModule } from './adapters/adapters.module.js';
 import { AgentsModule } from './agents/agents.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { ChangesModule } from './changes/changes.module.js';
 import { ConfigModule } from './config/config.module.js';
 import { ManagerConfig } from './config/config.js';
 import { DaemonModule } from './daemon/daemon.module.js';
@@ -29,6 +30,7 @@ export class AppModule {
         EventsModule,
         FilesModule,
         FeaturesModule,
+        ChangesModule,
       ],
       controllers: [ProfilesController, HealthController],
     };
