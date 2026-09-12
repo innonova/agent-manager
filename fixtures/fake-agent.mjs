@@ -7,6 +7,7 @@
 //
 // The text of a turn steers the script: "error" -> an error turn,
 // "slow" -> a long turn, "tool" -> a tool call, "exit" -> the process exits,
+// "permission" (with --ask) -> asks permission and waits for the answer,
 // anything else -> a short streamed answer.
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -18,6 +19,9 @@ const conversationId =
   resumeIdx >= 0 ? process.argv[resumeIdx + 1] : randomUUID();
 let turns = 0;
 let interrupted = false;
+const ask = process.argv.includes('--ask');
+/** Resolvers for permission answers, by request id. */
+const awaiting = new Map();
 
 out({ type: 'init', conversationId, resumed: resumeIdx >= 0 });
 
@@ -47,6 +51,24 @@ async function handle(text) {
     process.stdin.pause();
     setInterval(() => {}, 1000);
     out({ type: 'result', durationMs: 1 });
+    return;
+  }
+  if (text.includes('permission') && ask) {
+    const id = `perm_${turns}`;
+    out({
+      type: 'permission_request',
+      id,
+      tool: 'Bash',
+      title: 'Remove the build directory',
+      input: { command: 'rm -rf dist' },
+    });
+    const decision = await new Promise((resolve) => awaiting.set(id, resolve));
+    await stream(
+      decision === 'deny'
+        ? 'Understood, not removing it.'
+        : `Removed it (${decision}).`,
+    );
+    out({ type: 'result', durationMs: Date.now() - t0 });
     return;
   }
   if (text.includes('tool')) {
@@ -93,6 +115,11 @@ rl.on('line', (line) => {
   }
   if (msg.type === 'interrupt') {
     interrupted = true;
+    return;
+  }
+  if (msg.type === 'permission_response') {
+    awaiting.get(String(msg.id))?.(String(msg.decision));
+    awaiting.delete(String(msg.id));
     return;
   }
   if (msg.type === 'user') chain = chain.then(() => handle(String(msg.text)));

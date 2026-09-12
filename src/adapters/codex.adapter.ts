@@ -5,7 +5,12 @@ import type {
   Ingest,
   Item,
   ItemOp,
+  PermissionOption,
+  PermissionRequest,
+  Permissions,
 } from './adapter.js';
+
+type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
 /**
  * Codex in `codex app-server` mode: JSON-RPC over stdio. The adapter drives
@@ -37,8 +42,43 @@ export class CodexAdapter implements AgentAdapter {
     return [];
   }
 
-  startLines(opts: { cwd: string; resume?: string | null }): unknown[] {
+  /** Approval requests from the server not yet answered, with the decision value behind each option. */
+  private approvals = new Map<
+    string,
+    {
+      options: PermissionOption[];
+      values: Map<string, unknown>;
+      item: PermissionItem;
+    }
+  >();
+  private permissionsMode: Permissions = 'bypass';
+
+  pendingPermissions(): PermissionRequest[] {
+    return [...this.approvals].map(([requestId, a]) => ({
+      requestId,
+      options: a.options,
+    }));
+  }
+
+  decide(requestId: string, optionId: string): unknown[] | null {
+    const a = this.approvals.get(requestId);
+    if (!a || !a.values.has(optionId)) return null;
+    return [
+      {
+        jsonrpc: '2.0',
+        id: Number(requestId),
+        result: { decision: a.values.get(optionId) },
+      },
+    ];
+  }
+
+  startLines(opts: {
+    cwd: string;
+    resume?: string | null;
+    permissions?: Permissions;
+  }): unknown[] {
     this.resume = opts.resume ?? null;
+    this.permissionsMode = opts.permissions ?? 'bypass';
     return [
       this.rpc('initialize', 'initialize', {
         clientInfo: {
@@ -101,6 +141,12 @@ export class CodexAdapter implements AgentAdapter {
       (line.result !== undefined || line.error !== undefined)
     )
       return this.ingestReply(line);
+    if (
+      typeof line?.method === 'string' &&
+      line.id !== undefined &&
+      line.method.endsWith('/requestApproval')
+    )
+      return this.ingestApproval(line);
     switch (line?.method) {
       case 'turn/started':
         this.turnId = line.params?.turn?.id ?? null;
@@ -173,6 +219,27 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private ingestInput(line: any): Ingest {
+    if (line?.id !== undefined && line.method === undefined && line.result) {
+      // Our answer to an approval request.
+      const requestId = String(line.id);
+      const a = this.approvals.get(requestId);
+      if (!a) return {};
+      this.approvals.delete(requestId);
+      const chosen = JSON.stringify(line.result.decision);
+      const decision =
+        [...a.values].find(([, v]) => JSON.stringify(v) === chosen)?.[0] ??
+        'deny';
+      return {
+        state: this.turnOpen ? 'working' : 'idle',
+        ops: [
+          {
+            op: 'update',
+            key: `perm:${requestId}`,
+            item: { ...a.item, decision: decision },
+          },
+        ],
+      };
+    }
     // Our own requests, as logged by the daemon: keep the id map consistent after a restart.
     if (typeof line?.id === 'number' && typeof line.method === 'string') {
       const kind =
@@ -203,6 +270,78 @@ export class CodexAdapter implements AgentAdapter {
     return {};
   }
 
+  /** Ask mode keeps Codex in its workspace sandbox and lets it ask to escalate; bypass opens everything. */
+  private policy(): { approvalPolicy: string; sandbox: string } {
+    return this.permissionsMode === 'ask'
+      ? { approvalPolicy: 'on-request', sandbox: 'workspace-write' }
+      : { approvalPolicy: 'never', sandbox: 'danger-full-access' };
+  }
+
+  /**
+   * A server request for approval (`item/commandExecution/requestApproval`,
+   * `item/fileChange/requestApproval`, …): the turn waits until we reply
+   * with one of `availableDecisions`. Those are strings ("accept",
+   * "cancel") or objects (accept with an exec-policy amendment, i.e. always
+   * allow this command); the object is echoed back verbatim.
+   */
+  private ingestApproval(line: any): Ingest {
+    const requestId = String(line.id);
+    const p = line.params ?? {};
+    const values = new Map<string, unknown>();
+    const options: PermissionOption[] = [];
+    const decisions: unknown[] = Array.isArray(p.availableDecisions)
+      ? p.availableDecisions
+      : ['accept', 'cancel'];
+    for (const d of decisions) {
+      if (typeof d === 'string') {
+        const id = d === 'accept' ? 'allow' : 'deny';
+        if (values.has(id)) continue;
+        values.set(id, d);
+        options.push({
+          id,
+          kind: id,
+          label: id === 'allow' ? 'Allow' : 'Deny',
+        });
+      } else if (
+        d &&
+        typeof d === 'object' &&
+        'acceptWithExecpolicyAmendment' in d
+      ) {
+        values.set('allow-always', d);
+        options.push({
+          id: 'allow-always',
+          kind: 'allow-always',
+          label: 'Always allow',
+        });
+      }
+    }
+    const command =
+      p.command ??
+      (Array.isArray(p.commandActions)
+        ? p.commandActions.map((a: any) => a.command).join(' && ')
+        : undefined);
+    const item: PermissionItem = {
+      kind: 'permission',
+      requestId,
+      tool: String(p.kind ?? 'command'),
+      title: String(p.reason ?? command ?? 'approval'),
+      input: command ? { command, cwd: p.cwd } : p,
+      options,
+      decision: null,
+    };
+    this.approvals.set(requestId, { options, values, item });
+    return {
+      state: 'waiting-permission',
+      ops: [
+        {
+          op: 'append',
+          key: `perm:${requestId}`,
+          item,
+        },
+      ],
+    };
+  }
+
   private ingestReply(line: any): Ingest {
     const kind = this.pending.get(line.id);
     this.pending.delete(line.id);
@@ -223,13 +362,9 @@ export class CodexAdapter implements AgentAdapter {
             this.resume
               ? this.rpc('thread', 'thread/resume', {
                   threadId: this.resume,
-                  approvalPolicy: 'never',
-                  sandbox: 'danger-full-access',
+                  ...this.policy(),
                 })
-              : this.rpc('thread', 'thread/start', {
-                  approvalPolicy: 'never',
-                  sandbox: 'danger-full-access',
-                }),
+              : this.rpc('thread', 'thread/start', this.policy()),
           ],
         };
       case 'thread': {

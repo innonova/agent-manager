@@ -5,7 +5,12 @@ import type {
   Ingest,
   Item,
   ItemOp,
+  PermissionOption,
+  PermissionRequest,
+  Permissions,
 } from './adapter.js';
+
+type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
 /**
  * Claude Code in `-p --input-format stream-json --output-format stream-json`
@@ -31,11 +36,18 @@ export class ClaudeAdapter implements AgentAdapter {
   startArgs({
     resume,
     extraDirs = [],
+    permissions = 'bypass',
   }: {
     resume?: string | null;
     extraDirs?: string[];
+    permissions?: Permissions;
   }): string[] {
-    const args = ['--dangerously-skip-permissions'];
+    // Ask mode: gated tools produce a control_request on stdout that we
+    // answer on stdin; without the flag Claude just denies them.
+    const args =
+      permissions === 'ask'
+        ? ['--permission-prompt-tool', 'stdio']
+        : ['--dangerously-skip-permissions'];
     if (resume) args.push('--resume', resume);
     for (const d of extraDirs) args.push('--add-dir', d); // the project's other repositories
     return args;
@@ -43,6 +55,36 @@ export class ClaudeAdapter implements AgentAdapter {
 
   /** Ids of tasks reported as backgrounded, so their completion notices can be told apart from foreground ones. */
   private backgrounded = new Set<string>();
+  /** can_use_tool requests not yet answered, with the input to echo back on allow. */
+  private permissions = new Map<
+    string,
+    { input: unknown; options: PermissionOption[]; item: PermissionItem }
+  >();
+
+  pendingPermissions(): PermissionRequest[] {
+    return [...this.permissions].map(([requestId, p]) => ({
+      requestId,
+      options: p.options,
+    }));
+  }
+
+  decide(requestId: string, optionId: string): unknown[] | null {
+    const p = this.permissions.get(requestId);
+    if (!p || !p.options.some((o) => o.id === optionId)) return null;
+    return [
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response:
+            optionId === 'allow'
+              ? { behavior: 'allow', updatedInput: p.input }
+              : { behavior: 'deny', message: 'The user denied this.' },
+        },
+      },
+    ];
+  }
 
   turnInProgress(): boolean {
     return this.turnOpen;
@@ -75,6 +117,8 @@ export class ClaudeAdapter implements AgentAdapter {
     switch (line?.type) {
       case 'system':
         return this.ingestSystem(line);
+      case 'control_request':
+        return this.ingestControlRequest(line);
       case 'stream_event':
         return this.ingestStreamEvent(line.event);
       case 'assistant':
@@ -148,7 +192,56 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
+  /** A gated tool: Claude stops until we answer. Only can_use_tool is a question for the human. */
+  private ingestControlRequest(line: any): Ingest {
+    const req = line.request;
+    if (req?.subtype !== 'can_use_tool') return {};
+    const requestId = String(line.request_id);
+    const options: PermissionOption[] = [
+      { id: 'allow', kind: 'allow', label: 'Allow' },
+      { id: 'deny', kind: 'deny', label: 'Deny' },
+    ];
+    const item: PermissionItem = {
+      kind: 'permission',
+      requestId,
+      tool: String(req.tool_name ?? 'tool'),
+      title: String(req.description ?? req.display_name ?? req.tool_name ?? ''),
+      input: req.input ?? null,
+      options,
+      decision: null,
+    };
+    this.permissions.set(requestId, { input: req.input, options, item });
+    return {
+      state: 'waiting-permission',
+      ops: [
+        {
+          op: 'append',
+          key: `perm:${requestId}`,
+          item,
+        },
+      ],
+    };
+  }
+
   private ingestInput(line: any): Ingest {
+    if (line?.type === 'control_response') {
+      const requestId = String(line.response?.request_id);
+      const p = this.permissions.get(requestId);
+      if (!p) return {};
+      this.permissions.delete(requestId);
+      const decision =
+        line.response?.response?.behavior === 'allow' ? 'allow' : 'deny';
+      return {
+        state: this.turnOpen ? 'working' : 'idle',
+        ops: [
+          {
+            op: 'update',
+            key: `perm:${requestId}`,
+            item: { ...p.item, decision: decision },
+          },
+        ],
+      };
+    }
     if (line?.type === 'user') {
       const c = line.message?.content;
       const text =

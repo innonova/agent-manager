@@ -15,6 +15,7 @@ import type {
   Ingest,
   Item,
   ItemOp,
+  Permissions,
 } from '../adapters/adapter.js';
 import { AdaptersService } from '../adapters/adapters.service.js';
 import {
@@ -36,6 +37,8 @@ export interface Agent {
   currentSessionId: string | null;
   createdAt: number;
   archivedAt: number | null;
+  /** Set at creation and applied when a session starts; `ask` makes gated tools wait for the human. */
+  permissions: Permissions;
 }
 
 export interface AgentSessionRef {
@@ -71,6 +74,7 @@ interface AgentRow {
   profile: string;
   cwd: string;
   vendor_conversation_id: string | null;
+  permissions: string | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -142,6 +146,7 @@ const toAgent = (r: AgentRow): Agent => ({
   profile: r.profile,
   cwd: r.cwd,
   vendorConversationId: r.vendor_conversation_id,
+  permissions: r.permissions === 'ask' ? 'ask' : 'bypass',
   currentSessionId: r.current_session_id,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
@@ -297,7 +302,12 @@ export class AgentsService
 
   async create(
     projectId: string,
-    input: { name?: unknown; profile?: unknown; cwd?: unknown },
+    input: {
+      name?: unknown;
+      profile?: unknown;
+      cwd?: unknown;
+      permissions?: unknown;
+    },
   ): Promise<{ agent: Agent; status: AgentStatus }> {
     const project = this.projects.get(projectId);
     if (this.deleting.has(projectId))
@@ -313,6 +323,12 @@ export class AgentsService
       throw new BadRequestException(`no adapter for profile "${profile}"`);
     if (input.cwd !== undefined && typeof input.cwd !== 'string')
       throw new BadRequestException('"cwd" must be a string');
+    const permissions: Permissions =
+      input.permissions === undefined
+        ? 'bypass'
+        : (input.permissions as Permissions);
+    if (permissions !== 'bypass' && permissions !== 'ask')
+      throw new BadRequestException('"permissions" must be "bypass" or "ask"');
     // cwd is one of the project's repos, by name or absolute path; default the primary.
     const cwd = input.cwd
       ? this.projects.repoOf(project, input.cwd as string)?.path
@@ -339,12 +355,21 @@ export class AgentsService
       currentSessionId: null,
       createdAt: Date.now(),
       archivedAt: null,
+      permissions,
     };
     this.db
       .prepare(
-        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(agent.id, projectId, agent.name, profile, cwd, agent.createdAt);
+      .run(
+        agent.id,
+        projectId,
+        agent.name,
+        profile,
+        cwd,
+        agent.createdAt,
+        permissions,
+      );
     const live = this.ensureLive(agent);
     try {
       await this.withLock(live, () => this.startSession(agent, live));
@@ -398,7 +423,11 @@ export class AgentsService
           );
       }
       await this.awaitStarting(live);
-      if (live.status.state === 'working' || live.status.state === 'starting')
+      if (
+        live.status.state === 'working' ||
+        live.status.state === 'starting' ||
+        live.status.state === 'waiting-permission'
+      )
         throw busy();
       const sl = live.sessions.get(agent.currentSessionId!);
       if (!sl) throw unavailable('session not tracked');
@@ -419,6 +448,29 @@ export class AgentsService
         throw asHttp(err);
       }
     });
+  }
+
+  /** Answers a pending permission request with one of its options; the adapter knows which are pending from the log. */
+  async decide(id: string, requestId: unknown, option: unknown): Promise<void> {
+    if (typeof requestId !== 'string' || typeof option !== 'string')
+      throw new BadRequestException('"requestId" and "option" are required');
+    const live = this.ensureLive(this.get(id));
+    const agent = this.get(id);
+    await live.synced;
+    const sl = agent.currentSessionId
+      ? live.sessions.get(agent.currentSessionId)
+      : undefined;
+    const lines = sl?.adapter.decide?.(requestId, option);
+    if (!lines)
+      throw new NotFoundException(
+        'no such pending permission request (or no such option)',
+      );
+    try {
+      for (const line of lines)
+        await this.daemon.input(agent.currentSessionId!, line);
+    } catch (err) {
+      throw asHttp(err);
+    }
   }
 
   async interrupt(id: string): Promise<void> {
@@ -572,6 +624,7 @@ export class AgentsService
         args: adapter.startArgs({
           resume: agent.vendorConversationId,
           extraDirs: this.extraDirs(agent),
+          permissions: agent.permissions,
         }),
         cwd: agent.cwd,
         label: `${LABEL_PREFIX}${agent.id}`,
@@ -617,6 +670,7 @@ export class AgentsService
         adapter.startLines({
           cwd: agent.cwd,
           resume: agent.vendorConversationId,
+          permissions: agent.permissions,
         }),
       );
     await this.reconcileCurrent(agent, live);

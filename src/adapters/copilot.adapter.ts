@@ -5,7 +5,12 @@ import type {
   Ingest,
   Item,
   ItemOp,
+  PermissionOption,
+  PermissionRequest,
+  Permissions,
 } from './adapter.js';
+
+type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
 /**
  * GitHub Copilot CLI as an Agent Client Protocol server (`copilot --acp`).
@@ -40,8 +45,42 @@ export class CopilotAdapter implements AgentAdapter {
 
   startArgs({
     extraDirs = [],
-  }: { resume?: string | null; extraDirs?: string[] } = {}): string[] {
-    return ['--allow-all', ...extraDirs.flatMap((d) => ['--add-dir', d])];
+    permissions = 'bypass',
+  }: {
+    resume?: string | null;
+    extraDirs?: string[];
+    permissions?: Permissions;
+  } = {}): string[] {
+    // Without --allow-all, Copilot asks through session/request_permission.
+    return [
+      ...(permissions === 'ask' ? [] : ['--allow-all']),
+      ...extraDirs.flatMap((d) => ['--add-dir', d]),
+    ];
+  }
+
+  /** request_permission requests not yet answered. */
+  private permissions = new Map<
+    string,
+    { options: PermissionOption[]; item: PermissionItem }
+  >();
+
+  pendingPermissions(): PermissionRequest[] {
+    return [...this.permissions].map(([requestId, p]) => ({
+      requestId,
+      options: p.options,
+    }));
+  }
+
+  decide(requestId: string, optionId: string): unknown[] | null {
+    const p = this.permissions.get(requestId);
+    if (!p || !p.options.some((o) => o.id === optionId)) return null;
+    return [
+      {
+        jsonrpc: '2.0',
+        id: Number(requestId),
+        result: { outcome: { outcome: 'selected', optionId } },
+      },
+    ];
   }
 
   startLines(opts: { cwd: string; resume?: string | null }): unknown[] {
@@ -114,24 +153,37 @@ export class CopilotAdapter implements AgentAdapter {
       case 'session/update':
         return this.ingestUpdate(line.params?.update);
       case 'session/request_permission': {
-        // Should not happen with --allow-all; answer with the first allowing option so nothing hangs.
-        const options: any[] = line.params?.options ?? [];
-        const opt =
-          options.find((o) => String(o.kind).startsWith('allow')) ?? options[0];
+        const requestId = String(line.id);
+        const tc = line.params?.toolCall ?? {};
+        const options: PermissionOption[] = (line.params?.options ?? []).map(
+          (o: any) => ({
+            id: String(o.optionId),
+            kind: String(o.kind).startsWith('allow_always')
+              ? 'allow-always'
+              : String(o.kind).startsWith('allow')
+                ? 'allow'
+                : 'deny',
+            label: String(o.name ?? o.optionId),
+          }),
+        );
+        const item: PermissionItem = {
+          kind: 'permission',
+          requestId,
+          tool: String(tc.kind ?? 'tool'),
+          title: String(tc.title ?? ''),
+          input: tc.rawInput ?? null,
+          options,
+          decision: null,
+        };
+        this.permissions.set(requestId, { options, item });
         return {
+          state: 'waiting-permission',
           ops: [
-            append({
-              kind: 'system',
-              text: `permission auto-granted: ${line.params?.toolCall?.title ?? 'tool call'}`,
-            }),
-          ],
-          send: [
+            ...this.endText(),
             {
-              jsonrpc: '2.0',
-              id: line.id,
-              result: {
-                outcome: { outcome: 'selected', optionId: opt?.optionId },
-              },
+              op: 'append',
+              key: `perm:${requestId}`,
+              item,
             },
           ],
         };
@@ -162,6 +214,30 @@ export class CopilotAdapter implements AgentAdapter {
           .join('');
         return { state: 'working', ops: [append({ kind: 'user', text })] };
       }
+    }
+    if (
+      line?.id !== undefined &&
+      line.method === undefined &&
+      line.result?.outcome
+    ) {
+      // Our answer to a permission request.
+      const requestId = String(line.id);
+      const p = this.permissions.get(requestId);
+      if (!p) return {};
+      this.permissions.delete(requestId);
+      return {
+        state: this.turnOpen ? 'working' : 'idle',
+        ops: [
+          {
+            op: 'update',
+            key: `perm:${requestId}`,
+            item: {
+              ...p.item,
+              decision: String(line.result.outcome.optionId ?? 'deny'),
+            },
+          },
+        ],
+      };
     }
     if (line?.method === 'session/cancel')
       return { ops: [append({ kind: 'system', text: 'interrupt requested' })] };

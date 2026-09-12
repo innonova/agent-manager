@@ -87,6 +87,14 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    // Columns added after the first release; CREATE TABLE IF NOT EXISTS does not add them.
+    const agentCols = (
+      this.db.prepare('PRAGMA table_info(agents)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!agentCols.includes('permissions'))
+      this.db.exec(
+        "ALTER TABLE agents ADD COLUMN permissions TEXT NOT NULL DEFAULT 'bypass'",
+      );
     // Projects created before repos existed: their path becomes the single repo.
     const legacy = this.db
       .prepare(

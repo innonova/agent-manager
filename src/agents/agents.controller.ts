@@ -69,6 +69,15 @@ export class AgentsController {
     return { ok: true };
   }
 
+  @Post('agents/:id/permission')
+  async permission(
+    @Param('id') id: string,
+    @Body() body: { requestId?: unknown; option?: unknown },
+  ): Promise<{ ok: true }> {
+    await this.agents.decide(id, body?.requestId, body?.option);
+    return { ok: true };
+  }
+
   @Post('agents/:id/interrupt')
   async interrupt(@Param('id') id: string): Promise<{ ok: true }> {
     await this.agents.interrupt(id);

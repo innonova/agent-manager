@@ -5,7 +5,12 @@ import type {
   Ingest,
   Item,
   ItemOp,
+  PermissionOption,
+  PermissionRequest,
+  Permissions,
 } from './adapter.js';
+
+type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
 /**
  * Drives fixtures/fake-agent.mjs, a stand-in agent that emits a realistic
@@ -18,8 +23,35 @@ export class FakeAdapter implements AgentAdapter {
   private texts = 0;
   private turnOpen = false;
 
-  startArgs({ resume }: { resume?: string | null }): string[] {
-    return resume ? ['--resume', resume] : [];
+  private pending = new Map<
+    string,
+    { options: PermissionOption[]; item: PermissionItem }
+  >();
+
+  startArgs({
+    resume,
+    permissions,
+  }: {
+    resume?: string | null;
+    permissions?: Permissions;
+  }): string[] {
+    return [
+      ...(resume ? ['--resume', resume] : []),
+      ...(permissions === 'ask' ? ['--ask'] : []),
+    ];
+  }
+
+  pendingPermissions(): PermissionRequest[] {
+    return [...this.pending].map(([requestId, p]) => ({
+      requestId,
+      options: p.options,
+    }));
+  }
+
+  decide(requestId: string, optionId: string): unknown[] | null {
+    const p = this.pending.get(requestId);
+    if (!p || !p.options.some((o) => o.id === optionId)) return null;
+    return [{ type: 'permission_response', id: requestId, decision: optionId }];
   }
 
   turnInProgress(): boolean {
@@ -55,6 +87,21 @@ export class FakeAdapter implements AgentAdapter {
         return {
           ops: [append({ kind: 'system', text: 'interrupt requested' })],
         };
+      if (line.type === 'permission_response') {
+        const p = this.pending.get(String(line.id));
+        if (!p) return {};
+        this.pending.delete(String(line.id));
+        return {
+          state: this.turnOpen ? 'working' : 'idle',
+          ops: [
+            {
+              op: 'update',
+              key: `perm:${line.id}`,
+              item: { ...p.item, decision: String(line.decision) },
+            },
+          ],
+        };
+      }
       return {};
     }
     switch (line.type) {
@@ -100,6 +147,33 @@ export class FakeAdapter implements AgentAdapter {
             },
           ],
         };
+      case 'permission_request': {
+        const options: PermissionOption[] = [
+          { id: 'allow', kind: 'allow', label: 'Allow' },
+          { id: 'allow-always', kind: 'allow-always', label: 'Always allow' },
+          { id: 'deny', kind: 'deny', label: 'Deny' },
+        ];
+        const item: PermissionItem = {
+          kind: 'permission',
+          requestId: String(line.id),
+          tool: String(line.tool),
+          title: String(line.title),
+          input: line.input ?? null,
+          options,
+          decision: null,
+        };
+        this.pending.set(String(line.id), { options, item });
+        return {
+          state: 'waiting-permission',
+          ops: [
+            {
+              op: 'append',
+              key: `perm:${line.id}`,
+              item,
+            },
+          ],
+        };
+      }
       case 'thinking':
         return { ops: [append({ kind: 'thinking', text: line.text })] };
       case 'tool_use':

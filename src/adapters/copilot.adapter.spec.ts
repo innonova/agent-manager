@@ -76,7 +76,7 @@ describe('CopilotAdapter', () => {
     expect(states).toEqual(['idle', 'working', 'idle', 'working', 'idle']);
   });
 
-  it('builds prompt and cancel lines once the session is known, and answers permission requests', () => {
+  it('builds prompt and cancel lines once the session is known, and surfaces permission requests', () => {
     const a = new CopilotAdapter();
     a.startLines({ cwd: '/w', resume: null });
     expect(a.turn('x')).toEqual([]);
@@ -107,7 +107,19 @@ describe('CopilotAdapter', () => {
         },
       }),
     });
-    expect(perm.send).toEqual([
+    // not answered by itself any more: it is the human's question
+    expect(perm.send).toBeUndefined();
+    expect(perm.state).toBe('waiting-permission');
+    expect(a.pendingPermissions()).toEqual([
+      {
+        requestId: '42',
+        options: [
+          { id: 'no', kind: 'deny', label: 'no' },
+          { id: 'yes', kind: 'allow', label: 'yes' },
+        ],
+      },
+    ]);
+    expect(a.decide('42', 'yes')).toEqual([
       {
         jsonrpc: '2.0',
         id: 42,
@@ -168,5 +180,42 @@ describe('CopilotAdapter', () => {
       'continued on its own',
     );
     expect((items[end + 3] as { text: string }).text).toBe('FINISHED');
+  });
+
+  it('in ask mode a request_permission waits for the human; the answer selects the vendor option', () => {
+    const adapter = new CopilotAdapter();
+    expect(adapter.startArgs({ permissions: 'ask' })).toEqual([]);
+    expect(adapter.startArgs({})).toEqual(['--allow-all']);
+    const records = loadFixture('copilot', 'permission.ndjson');
+    const { items, states } = replay(adapter, records);
+    expect(states).toContain('waiting-permission');
+    const perm = items.find((i) => i.kind === 'permission') as any;
+    expect(perm).toMatchObject({
+      tool: 'execute',
+      title: 'Print permission probe',
+      input: { command: 'echo PERMISSION_PROBE' },
+      decision: 'allow_once',
+    });
+    expect(perm.options).toEqual([
+      { id: 'allow_once', kind: 'allow', label: 'Allow once' },
+      { id: 'allow_always', kind: 'allow-always', label: 'Always allow' },
+      { id: 'reject_once', kind: 'deny', label: 'Deny' },
+    ]);
+    const fresh = new CopilotAdapter();
+    replay(
+      fresh,
+      records.slice(
+        0,
+        records.findIndex((r) => r.s === 'in' && r.d.includes('"outcome"')),
+      ),
+    );
+    const [pending] = fresh.pendingPermissions();
+    expect(fresh.decide(pending!.requestId, 'reject_once')).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: Number(pending!.requestId),
+        result: { outcome: { outcome: 'selected', optionId: 'reject_once' } },
+      },
+    ]);
   });
 });

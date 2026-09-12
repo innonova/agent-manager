@@ -186,4 +186,69 @@ describe('CodexAdapter', () => {
     };
     expect(result.output).toContain('BACKGROUND_DONE');
   });
+
+  it('in ask mode an approval request waits for the human; the decision echoes an available one', () => {
+    const adapter = new CodexAdapter();
+    const lines = adapter.startLines({ cwd: '/w', permissions: 'ask' });
+    void lines;
+    const records = loadFixture('codex', 'permission.ndjson');
+    const { items, states } = replay(adapter, records);
+    expect(states).toContain('waiting-permission');
+    const perm = items.find((i) => i.kind === 'permission') as any;
+    expect(perm).toMatchObject({ tool: 'command', decision: 'allow' });
+    expect(perm.input.command).toContain('touch');
+    expect(perm.options.map((o: any) => o.kind)).toEqual([
+      'allow',
+      'allow-always',
+      'deny',
+    ]);
+    const fresh = new CodexAdapter();
+    replay(
+      fresh,
+      records.slice(
+        0,
+        records.findIndex((r) => r.s === 'in' && r.d.includes('"decision"')),
+      ),
+    );
+    const [pending] = fresh.pendingPermissions();
+    expect(pending).toBeTruthy();
+    expect(fresh.decide(pending!.requestId, 'allow')).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: Number(pending!.requestId),
+        result: { decision: 'accept' },
+      },
+    ]);
+    expect(
+      (fresh.decide(pending!.requestId, 'allow-always') as any)[0].result
+        .decision,
+    ).toMatchObject({
+      acceptWithExecpolicyAmendment: expect.anything(),
+    });
+    expect(fresh.decide(pending!.requestId, 'deny')).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: Number(pending!.requestId),
+        result: { decision: 'cancel' },
+      },
+    ]);
+  });
+
+  it('ask mode starts the thread with on-request approvals in the workspace sandbox', () => {
+    const adapter = new CodexAdapter();
+    adapter.startLines({ cwd: '/w', permissions: 'ask' });
+    const { sent } = replay(adapter, [
+      {
+        seq: 1,
+        t: 0,
+        s: 'out',
+        d: JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }),
+      },
+    ]);
+    const start = sent.find((x) => x.line.method === 'thread/start');
+    expect(start?.line.params).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+    });
+  });
 });

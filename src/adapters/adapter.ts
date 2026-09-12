@@ -9,8 +9,35 @@ export type AgentState =
   | 'error'
   | 'exited';
 
+/** Whether the agent may act without asking, or must ask the human before gated tools. */
+export type Permissions = 'bypass' | 'ask';
+
+export interface PermissionOption {
+  /** The vendor's own id for the choice; sent back as is. */
+  id: string;
+  kind: 'allow' | 'allow-always' | 'deny';
+  label: string;
+}
+
+export interface PermissionRequest {
+  requestId: string;
+  options: PermissionOption[];
+}
+
 export type Item =
   | { kind: 'user'; text: string }
+  | {
+      kind: 'permission';
+      requestId: string;
+      /** The tool or action kind, e.g. Bash, Write, shell, execute. */
+      tool: string;
+      /** What the agent wants to do, in the vendor's words. */
+      title: string;
+      input: unknown;
+      options: PermissionOption[];
+      /** The option id chosen, once decided. */
+      decision: string | null;
+    }
   | { kind: 'text'; text: string; streaming: boolean }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
@@ -65,9 +92,21 @@ export interface AgentAdapter {
   /** State right after the process starts, before it has said anything. Default 'starting'. */
   readonly initialState?: AgentState;
   /** Extra daemon args for a new session; `resume` is the vendor conversation id. */
-  startArgs(opts: { resume?: string | null; extraDirs?: string[] }): string[];
+  startArgs(opts: {
+    resume?: string | null;
+    extraDirs?: string[];
+    permissions?: Permissions;
+  }): string[];
   /** stdin lines to send once the session is running and attached (protocol handshakes). */
-  startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
+  startLines?(opts: {
+    cwd: string;
+    resume?: string | null;
+    permissions?: Permissions;
+  }): unknown[];
+  /** Permission requests the vendor is waiting on, from the log so far. */
+  pendingPermissions?(): PermissionRequest[];
+  /** stdin lines answering a pending request with one of its options; null if no such request. */
+  decide?(requestId: string, optionId: string): unknown[] | null;
   /** stdin lines for a user turn. */
   turn(text: string): unknown[];
   /** stdin lines to interrupt the current turn, if supported. */

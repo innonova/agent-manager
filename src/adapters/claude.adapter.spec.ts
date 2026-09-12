@@ -383,4 +383,50 @@ describe('ClaudeAdapter', () => {
     }
     expect(seen).toEqual([1, 0]);
   });
+
+  it('in ask mode a can_use_tool request waits for the human; our control_response settles it', () => {
+    const adapter = new ClaudeAdapter();
+    expect(adapter.startArgs({ permissions: 'ask' })).toEqual([
+      '--permission-prompt-tool',
+      'stdio',
+    ]);
+    expect(adapter.startArgs({})).toEqual(['--dangerously-skip-permissions']);
+    const records = load('permission.ndjson');
+    const { items, states } = run(adapter, records);
+    expect(states).toContain('waiting-permission');
+    const perm = items.find((i) => i.kind === 'permission') as any;
+    expect(perm).toMatchObject({
+      tool: 'Write',
+      title: 'probe.txt',
+      input: {
+        file_path: expect.stringMatching(/probe\.txt$/),
+        content: 'hello',
+      },
+      decision: 'allow', // the recording answered allow
+    });
+    expect(perm.options.map((o: any) => o.kind)).toEqual(['allow', 'deny']);
+    // replaying up to the request only: it is pending, and decide() builds the answer
+    const fresh = new ClaudeAdapter();
+    const upTo = records.slice(
+      0,
+      records.findIndex(
+        (r) => r.s === 'in' && r.d.includes('control_response'),
+      ),
+    );
+    run(fresh, upTo);
+    const [pending] = fresh.pendingPermissions();
+    expect(pending).toBeTruthy();
+    expect(fresh.decide(pending!.requestId, 'deny')).toEqual([
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: pending!.requestId,
+          response: { behavior: 'deny', message: 'The user denied this.' },
+        },
+      },
+    ]);
+    expect(fresh.decide('nope', 'allow')).toBeNull();
+    expect(fresh.decide(pending!.requestId, 'maybe')).toBeNull();
+  });
 });

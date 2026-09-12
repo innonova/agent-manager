@@ -53,7 +53,7 @@ Copilot's ACP.
 |---|---|
 | An agent may span several daemon sessions | A headless process exits (end of input, daemon restart, crash) but the conversation continues via the vendor's resume; the user thinks in agents, not processes. |
 | Idle agent processes stay alive | Instant next turn, intact context; memory is cheap on the VM. An idle timeout with automatic resume is a later feature. |
-| Permissions bypassed by default | The VM is isolated for exactly this purpose, and humans approving tool calls one by one is the weaker control anyway. Interactive permissions are a later, opt-in feature; the state model reserves a state for it. |
+| Permissions are per agent: `bypass` (default) or `ask` | Bypass is the dogfooding mode on an isolated VM. Ask keeps each vendor's own gate (Claude's prompt over stdio, Codex's approval requests with its workspace sandbox, Copilot's ACP permission requests) and routes the question to the human as a `permission` transcript item with the vendor's options; the answer goes back in the vendor's protocol. Chosen at creation, applied when a session starts. No per-agent allowlists in the manager: what is gated is the vendor's business. |
 | A project is an ordered set of repositories, the first one primary | Real work spans several repos (this system is three). An agent's cwd is one repo; the others are handed to the CLI as extra directories (`--add-dir` for Claude Code and Copilot; Codex runs with full sandbox access and needs nothing). The primary repo is the default cwd and the default home of new features. |
 | Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
 | SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
@@ -89,7 +89,7 @@ Copilot's ACP.
 ```
 User      { id, name, passwordHash, createdAt }
 Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }   // path = repos[0].path
-Agent     { id, projectId, name, profile, cwd, vendorConversationId | null,
+Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
 Feature   { projectId, repo, slug, title, status, priority, profile?, dependsOn[] }   // derived from files, not stored
@@ -124,7 +124,7 @@ One model for all vendors, derived by the adapter from the line stream:
 | `idle` | ready for a turn |
 | `working` | a turn is in progress |
 | `waiting-input` | the agent asked the user a question and stopped (vendor-specific; e.g. ACP `end_turn` after a question is still `idle`, so this is mostly reserved) |
-| `waiting-permission` | reserved for the interactive-permissions feature |
+| `waiting-permission` | the vendor asked whether it may use a gated tool and is blocked until the human answers (agents created with `permissions: ask`); the request is a `permission` transcript item with the vendor's options |
 | `error` | the vendor reported an error that ended the turn (usage limit, auth, API error); the process may still be alive |
 | `exited` | no live session; resumable |
 
@@ -218,6 +218,21 @@ from the `in` records, so request ids stay consistent after a restart.
 Adapters are pure: a log record in, items and state out. Tests feed them
 recorded logs from real sessions (`test/fixtures/<vendor>/*.ndjson`) and
 assert the items and state sequence.
+
+Permissions in ask mode, verified 2026-09-12 by asking each CLI for a
+gated action with nothing bypassed: Claude needs `--permission-prompt-tool
+stdio` (without it gated tools are simply denied) and then emits a
+`control_request` of subtype `can_use_tool` that we answer with a
+`control_response` of behaviour allow (echoing the input) or deny; Codex
+is started with `approvalPolicy: on-request` and `sandbox:
+workspace-write` and sends `item/*/requestApproval` server requests whose
+`availableDecisions` (accept, accept with an exec-policy amendment which
+means always allow this command, cancel) we echo back as the decision;
+Copilot without `--allow-all` sends `session/request_permission` with
+options (allow once, allow always, deny) answered by option id. The
+adapters normalise the options to allow, allow-always and deny, remember
+what is pending from the log (so a restart loses nothing), and mark the
+item decided when our answer appears as an input record.
 
 ## Transcript items
 
@@ -395,10 +410,11 @@ PATCH  /api/projects/:id            same fields; `repos` replaces the whole list
 DELETE /api/projects/:id            (does not touch the repository)
 
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }
-POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo
+POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=<n>                           -> { items: StoredItem[] }, n a non-negative integer index
 POST   /api/agents/:id/turn         { text }                    -> 202; 409 { code: 'agent-busy' } while a turn runs; 503 { code: 'agent-unavailable' } if the session's output cannot be attached
+POST   /api/agents/:id/permission { requestId, option }       -> answers a pending permission request with one of the options the item offered; 404 if none is pending
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/archive
@@ -527,8 +543,11 @@ running in the daemon and are re-adopted on start.
    repository, with a read cursor per user ("what changed since I last
    looked") and a range per feature; the UI shows the changed files and a
    Monaco diff. See "Changes" in the API and the decisions table.
-6. Later, each needing its own discussion:
-   worktrees and multi-agent coordination; interactive permissions;
+6. **Interactive permissions** (done): `permissions: ask` per agent, the
+   vendor's gate routed to the human as a transcript item. See the
+   decisions table and Adapters.
+7. Later, each needing its own discussion:
+   worktrees and multi-agent coordination;
    idle timeout and automatic resume; clone-from-URL; roles; log
    retention.
 
