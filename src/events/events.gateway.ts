@@ -33,7 +33,10 @@ export class EventsGateway
   private readonly logger = new Logger(EventsGateway.name);
   /** socket -> the login session it was authenticated with */
   private readonly clients = new Map<WebSocket, string>();
+  /** Sockets that answered the last ping (or are new); the rest are dead. */
+  private readonly alive = new Set<WebSocket>();
   private sweep: NodeJS.Timeout | null = null;
+  private pinger: NodeJS.Timeout | null = null;
 
   constructor(
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
@@ -77,10 +80,28 @@ export class EventsGateway
         if (!this.auth.userForSession(sid)) c.close(4401, 'session expired');
     }, 60_000);
     this.sweep.unref();
+    // An idle websocket carries nothing, and reverse proxies close idle
+    // tunnels (haproxy after 50 s by default). Pinging keeps them open
+    // wherever the manager is deployed; a client that does not answer by
+    // the next ping is gone and is dropped rather than kept as a ghost.
+    this.pinger = setInterval(() => {
+      for (const c of this.clients.keys()) {
+        if (c.readyState !== c.OPEN) continue;
+        if (!this.alive.has(c)) {
+          c.terminate();
+          this.clients.delete(c);
+          continue;
+        }
+        this.alive.delete(c);
+        c.ping();
+      }
+    }, this.config.eventsPingMs);
+    this.pinger.unref();
   }
 
   onModuleDestroy(): void {
     if (this.sweep) clearInterval(this.sweep);
+    if (this.pinger) clearInterval(this.pinger);
   }
 
   handleConnection(client: WebSocket, req: IncomingMessage): void {
@@ -101,6 +122,8 @@ export class EventsGateway
       return;
     }
     this.clients.set(client, sessionId);
+    this.alive.add(client);
+    client.on('pong', () => this.alive.add(client));
     client.send(
       JSON.stringify({
         type: 'hello',
@@ -112,6 +135,7 @@ export class EventsGateway
 
   handleDisconnect(client: WebSocket): void {
     this.clients.delete(client);
+    this.alive.delete(client);
   }
 
   private broadcast(frame: Record<string, unknown>): void {

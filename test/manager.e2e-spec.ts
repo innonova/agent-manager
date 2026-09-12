@@ -163,6 +163,30 @@ describe('auth', () => {
   });
 });
 
+describe('events keepalive', () => {
+  it('pings clients so idle sockets survive proxies', async () => {
+    const m2 = await startManager(daemon.url, undefined, { eventsPingMs: 150 });
+    try {
+      const api2 = new Api(m2.url);
+      await api2.login();
+      const e = await Events.connect(m2.url, api2.cookie);
+      const pinged = await new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(false), 2000);
+        e.ws.once('ping', () => {
+          clearTimeout(t);
+          resolve(true);
+        });
+      });
+      expect(pinged).toBe(true);
+      await sleep(400); // several ping rounds; the ws client answers them
+      expect(e.ws.readyState).toBe(WebSocket.OPEN);
+      await e.close();
+    } finally {
+      await m2.stop();
+    }
+  });
+});
+
 describe('projects', () => {
   it('creates, lists with counts, updates and deletes', async () => {
     const p = await createProject('proj');

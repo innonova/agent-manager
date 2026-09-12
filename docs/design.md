@@ -399,8 +399,11 @@ host or `AGENT_MANAGER_PUBLIC_ORIGIN` (403 otherwise). Requests without an
 
 ### Websocket `/api/events`
 
-Authenticated on upgrade with the same cookie. Server to client only in
-milestone one; every frame has a `type`:
+Authenticated on upgrade with the same cookie. The manager pings every
+client on an interval (`AGENT_MANAGER_EVENTS_PING_MS`, 25 s) so an idle
+socket carries traffic and reverse proxies keep it open; a client that
+has not answered by the next ping is terminated. Server to client only
+in milestone one; every frame has a `type`:
 
 ```
 hello            { user, daemon: { connected } }   // first frame after the upgrade
@@ -446,6 +449,7 @@ swept once a minute.
 | `AGENT_MANAGER_SECURE_COOKIE` | `0` | force Secure cookies |
 | `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
 | `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
+| `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
 
 The built UI's static assets and the SPA fallback are served without

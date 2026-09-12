@@ -19,6 +19,8 @@ export interface ManagerConfig {
   loginAttemptsPerMinute: number;
   /** Reverse proxies whose X-Forwarded-For is trusted (express trust proxy values). */
   trustedProxies: string[];
+  /** Interval of websocket pings on /api/events; keeps idle sockets alive through proxies. */
+  eventsPingMs: number;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -67,5 +69,6 @@ export function loadConfig(
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    eventsPingMs: Number(env.AGENT_MANAGER_EVENTS_PING_MS ?? 25_000),
   };
 }
