@@ -163,6 +163,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             await this.withLock(live, () => this.startSession(agent, live));
         }
         catch (err) {
+            if (err instanceof DaemonError && err.code === 'disconnected') {
+                throw asHttp(err);
+            }
             this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
             this.live.delete(agent.id);
             throw asHttp(err);
@@ -194,6 +197,13 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 await this.attachSession(agent, live, sl);
                 if (!sl.replayed)
                     throw unavailable('the session log could not be read');
+                agent = this.get(id);
+                if (!agent.currentSessionId)
+                    throw unavailable('the session had ended; send the turn again to resume');
+                await this.awaitStarting(live);
+                const now = live.status.state;
+                if (now === 'working' || now === 'starting')
+                    throw busy();
             }
             const before = live.status;
             this.setState(agent, live, 'working', null);
@@ -277,10 +287,18 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         catch (err) {
             if (!(err instanceof DaemonError))
                 throw err;
-            if (err.code === 'disconnected')
+            if (err.code === 'disconnected' || err.code === 'not-connected')
                 throw unavailable(err.message);
-            if (err.code !== 'unknown-session')
-                await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
+            if (err.code !== 'unknown-session') {
+                try {
+                    await this.daemon.signal(id, 'SIGTERM');
+                }
+                catch (e2) {
+                    if (!(e2 instanceof DaemonError) ||
+                        (e2.code !== 'unknown-session' && e2.code !== 'session-not-running'))
+                        throw asHttp(e2);
+                }
+            }
         }
         if (!wait)
             return;
@@ -310,19 +328,38 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
     }
     async startSession(agent, live) {
         const adapter = this.adapters.create(agent.profile);
-        const session = await this.daemon.start({
-            profile: agent.profile,
-            args: adapter.startArgs({ resume: agent.vendorConversationId }),
-            cwd: agent.cwd,
-            label: `${LABEL_PREFIX}${agent.id}`,
-        });
+        const id = randomUUID();
         this.db
             .prepare('INSERT INTO agent_sessions (daemon_session_id, agent_id, started_at) VALUES (?, ?, ?)')
-            .run(session.id, agent.id, session.startedAt);
+            .run(id, agent.id, Date.now());
         this.db
             .prepare('UPDATE agents SET current_session_id = ? WHERE id = ?')
-            .run(session.id, agent.id);
-        agent.currentSessionId = session.id;
+            .run(id, agent.id);
+        agent.currentSessionId = id;
+        let session;
+        try {
+            session = await this.daemon.start({
+                id,
+                profile: agent.profile,
+                args: adapter.startArgs({ resume: agent.vendorConversationId }),
+                cwd: agent.cwd,
+                label: `${LABEL_PREFIX}${agent.id}`,
+            });
+        }
+        catch (err) {
+            if (err instanceof DaemonError && err.code === 'disconnected') {
+                this.setState(agent, live, 'exited', null);
+                throw err;
+            }
+            this.db
+                .prepare('DELETE FROM agent_sessions WHERE daemon_session_id = ?')
+                .run(id);
+            this.db
+                .prepare('UPDATE agents SET current_session_id = NULL WHERE id = ? AND current_session_id = ?')
+                .run(agent.id, id);
+            agent.currentSessionId = null;
+            throw err;
+        }
         const sl = this.trackSession(agent, live, session.id, adapter);
         this.appendItem(agent.id, live, session.id, 0, {
             kind: 'system',
@@ -348,8 +385,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 adapter,
                 lastSeq: 0,
                 replayed: false,
+                complete: false,
                 attaching: false,
                 pendingExit: null,
+                pendingBoundary: null,
                 suspended: false,
                 startedBoundary: false,
                 endedBoundary: false,
@@ -366,6 +405,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         try {
             await this.daemon.attach(sl.id, sl.lastSeq + 1);
             sl.replayed = true;
+            sl.complete = true;
         }
         catch (err) {
             sl.replayed = false;
@@ -383,6 +423,24 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             sl.pendingExit = null;
             this.applyExit(agent, live, s);
         }
+        if (sl.pendingBoundary && sl.complete) {
+            const s = sl.pendingBoundary;
+            sl.pendingBoundary = null;
+            this.endBoundary(agent, live, sl, s);
+        }
+    }
+    endBoundary(agent, live, sl, session) {
+        if (sl.endedBoundary)
+            return;
+        if (!sl.complete || sl.attaching) {
+            sl.pendingBoundary = session;
+            return;
+        }
+        this.appendItem(agent.id, live, session.id, 0, {
+            kind: 'system',
+            text: `session ended${exitWhy(session)}`,
+        });
+        sl.endedBoundary = true;
     }
     async reconcileCurrent(agent, live) {
         const fresh = this.find(agent.id);
@@ -485,14 +543,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         if (cleared === 0)
             return;
         agent.currentSessionId = null;
-        const sl = live.sessions.get(session.id);
-        if (!sl?.endedBoundary)
-            this.appendItem(agent.id, live, session.id, 0, {
-                kind: 'system',
-                text: `session ended${exitWhy(session)}`,
-            });
-        if (sl)
-            sl.endedBoundary = true;
+        const sl = live.sessions.get(session.id) ??
+            this.trackSession(agent, live, session.id, this.adapters.create(agent.profile));
+        this.endBoundary(agent, live, sl, session);
         this.setState(agent, live, 'exited', null);
         this.emit('session', agent.id, {
             daemonSessionId: session.id,
@@ -511,14 +564,21 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             .then(() => this.resync(generation))
             .catch((err) => this.logger.error(`resync failed: ${err.message}`))
             .finally(() => {
-            for (const live of this.live.values())
-                live.markSynced();
+            if (generation === this.resyncGeneration)
+                for (const live of this.live.values())
+                    live.markSynced();
         });
     }
     gate(live) {
+        if (live.syncPending)
+            return;
         const d = deferred();
+        live.syncPending = true;
         live.synced = d.promise;
-        live.markSynced = d.resolve;
+        live.markSynced = () => {
+            live.syncPending = false;
+            d.resolve();
+        };
     }
     onDaemonLost() {
         for (const live of this.live.values()) {
@@ -546,14 +606,14 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 this.adoptSessions(agent, sessions);
                 let refs = this.sessions(agent.id);
                 const failedEarlier = refs.some((ref, i) => i < refs.length - 1 &&
-                    live.sessions.get(ref.daemonSessionId)?.replayed === false &&
-                    live.sessions.get(ref.daemonSessionId)?.lastSeq === 0);
+                    live.sessions.get(ref.daemonSessionId)?.complete === false);
                 if (failedEarlier && live.items.length > 0) {
                     this.logger.log(`agent ${agent.id}: rebuilding transcript so recovered history keeps its order`);
                     live.items = [];
                     for (const sl of live.sessions.values()) {
                         sl.lastSeq = 0;
                         sl.replayed = false;
+                        sl.complete = false;
                         sl.suspended = true;
                         sl.startedBoundary = false;
                         sl.endedBoundary = false;
@@ -591,13 +651,8 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                     if (s.state === 'exited' && !sl.pendingExit) {
                         if (isCurrent)
                             this.applyExit(agent, live, s);
-                        else if (!sl.endedBoundary) {
-                            this.appendItem(agent.id, live, s.id, 0, {
-                                kind: 'system',
-                                text: `session ended${exitWhy(s)}`,
-                            });
-                            sl.endedBoundary = true;
-                        }
+                        else
+                            this.endBoundary(agent, live, sl, s);
                         if (ref.endedAt === null)
                             this.db
                                 .prepare('UPDATE agent_sessions SET ended_at = ? WHERE daemon_session_id = ?')
@@ -656,6 +711,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 lock: Promise.resolve(),
                 synced: Promise.resolve(),
                 markSynced: () => undefined,
+                syncPending: false,
             };
             this.live.set(agent.id, live);
         }
@@ -667,6 +723,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         return run;
     }
     async withLockOrForce(live, agentId, fn) {
+        await Promise.race([
+            live.synced,
+            new Promise((r) => setTimeout(r, LOCK_PATIENCE_MS)),
+        ]);
         let acquired = false;
         const run = this.withLock(live, () => {
             acquired = true;

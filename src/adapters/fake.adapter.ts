@@ -22,6 +22,10 @@ export class FakeAdapter implements AgentAdapter {
     return resume ? ['--resume', resume] : [];
   }
 
+  turnInProgress(): boolean {
+    return this.turnOpen;
+  }
+
   turn(text: string): unknown[] {
     return [{ type: 'user', text }];
   }

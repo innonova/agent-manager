@@ -160,6 +160,11 @@ const deferred = (): { promise: Promise<void>; resolve: () => void } => {
   return { promise, resolve };
 };
 
+const live_of = (
+  svc: { ensureLiveFor(agent: Agent): Live },
+  agent: Agent,
+): Live => svc.ensureLiveFor(agent);
+
 const busy = () =>
   new HttpException(
     { statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' },
@@ -366,26 +371,26 @@ export class AgentsService
         await this.startSession(agent, live);
         agent = this.get(id);
       }
-      await this.awaitStarting(live);
-      if (live.status.state === 'working' || live.status.state === 'starting')
-        throw busy();
-      const sl = live.sessions.get(agent.currentSessionId!);
-      if (!sl) throw unavailable('session not tracked');
-      if (!sl.replayed) {
-        // Never accept input for output we cannot see; try once more right now.
-        await this.attachSession(agent, live, sl);
-        if (!sl.replayed)
+      const attached = live.sessions.get(agent.currentSessionId!);
+      if (!attached) throw unavailable('session not tracked');
+      if (!attached.replayed) {
+        // Never accept input for output we cannot see, and never judge
+        // busy on state that predates a lost link: catch up first.
+        await this.attachSession(agent, live, attached);
+        if (!attached.replayed)
           throw unavailable('the session log could not be read');
-        // The replay may have revealed an unfinished turn or an exit.
+        this.reconcileTurnState(agent, live, attached);
         agent = this.get(id);
         if (!agent.currentSessionId)
           throw unavailable(
             'the session had ended; send the turn again to resume',
           );
-        await this.awaitStarting(live);
-        const now = (live.status as AgentStatus).state;
-        if (now === 'working' || now === 'starting') throw busy();
       }
+      await this.awaitStarting(live);
+      if (live.status.state === 'working' || live.status.state === 'starting')
+        throw busy();
+      const sl = live.sessions.get(agent.currentSessionId!);
+      if (!sl) throw unavailable('session not tracked');
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
       const before = live.status;
@@ -394,7 +399,11 @@ export class AgentsService
         for (const line of sl.adapter.turn(text))
           await this.daemon.input(agent.currentSessionId!, line);
       } catch (err) {
-        if ((live.status as AgentStatus).state === 'working')
+        // A request lost in flight may still have been delivered; the resync
+        // reconciles that from the log. Only a certain refusal reverts.
+        const uncertain =
+          err instanceof DaemonError && err.code === 'disconnected';
+        if (!uncertain && (live.status as AgentStatus).state === 'working')
           this.setState(agent, live, before.state, before.error);
         throw asHttp(err);
       }
@@ -477,6 +486,11 @@ export class AgentsService
    * it being gone. Losing the daemon meanwhile is an error, not an exit.
    */
   private async stopLocked(agent: Agent, wait = false): Promise<void> {
+    if (!agent.currentSessionId && live_of(this, agent).syncPending) {
+      // The resync has not reached this agent yet; an empty pointer proves
+      // nothing until adoption has had its say.
+      this.adoptSessions(agent, await this.daemon.listSessions());
+    }
     const id = agent.currentSessionId;
     if (!id) return;
     try {
@@ -625,6 +639,7 @@ export class AgentsService
       sl.complete = true;
     } catch (err) {
       sl.replayed = false;
+      sl.complete = false; // the tail past the cursor is not ours yet
       this.logger.warn(
         `replay of ${sl.id} for agent ${agent.id} failed: ${(err as Error).message}`,
       );
@@ -664,6 +679,20 @@ export class AgentsService
       text: `session ended${exitWhy(session)}`,
     });
     sl.endedBoundary = true;
+  }
+
+  /**
+   * After catching up the current session: an optimistic `working` set
+   * for a turn whose acknowledgement was lost is confirmed or dropped by
+   * what the adapter actually saw in the log.
+   */
+  private reconcileTurnState(agent: Agent, live: Live, sl: SessionLive): void {
+    const open = sl.adapter.turnInProgress?.();
+    if (open === undefined) return;
+    if (live.status.state === 'working' && !open)
+      this.setState(agent, live, 'idle', null);
+    if (live.status.state === 'idle' && open)
+      this.setState(agent, live, 'working', null);
   }
 
   /** After attaching to the current session, make sure a session that already died is treated as such. */
@@ -938,8 +967,11 @@ export class AgentsService
             !sl.replayed ||
             sl.lastSeq < s.lastSeq ||
             (isCurrent && s.state === 'running')
-          )
+          ) {
             await this.attachSession(agent, live, sl);
+            if (isCurrent && s.state === 'running')
+              this.reconcileTurnState(agent, live, sl);
+          }
           if (s.state === 'exited' && !sl.pendingExit) {
             if (isCurrent) this.applyExit(agent, live, s);
             else this.endBoundary(agent, live, sl, s);
@@ -1000,6 +1032,11 @@ export class AgentsService
   }
 
   // ---- helpers ------------------------------------------------------------
+
+  /** Exposed for helpers outside the class. */
+  ensureLiveFor(agent: Agent): Live {
+    return this.ensureLive(agent);
+  }
 
   private ensureLive(agent: Agent): Live {
     let live = this.live.get(agent.id);

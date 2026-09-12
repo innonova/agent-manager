@@ -57,6 +57,8 @@ export interface AgentAdapter {
   turn(text: string): unknown[];
   /** stdin lines to interrupt the current turn, if supported. */
   interrupt?(): unknown[];
+  /** Whether the log so far shows a turn without its result yet. */
+  turnInProgress?(): boolean;
   ingest(record: LogRecord): Ingest;
 }
 

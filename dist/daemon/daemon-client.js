@@ -120,7 +120,7 @@ let DaemonClient = DaemonClient_1 = class DaemonClient extends EventEmitter {
     }
     request(frame) {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            return Promise.reject(new DaemonError('disconnected', 'daemon is not connected'));
+            return Promise.reject(new DaemonError('not-connected', 'daemon is not connected'));
         }
         const ref = String(this.nextRef++);
         return new Promise((resolve, reject) => {

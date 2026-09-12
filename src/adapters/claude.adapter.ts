@@ -34,6 +34,10 @@ export class ClaudeAdapter implements AgentAdapter {
     return args;
   }
 
+  turnInProgress(): boolean {
+    return this.turnOpen;
+  }
+
   turn(text: string): unknown[] {
     return [{ type: 'user', message: { role: 'user', content: text } }];
   }

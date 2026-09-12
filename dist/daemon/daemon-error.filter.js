@@ -9,9 +9,7 @@ import { DaemonError } from './daemon-client.js';
 let DaemonErrorFilter = class DaemonErrorFilter {
     catch(err, host) {
         const res = host.switchToHttp().getResponse();
-        res
-            .status(503)
-            .json({
+        res.status(503).json({
             statusCode: 503,
             code: 'agent-unavailable',
             daemonCode: err.code,

@@ -67,6 +67,7 @@ export declare class DaemonClient extends EventEmitter<DaemonEvents> implements 
     getSession(id: string): Promise<DaemonSession>;
     listProfiles(): Promise<DaemonProfile[]>;
     start(req: {
+        id?: string;
         profile: string;
         args?: string[];
         cwd?: string;
