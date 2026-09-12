@@ -7,13 +7,11 @@ import { DaemonError } from './daemon-client.js';
 export class DaemonErrorFilter implements ExceptionFilter {
   catch(err: DaemonError, host: ArgumentsHost): void {
     const res = host.switchToHttp().getResponse<Response>();
-    res
-      .status(503)
-      .json({
-        statusCode: 503,
-        code: 'agent-unavailable',
-        daemonCode: err.code,
-        message: `agent unavailable: ${err.message}`,
-      });
+    res.status(503).json({
+      statusCode: 503,
+      code: 'agent-unavailable',
+      daemonCode: err.code,
+      message: `agent unavailable: ${err.message}`,
+    });
   }
 }

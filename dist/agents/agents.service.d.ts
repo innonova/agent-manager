@@ -92,6 +92,8 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private onSessionChanged;
     private applyExit;
     private scheduleResync;
+    private gate;
+    private onDaemonLost;
     private resync;
     private adoptSessions;
     private ensureLive;

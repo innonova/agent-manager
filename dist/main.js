@@ -6,10 +6,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AppModule } from './app.module.js';
 import { MANAGER_CONFIG } from './config/config.js';
+import { DaemonErrorFilter } from './daemon/daemon-error.filter.js';
 import { originAllowed } from './origin.js';
 export async function createApp(overrides = {}, options = {}) {
     const app = await NestFactory.create(AppModule.forRoot(overrides), { logger: options.quiet ? false : ['log', 'warn', 'error'] });
     app.useWebSocketAdapter(new WsAdapter(app));
+    app.useGlobalFilters(new DaemonErrorFilter());
     app.use(express.json({ limit: '1mb' }));
     const config = app.get(MANAGER_CONFIG);
     if (config.trustedProxies.length)

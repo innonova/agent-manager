@@ -82,9 +82,13 @@ interface SessionLive {
   lastSeq: number;
   /** The last attach with replay on the current socket succeeded; the cursor is at the daemon's boundary as of then. */
   replayed: boolean;
+  /** The log has been replayed to the daemon's boundary at least once (survives a socket loss). */
+  complete: boolean;
   attaching: boolean;
   /** Exit notice that arrived before the log was replayed; applied once it is. */
   pendingExit: DaemonSession | null;
+  /** Exit already applied (state, pointer) but its boundary item waits for the replay to finish. */
+  pendingBoundary: DaemonSession | null;
   /** Records are ignored (not even cursored) until the next replay attach; set while a rebuild is pending. */
   suspended: boolean;
   /** Boundary items written for this session, so a rebuild can write them again. */
@@ -103,6 +107,7 @@ interface Live {
   /** Resolves once the pending resync has handled this agent; commands wait for it. */
   synced: Promise<void>;
   markSynced: () => void;
+  syncPending: boolean;
 }
 
 export interface AgentEvents {
@@ -328,6 +333,11 @@ export class AgentsService
     try {
       await this.withLock(live, () => this.startSession(agent, live));
     } catch (err) {
+      if (err instanceof DaemonError && err.code === 'disconnected') {
+        // The daemon may well have started the process; the recorded
+        // session id lets the next resync find out and adopt or forget it.
+        throw asHttp(err);
+      }
       // No process, no agent: leave nothing behind for the user to wonder about.
       this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
       this.live.delete(agent.id);
@@ -366,6 +376,15 @@ export class AgentsService
         await this.attachSession(agent, live, sl);
         if (!sl.replayed)
           throw unavailable('the session log could not be read');
+        // The replay may have revealed an unfinished turn or an exit.
+        agent = this.get(id);
+        if (!agent.currentSessionId)
+          throw unavailable(
+            'the session had ended; send the turn again to resume',
+          );
+        await this.awaitStarting(live);
+        const now = (live.status as AgentStatus).state;
+        if (now === 'working' || now === 'starting') throw busy();
       }
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
@@ -464,9 +483,19 @@ export class AgentsService
       await this.daemon.endInput(id);
     } catch (err) {
       if (!(err instanceof DaemonError)) throw err;
-      if (err.code === 'disconnected') throw unavailable(err.message);
-      if (err.code !== 'unknown-session')
-        await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
+      if (err.code === 'disconnected' || err.code === 'not-connected')
+        throw unavailable(err.message);
+      if (err.code !== 'unknown-session') {
+        try {
+          await this.daemon.signal(id, 'SIGTERM');
+        } catch (e2) {
+          if (
+            !(e2 instanceof DaemonError) ||
+            (e2.code !== 'unknown-session' && e2.code !== 'session-not-running')
+          )
+            throw asHttp(e2);
+        }
+      }
     }
     if (!wait) return;
     for (const [signal, ms] of [
@@ -496,21 +525,44 @@ export class AgentsService
   /** Starts a new daemon session for the agent. Ownership is registered before any output is consumed. */
   private async startSession(agent: Agent, live: Live): Promise<void> {
     const adapter = this.adapters.create(agent.profile);
-    const session = await this.daemon.start({
-      profile: agent.profile,
-      args: adapter.startArgs({ resume: agent.vendorConversationId }),
-      cwd: agent.cwd,
-      label: `${LABEL_PREFIX}${agent.id}`,
-    });
+    // The session id is ours and recorded first: if the reply is lost, the
+    // next resync can still tell whether the process exists.
+    const id = randomUUID();
     this.db
       .prepare(
         'INSERT INTO agent_sessions (daemon_session_id, agent_id, started_at) VALUES (?, ?, ?)',
       )
-      .run(session.id, agent.id, session.startedAt);
+      .run(id, agent.id, Date.now());
     this.db
       .prepare('UPDATE agents SET current_session_id = ? WHERE id = ?')
-      .run(session.id, agent.id);
-    agent.currentSessionId = session.id;
+      .run(id, agent.id);
+    agent.currentSessionId = id;
+    let session: DaemonSession;
+    try {
+      session = await this.daemon.start({
+        id,
+        profile: agent.profile,
+        args: adapter.startArgs({ resume: agent.vendorConversationId }),
+        cwd: agent.cwd,
+        label: `${LABEL_PREFIX}${agent.id}`,
+      });
+    } catch (err) {
+      if (err instanceof DaemonError && err.code === 'disconnected') {
+        this.setState(agent, live, 'exited', null); // until the resync says otherwise
+        throw err;
+      }
+      // Refused outright: nothing was started.
+      this.db
+        .prepare('DELETE FROM agent_sessions WHERE daemon_session_id = ?')
+        .run(id);
+      this.db
+        .prepare(
+          'UPDATE agents SET current_session_id = NULL WHERE id = ? AND current_session_id = ?',
+        )
+        .run(agent.id, id);
+      agent.currentSessionId = null;
+      throw err;
+    }
     const sl = this.trackSession(agent, live, session.id, adapter);
     this.appendItem(agent.id, live, session.id, 0, {
       kind: 'system',
@@ -544,8 +596,10 @@ export class AgentsService
         adapter,
         lastSeq: 0,
         replayed: false,
+        complete: false,
         attaching: false,
         pendingExit: null,
+        pendingBoundary: null,
         suspended: false,
         startedBoundary: false,
         endedBoundary: false,
@@ -568,6 +622,7 @@ export class AgentsService
     try {
       await this.daemon.attach(sl.id, sl.lastSeq + 1);
       sl.replayed = true;
+      sl.complete = true;
     } catch (err) {
       sl.replayed = false;
       this.logger.warn(
@@ -585,6 +640,30 @@ export class AgentsService
       sl.pendingExit = null;
       this.applyExit(agent, live, s);
     }
+    if (sl.pendingBoundary && sl.complete) {
+      const s = sl.pendingBoundary;
+      sl.pendingBoundary = null;
+      this.endBoundary(agent, live, sl, s);
+    }
+  }
+
+  /** The "session ended" item, written once, and only after the session's records. */
+  private endBoundary(
+    agent: Agent,
+    live: Live,
+    sl: SessionLive,
+    session: DaemonSession,
+  ): void {
+    if (sl.endedBoundary) return;
+    if (!sl.complete || sl.attaching) {
+      sl.pendingBoundary = session;
+      return;
+    }
+    this.appendItem(agent.id, live, session.id, 0, {
+      kind: 'system',
+      text: `session ended${exitWhy(session)}`,
+    });
+    sl.endedBoundary = true;
   }
 
   /** After attaching to the current session, make sure a session that already died is treated as such. */
@@ -715,13 +794,15 @@ export class AgentsService
       .run(agent.id, session.id).changes;
     if (cleared === 0) return;
     agent.currentSessionId = null;
-    const sl = live.sessions.get(session.id);
-    if (!sl?.endedBoundary)
-      this.appendItem(agent.id, live, session.id, 0, {
-        kind: 'system',
-        text: `session ended${exitWhy(session)}`,
-      });
-    if (sl) sl.endedBoundary = true;
+    const sl =
+      live.sessions.get(session.id) ??
+      this.trackSession(
+        agent,
+        live,
+        session.id,
+        this.adapters.create(agent.profile),
+      );
+    this.endBoundary(agent, live, sl, session);
     this.setState(agent, live, 'exited', null);
     this.emit('session', agent.id, {
       daemonSessionId: session.id,
@@ -745,15 +826,23 @@ export class AgentsService
       .then(() => this.resync(generation))
       .catch((err: Error) => this.logger.error(`resync failed: ${err.message}`))
       .finally(() => {
-        // Whatever happened, nobody stays gated behind a resync that is over.
-        for (const live of this.live.values()) live.markSynced();
+        // Nobody stays gated behind a resync that is over, unless a newer
+        // one has taken over and will release them itself.
+        if (generation === this.resyncGeneration)
+          for (const live of this.live.values()) live.markSynced();
       });
   }
 
+  /** Opens the gate if it is not already open; waiters from before are kept. */
   private gate(live: Live): void {
+    if (live.syncPending) return;
     const d = deferred();
+    live.syncPending = true;
     live.synced = d.promise;
-    live.markSynced = d.resolve;
+    live.markSynced = () => {
+      live.syncPending = false;
+      d.resolve();
+    };
   }
 
   /** The socket the attachments lived on is gone; every session must be re-attached before it is trusted. */
@@ -793,8 +882,7 @@ export class AgentsService
         const failedEarlier = refs.some(
           (ref, i) =>
             i < refs.length - 1 &&
-            live.sessions.get(ref.daemonSessionId)?.replayed === false &&
-            live.sessions.get(ref.daemonSessionId)?.lastSeq === 0,
+            live.sessions.get(ref.daemonSessionId)?.complete === false,
         );
         if (failedEarlier && live.items.length > 0) {
           this.logger.log(
@@ -804,6 +892,7 @@ export class AgentsService
           for (const sl of live.sessions.values()) {
             sl.lastSeq = 0;
             sl.replayed = false;
+            sl.complete = false;
             sl.suspended = true; // live frames must not advance the cursor before the replay attach
             sl.startedBoundary = false;
             sl.endedBoundary = false;
@@ -853,13 +942,7 @@ export class AgentsService
             await this.attachSession(agent, live, sl);
           if (s.state === 'exited' && !sl.pendingExit) {
             if (isCurrent) this.applyExit(agent, live, s);
-            else if (!sl.endedBoundary) {
-              this.appendItem(agent.id, live, s.id, 0, {
-                kind: 'system',
-                text: `session ended${exitWhy(s)}`,
-              });
-              sl.endedBoundary = true;
-            }
+            else this.endBoundary(agent, live, sl, s);
             if (ref.endedAt === null)
               this.db
                 .prepare(
@@ -932,6 +1015,7 @@ export class AgentsService
         lock: Promise.resolve(),
         synced: Promise.resolve(),
         markSynced: () => undefined,
+        syncPending: false,
       };
       this.live.set(agent.id, live);
     }
@@ -955,6 +1039,12 @@ export class AgentsService
     agentId: string,
     fn: () => Promise<T>,
   ): Promise<T> {
+    // A pending resync may still adopt a session; give it a moment so an
+    // empty current pointer is not mistaken for "nothing to stop".
+    await Promise.race([
+      live.synced,
+      new Promise((r) => setTimeout(r, LOCK_PATIENCE_MS)),
+    ]);
     let acquired = false;
     const run = this.withLock(live, () => {
       acquired = true;

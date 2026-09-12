@@ -572,6 +572,48 @@ describe('resilience', () => {
 });
 
 describe('manager restart', () => {
+  it('an archive right after a restart still ends a session the database had lost', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'lost-then-archived');
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'one' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    const db = m.app.get(DbService).db;
+    db.prepare('DELETE FROM agent_sessions WHERE agent_id = ?').run(agent.id);
+    db.prepare('UPDATE agents SET current_session_id = NULL WHERE id = ?').run(
+      agent.id,
+    );
+    await events.close();
+    await m.stop();
+    m = await startManager(daemon.url, m.dataDir);
+    api = new Api(m.url);
+    await api.login();
+    events = await Events.connect(m.url, api.cookie);
+    // no sleep: the archive must wait for adoption before deciding there is nothing to stop
+    expect((await api.post(`/api/agents/${agent.id}/archive`)).status).toBe(
+      201,
+    );
+    const rec = await new Promise<any>((resolve, reject) => {
+      const ws = new WebSocket(daemon.url);
+      ws.on('open', () =>
+        ws.send(
+          JSON.stringify({
+            type: 'session.get',
+            ref: 1,
+            id: agent.currentSessionId,
+          }),
+        ),
+      );
+      ws.on('message', (d) => (ws.close(), resolve(JSON.parse(String(d)))));
+      ws.on('error', reject);
+    });
+    expect(rec.session.state).toBe('exited');
+  }, 30000);
+
   it('a stop right after a restart yields one ended boundary, after the history', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'stop-after-restart');
@@ -736,6 +778,10 @@ describe('manager restart', () => {
       10000,
       mark,
     );
+    // a turn sent while the link is down must resolve, not hang on the gate
+    const duringOutage = api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'during outage',
+    });
     daemon = await startDaemon({ root: daemon.root, port: daemon.port });
     await events.waitFor(
       (f) => f.type === 'daemon' && f.connected === true,
@@ -750,9 +796,16 @@ describe('manager restart', () => {
       15000,
       mark,
     );
+    const outage = await duringOutage;
+    expect([202, 503]).toContain(outage.status);
     const items = (await api.get(`/api/agents/${agent.id}/items`)).body
       .items as any[];
-    expect(items[items.length - 1].item.text).toContain('daemon-restart');
+    expect(
+      items.some(
+        (i) =>
+          i.item.kind === 'system' && i.item.text.includes('daemon-restart'),
+      ),
+    ).toBe(true);
     await api.post(`/api/agents/${agent.id}/turn`, { text: 'after' });
     await events.waitFor(
       (f) =>

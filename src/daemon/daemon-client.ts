@@ -186,8 +186,9 @@ export class DaemonClient
 
   request<T extends Frame = Frame>(frame: Omit<Frame, 'ref'>): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // Refused before anything was sent: the caller knows nothing happened.
       return Promise.reject(
-        new DaemonError('disconnected', 'daemon is not connected'),
+        new DaemonError('not-connected', 'daemon is not connected'),
       );
     }
     const ref = String(this.nextRef++);
@@ -218,6 +219,7 @@ export class DaemonClient
 
   /** Starts a session without attaching; the caller attaches with replay once it owns the id. */
   start(req: {
+    id?: string;
     profile: string;
     args?: string[];
     cwd?: string;

@@ -209,10 +209,21 @@ ended, history unavailable) have `seqFrom` 0.
   newer history is already shown, the transcript is rebuilt from scratch
   (`agent.reset`) so order is preserved.
 - Commands wait for a pending resync (the manager has just started, or
-  has just reconnected); attachments live on the daemon socket, so a
-  disconnect invalidates every session until it is re-attached. An exit
-  that arrives for a session whose log has not been replayed yet is held
-  until it has, so the boundary always follows the records.
+  has just reconnected); waiters are kept across a reconnect that arrives
+  meanwhile. Attachments live on the daemon socket, so a disconnect
+  invalidates every session until it is re-attached, while "replayed to
+  the boundary at least once" is remembered separately so a partial
+  replay of older history is detected and triggers the rebuild. An exit
+  for a session whose log has not been replayed yet is held until it has,
+  and so is its boundary item, whichever path the exit arrives by.
+- A new session's id is chosen by the manager and recorded before the
+  daemon is asked to start it. If the daemon socket dies while the
+  request is in flight the outcome is unknown, so the agent and session
+  are kept and the next resync finds out whether the process exists; a
+  request refused before it was sent (`not-connected`) is certain, and
+  create then leaves nothing behind.
+- Stop-like commands give a pending resync a moment to adopt sessions
+  before deciding there is nothing to stop.
 - A turn is refused with `agent-unavailable` (503) while the current
   session's output is not attached; the attach is retried first. Any
   daemon failure surfaces as 503 `agent-unavailable`; creating an agent
