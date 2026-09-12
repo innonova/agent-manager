@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   BadRequestException,
   ConflictException,
@@ -446,12 +447,15 @@ export class FeaturesService
 /** What the agent is told. The feature file itself is the spec. */
 export function prompt(f: FeatureFile, repos: Repo[]): string {
   const multi = repos.length > 1;
+  const repo = repos.find((r) => r.name === f.repo);
+  // Absolute: the agent's cwd may be another repository of the project.
+  const file = repo ? path.join(repo.path, 'features', `${f.slug}.md`) : f.path;
   return [
-    `Implement the feature "${f.title}", described in ${f.path}${multi ? '' : ' of this repository'}.`,
+    `Implement the feature "${f.title}", described in ${file}${multi ? ` (repository "${f.repo}")` : ''}.`,
     '',
     ...(multi
       ? [
-          'This project spans several repositories:',
+          'This project spans several repositories; your working directory is one of them and the others are reachable at these paths:',
           ...repos.map((r) => `- ${r.name}: ${r.path}`),
           '',
         ]
@@ -459,6 +463,6 @@ export function prompt(f: FeatureFile, repos: Repo[]): string {
     f.body.trim() || '(The feature file has no description beyond its title.)',
     '',
     `Work directly in the ${multi ? 'repositories' : 'repository'}. When you are done, reply with a short summary of what you changed and anything you left open.`,
-    `Do not change the status field in ${f.path}; the manager maintains it.`,
+    `Do not change the status field in ${file}; the manager maintains it.`,
   ].join('\n');
 }

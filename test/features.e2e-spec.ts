@@ -199,10 +199,10 @@ describe('features', () => {
       mark,
     );
     expect(turn.item.item.text).toContain(
-      'Implement the feature "Login page", described in main/features/login.md',
+      `Implement the feature "Login page", described in ${path.join(root, 'features', 'login.md')} (repository "main")`,
     );
     expect(turn.item.item.text).toContain(
-      'This project spans several repositories:',
+      'This project spans several repositories; your working directory is one of them',
     );
     expect(turn.item.item.text).toContain('With a form.');
     expect(turn.item.item.text).toContain('Do not change the status field');

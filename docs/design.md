@@ -247,9 +247,9 @@ ends; a human then marks it `done` or reopens it.
 Queueing puts the feature on one agent's queue (SQLite `feature_queue`)
 and, if that agent is not busy, starts it at once: a `feature_runs` row is
 opened, the file goes to `in-progress`, and the agent receives one turn
-containing the title, the path, the body, the repository layout when the
-project has more than one, and the instruction not to edit the status
-field. When the agent's state changes, the open run on that
+containing the title, the file's absolute path, the body, the repository
+layout when the project has more than one, and the instruction not to
+edit the status field. When the agent's state changes, the open run on that
 agent gets its outcome (`review`, or `blocked: <reason>`), and the next
 queued feature starts. A queued feature can be dequeued back to
 `planned`. Dependencies are checked at queue time only. Nothing here is
