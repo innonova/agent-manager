@@ -1,0 +1,51 @@
+# nginx site in front of agent-manager, for a chain like
+#   browser -> haproxy (TLS) -> nginx (this) -> agent-manager on the code VM
+# Adjust the upstream address, the port, the server_name and the allow list.
+upstream agent_manager {
+    server 192.168.80.81:4268;
+}
+
+server {
+    listen 4702;
+    listen [::]:4702;
+    server_name aman.example;
+
+    access_log /var/log/nginx/aman.access.log combined;
+    client_max_body_size 2m;
+
+    # only the TLS terminator (and the LAN) may reach this plain-HTTP port
+    allow 127.0.0.1;
+    allow ::1;
+    allow 192.168.190.0/24;
+    allow 192.168.80.0/24;
+    deny all;
+
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy same-origin always;
+
+    location = /healthz { return 200 "ok\n"; add_header Content-Type text/plain; }
+
+    # live event stream: long-lived websocket
+    location = /api/events {
+        proxy_pass http://agent_manager;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    location / {
+        proxy_pass http://agent_manager;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 5s;
+    }
+}
