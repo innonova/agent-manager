@@ -41,6 +41,12 @@ export interface Ingest {
   ops?: ItemOp[];
   /** The vendor conversation id, once known. */
   conversationId?: string;
+  /**
+   * stdin lines to send in reaction to this record (protocol handshakes).
+   * The manager sends them only for live records, never during replay, so
+   * a restart never repeats a handshake.
+   */
+  send?: unknown[];
 }
 
 /**
@@ -53,6 +59,8 @@ export interface AgentAdapter {
   readonly initialState?: AgentState;
   /** Extra daemon args for a new session; `resume` is the vendor conversation id. */
   startArgs(opts: { resume?: string | null }): string[];
+  /** stdin lines to send once the session is running and attached (protocol handshakes). */
+  startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
   /** stdin lines for a user turn. */
   turn(text: string): unknown[];
   /** stdin lines to interrupt the current turn, if supported. */

@@ -133,8 +133,10 @@ interface AgentAdapter {
   turn(text: string): unknown[];
   /** the stdin line(s) to interrupt the current turn, if the vendor supports it */
   interrupt?(): unknown[];
-  /** feed one daemon log record; returns state changes and transcript operations */
-  ingest(record: LogRecord): { state?: AgentState; error?: string; ops?: ItemOp[]; conversationId?: string };
+  /** stdin lines to send once the session is running and attached (protocol handshakes) */
+  startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
+  /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
+  ingest(record: LogRecord): { state?: AgentState; error?: string; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
 }
 type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
 ```
@@ -150,13 +152,31 @@ confuses which item grows. One adapter instance exists per daemon session.
   `tool_result` become tool results, `stream_event` deltas update the
   current text item, `result` ends the turn. Errors surface as `result`
   with `is_error`, or as `error`-typed lines.
-- **copilot**: ACP over stdio. `initialize`, `session/new` (or
-  `session/load` to resume), `session/prompt`; `session/update`
-  notifications map onto items; the prompt reply's `stopReason` ends the
-  turn.
-- **codex**: app-server JSON-RPC. `initialize`/`initialized`,
-  `thread/start` (or `thread/resume`), `turn/start`; `item/*` and `turn/*`
-  notifications map onto items; `error` notifications become `error`.
+- **copilot** (`copilot --acp --allow-all`): ACP over stdio. The adapter
+  sends `initialize` on start, `session/new` (or `session/load` with the
+  stored session id to resume) when the initialize reply arrives, and
+  `session/prompt` per turn; `session/update` notifications become text
+  (chunks grow one item until something else arrives), thinking, tool_use
+  (`tool_call`) and tool_result (`tool_call_update` completed/failed); the
+  prompt reply ends the turn with its usage. A `session/request_permission`
+  should never arrive with `--allow-all`; if one does it is answered with
+  the first allow option. Interrupt is `session/cancel`.
+- **codex** (`codex app-server`): JSON-RPC over stdio. `initialize`, then
+  `initialized` and `thread/start` (or `thread/resume` with the stored
+  thread id) with `approvalPolicy: never` and `sandbox: danger-full-access`,
+  then `turn/start` per turn; `item/*` notifications become text
+  (agentMessage with deltas), thinking (reasoning), tool_use/tool_result
+  (commandExecution with command, output and exit code; fileChange);
+  `turn/completed` ends the turn; `error` notifications and failed turns
+  become `error`. Interrupt is `turn/interrupt`.
+
+Handshakes are driven from the log: an adapter returns `send` lines in
+reaction to a record. The manager writes them only for live records,
+never for records replayed after a restart or reconnect (it buffers sends
+produced during an attach and drops those at or below the daemon's
+boundary at attach time), so a restart never repeats a handshake or
+starts a second thread. The adapters also read their own requests back
+from the `in` records, so request ids stay consistent after a restart.
 - **fake**: drives the daemon's fake agent fixture for tests and UI
   development; produces realistic items and state changes without tokens.
 
@@ -396,7 +416,9 @@ login and health requires the cookie.
   ephemeral port, supertest for REST and `ws` for events. Covers login,
   project and agent lifecycle, turns and items through the fake agent,
   manager restart with state rebuilt from the daemon.
-- Opt-in smoke: one real Claude turn through manager and daemon.
+- Opt-in smoke (`npm run smoke:agents`): a throwaway daemon and manager
+  on ephemeral ports, one real turn through each of Claude, Codex and
+  Copilot; costs tokens; never touches the installed services.
 
 ## Running it
 
@@ -416,11 +438,12 @@ running in the daemon and are re-adopted on start.
 3. **Features** (done): `features/*.md` convention, parsing, listing,
    queueing a feature as a turn for a chosen agent, manager-owned status
    updates. See "Features" below.
-4. Later, each needing its own discussion: git status and diff per agent;
+4. **Codex and Copilot adapters** (done): tested against recorded
+   sessions, and end to end by `npm run smoke:agents`.
+5. Later, each needing its own discussion: git status and diff per agent;
    worktrees and multi-agent coordination; interactive permissions;
-   idle timeout and automatic resume; Codex and Copilot adapters (the
-   interface is designed for them; milestone one ships Claude and fake);
-   clone-from-URL; roles; log retention.
+   idle timeout and automatic resume; clone-from-URL; roles; log
+   retention.
 
 ## Open questions
 

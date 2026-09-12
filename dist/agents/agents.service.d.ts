@@ -85,6 +85,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private startSession;
     private trackSession;
     private attachSession;
+    private sendLines;
     private endBoundary;
     private reconcileTurnState;
     private reconcileCurrent;

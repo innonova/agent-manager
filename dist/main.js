@@ -63,7 +63,8 @@ async function bootstrap() {
         });
     }
     await app.listen(config.port, config.host);
-    logger.log(`agent-manager listening on http://${config.host}:${config.port}/`);
+    const address = app.getHttpServer().address();
+    logger.log(`agent-manager listening on http://${address.address}:${address.port}/`);
 }
 if (process.argv[1] &&
     import.meta.url === new URL(`file://${process.argv[1]}`).href) {

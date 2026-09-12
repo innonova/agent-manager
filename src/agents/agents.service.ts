@@ -95,6 +95,8 @@ interface SessionLive {
   startedBoundary: boolean;
   endedBoundary: boolean;
   keys: Map<string, number>;
+  /** Handshake lines produced while a replay was in flight, with the seq that produced them. */
+  pendingSends: { seq: number; lines: unknown[] }[];
 }
 
 /** Everything about an agent that is rebuilt from the daemon, never stored. */
@@ -593,6 +595,15 @@ export class AgentsService
     // Attach with replay from the start: anything the process said (or an
     // exit) between start and now is in the log.
     await this.attachSession(agent, live, sl);
+    if (adapter.startLines)
+      this.sendLines(
+        agent,
+        sl,
+        adapter.startLines({
+          cwd: agent.cwd,
+          resume: agent.vendorConversationId,
+        }),
+      );
     await this.reconcileCurrent(agent, live);
   }
 
@@ -617,6 +628,7 @@ export class AgentsService
         startedBoundary: false,
         endedBoundary: false,
         keys: new Map(),
+        pendingSends: [],
       };
       live.sessions.set(sessionId, sl);
     }
@@ -632,8 +644,9 @@ export class AgentsService
   ): Promise<void> {
     sl.attaching = true;
     sl.suspended = false;
+    let boundary = Number.MAX_SAFE_INTEGER;
     try {
-      await this.daemon.attach(sl.id, sl.lastSeq + 1);
+      boundary = await this.daemon.attach(sl.id, sl.lastSeq + 1);
       sl.replayed = true;
       sl.complete = true;
     } catch (err) {
@@ -649,6 +662,11 @@ export class AgentsService
     } finally {
       sl.attaching = false;
     }
+    // Handshake replies that arrived during the attach: only those past the
+    // daemon's boundary at attach time are live; the rest are history.
+    const queued = sl.pendingSends.splice(0);
+    for (const q of queued)
+      if (q.seq > boundary) this.sendLines(agent, sl, q.lines);
     if (sl.pendingExit && sl.replayed) {
       const s = sl.pendingExit;
       sl.pendingExit = null;
@@ -659,6 +677,20 @@ export class AgentsService
       sl.pendingBoundary = null;
       this.endBoundary(agent, live, sl, s);
     }
+  }
+
+  /** Writes adapter-produced lines to a live, current session; failures are logged, the record path continues. */
+  private sendLines(agent: Agent, sl: SessionLive, lines: unknown[]): void {
+    if (!lines.length) return;
+    const fresh = this.find(agent.id);
+    if (!fresh || fresh.currentSessionId !== sl.id) return;
+    void (async () => {
+      for (const line of lines) await this.daemon.input(sl.id, line);
+    })().catch((err: Error) =>
+      this.logger.warn(
+        `agent ${agent.id}: could not send protocol line: ${err.message}`,
+      ),
+    );
   }
 
   /** The "session ended" item, written once, and only after the session's records. */
@@ -749,6 +781,11 @@ export class AgentsService
     }
     for (const op of ingest.ops ?? [])
       this.applyOp(agent.id, live, sl, record.seq, op);
+    if (ingest.send?.length) {
+      if (sl.attaching)
+        sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
+      else this.sendLines(agent, sl, ingest.send);
+    }
     // State from a session that is no longer current is history, not now.
     if (ingest.state && sl.id === agent.currentSessionId)
       this.setState(agent, live, ingest.state, ingest.error ?? null);

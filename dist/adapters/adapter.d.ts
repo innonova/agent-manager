@@ -46,12 +46,17 @@ export interface Ingest {
     error?: string;
     ops?: ItemOp[];
     conversationId?: string;
+    send?: unknown[];
 }
 export interface AgentAdapter {
     readonly initialState?: AgentState;
     startArgs(opts: {
         resume?: string | null;
     }): string[];
+    startLines?(opts: {
+        cwd: string;
+        resume?: string | null;
+    }): unknown[];
     turn(text: string): unknown[];
     interrupt?(): unknown[];
     turnInProgress?(): boolean;

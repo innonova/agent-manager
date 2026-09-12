@@ -6,10 +6,14 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 };
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { claudeAdapterFactory } from './claude.adapter.js';
+import { codexAdapterFactory } from './codex.adapter.js';
+import { copilotAdapterFactory } from './copilot.adapter.js';
 import { fakeAdapterFactory } from './fake.adapter.js';
 let AdaptersService = class AdaptersService {
     factories = new Map([
         [claudeAdapterFactory.profile, claudeAdapterFactory],
+        [codexAdapterFactory.profile, codexAdapterFactory],
+        [copilotAdapterFactory.profile, copilotAdapterFactory],
         [fakeAdapterFactory.profile, fakeAdapterFactory],
     ]);
     supports(profile) {

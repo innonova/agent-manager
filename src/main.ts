@@ -105,8 +105,12 @@ async function bootstrap(): Promise<void> {
     });
   }
   await app.listen(config.port, config.host);
+  const address = app.getHttpServer().address() as {
+    address: string;
+    port: number;
+  };
   logger.log(
-    `agent-manager listening on http://${config.host}:${config.port}/`,
+    `agent-manager listening on http://${address.address}:${address.port}/`,
   );
 }
 

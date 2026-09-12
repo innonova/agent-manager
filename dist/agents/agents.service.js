@@ -381,6 +381,11 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             endedAt: null,
         });
         await this.attachSession(agent, live, sl);
+        if (adapter.startLines)
+            this.sendLines(agent, sl, adapter.startLines({
+                cwd: agent.cwd,
+                resume: agent.vendorConversationId,
+            }));
         await this.reconcileCurrent(agent, live);
     }
     trackSession(agent, live, sessionId, adapter) {
@@ -399,6 +404,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 startedBoundary: false,
                 endedBoundary: false,
                 keys: new Map(),
+                pendingSends: [],
             };
             live.sessions.set(sessionId, sl);
         }
@@ -408,8 +414,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
     async attachSession(agent, live, sl) {
         sl.attaching = true;
         sl.suspended = false;
+        let boundary = Number.MAX_SAFE_INTEGER;
         try {
-            await this.daemon.attach(sl.id, sl.lastSeq + 1);
+            boundary = await this.daemon.attach(sl.id, sl.lastSeq + 1);
             sl.replayed = true;
             sl.complete = true;
         }
@@ -425,6 +432,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         finally {
             sl.attaching = false;
         }
+        const queued = sl.pendingSends.splice(0);
+        for (const q of queued)
+            if (q.seq > boundary)
+                this.sendLines(agent, sl, q.lines);
         if (sl.pendingExit && sl.replayed) {
             const s = sl.pendingExit;
             sl.pendingExit = null;
@@ -435,6 +446,17 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             sl.pendingBoundary = null;
             this.endBoundary(agent, live, sl, s);
         }
+    }
+    sendLines(agent, sl, lines) {
+        if (!lines.length)
+            return;
+        const fresh = this.find(agent.id);
+        if (!fresh || fresh.currentSessionId !== sl.id)
+            return;
+        void (async () => {
+            for (const line of lines)
+                await this.daemon.input(sl.id, line);
+        })().catch((err) => this.logger.warn(`agent ${agent.id}: could not send protocol line: ${err.message}`));
     }
     endBoundary(agent, live, sl, session) {
         if (sl.endedBoundary)
@@ -509,6 +531,12 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         }
         for (const op of ingest.ops ?? [])
             this.applyOp(agent.id, live, sl, record.seq, op);
+        if (ingest.send?.length) {
+            if (sl.attaching)
+                sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
+            else
+                this.sendLines(agent, sl, ingest.send);
+        }
         if (ingest.state && sl.id === agent.currentSessionId)
             this.setState(agent, live, ingest.state, ingest.error ?? null);
     }
