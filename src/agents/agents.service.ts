@@ -108,6 +108,8 @@ interface Live {
   synced: Promise<void>;
   markSynced: () => void;
   syncPending: boolean;
+  /** Sessions may exist that the database does not know; cleared only after an adoption pass succeeds. */
+  adoptionNeeded: boolean;
 }
 
 export interface AgentEvents {
@@ -481,10 +483,12 @@ export class AgentsService
    * it being gone. Losing the daemon meanwhile is an error, not an exit.
    */
   private async stopLocked(agent: Agent, wait = false): Promise<void> {
-    if (!agent.currentSessionId && this.ensureLive(agent).syncPending) {
+    const liveAgent = this.ensureLive(agent);
+    if (!agent.currentSessionId && liveAgent.adoptionNeeded) {
       // The resync has not reached this agent yet; an empty pointer proves
       // nothing until adoption has had its say.
       this.adoptSessions(agent, await this.daemon.listSessions());
+      liveAgent.adoptionNeeded = false;
     }
     const id = agent.currentSessionId;
     if (!id) return;
@@ -859,6 +863,7 @@ export class AgentsService
 
   /** Opens the gate if it is not already open; waiters from before are kept. */
   private gate(live: Live): void {
+    live.adoptionNeeded = true;
     if (live.syncPending) return;
     const d = deferred();
     live.syncPending = true;
@@ -899,6 +904,7 @@ export class AgentsService
         const sessions = await this.daemon.listSessions();
         const byId = new Map(sessions.map((s) => [s.id, s]));
         this.adoptSessions(agent, sessions);
+        live.adoptionNeeded = false;
         let refs = this.sessions(agent.id);
 
         // An earlier session whose replay failed, with newer history already
@@ -948,7 +954,7 @@ export class AgentsService
           if (
             isCurrent &&
             s.state === 'running' &&
-            live.status.state === 'starting'
+            (live.status.state === 'starting' || live.status.state === 'exited')
           ) {
             this.setState(
               agent,
@@ -964,7 +970,7 @@ export class AgentsService
             (isCurrent && s.state === 'running')
           ) {
             await this.attachSession(agent, live, sl);
-            if (isCurrent && s.state === 'running')
+            if (isCurrent && s.state === 'running' && sl.replayed)
               this.reconcileTurnState(agent, live, sl);
           }
           if (s.state === 'exited' && !sl.pendingExit) {
@@ -1043,6 +1049,7 @@ export class AgentsService
         synced: Promise.resolve(),
         markSynced: () => undefined,
         syncPending: false,
+        adoptionNeeded: true,
       };
       this.live.set(agent.id, live);
     }

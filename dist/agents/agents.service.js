@@ -51,7 +51,6 @@ const deferred = () => {
     const promise = new Promise((r) => (resolve = r));
     return { promise, resolve };
 };
-const live_of = (svc, agent) => svc.ensureLiveFor(agent);
 const busy = () => new HttpException({ statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' }, 409);
 const unavailable = (why) => new HttpException({
     statusCode: 503,
@@ -280,7 +279,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         this.deleting.delete(projectId);
     }
     async stopLocked(agent, wait = false) {
-        if (!agent.currentSessionId && live_of(this, agent).syncPending) {
+        if (!agent.currentSessionId && this.ensureLive(agent).syncPending) {
             this.adoptSessions(agent, await this.daemon.listSessions());
         }
         const id = agent.currentSessionId;
@@ -714,9 +713,6 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 }
             }
         }
-    }
-    ensureLiveFor(agent) {
-        return this.ensureLive(agent);
     }
     ensureLive(agent) {
         let live = this.live.get(agent.id);
