@@ -1,0 +1,19 @@
+# Template; scripts/install-user-service.sh fills in the paths and installs it
+# to ~/.config/systemd/user/agent-manager.service.
+[Unit]
+Description=agent-manager: projects, agents and the UI on top of agent-daemon
+After=network.target agent-daemon.service
+Wants=agent-daemon.service
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @INSTALL_DIR@/dist/main.js
+Restart=on-failure
+RestartSec=2
+Environment=AGENT_MANAGER_LISTEN=0.0.0.0:4268
+Environment=AGENT_MANAGER_UI_DIR=@INSTALL_DIR@/ui
+Environment=PATH=@PATH@
+UnsetEnvironment=ELECTRON_RUN_AS_NODE
+
+[Install]
+WantedBy=default.target
