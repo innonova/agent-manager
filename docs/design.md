@@ -63,7 +63,7 @@ Copilot's ACP.
 | Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
 | A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
 | Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
-| Git status/diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. |
+| Git diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. Per-entry status in the file listing (`git status` and `git check-ignore` per directory) is cheap and is done, so the tree can tint entries as VS Code does. |
 | No file containment beyond rejecting `..` | Agents run with permissions bypassed and sudo on an isolated VM; containing the editor would be patching a missing barn wall with toothpicks. Authentication is the boundary. Symlinks are followed. |
 
 ## Terminology
@@ -348,7 +348,7 @@ POST   /api/agents/:id/archive
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean }
 
-GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself), false outside a repository
+GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, queued, review, blocked, planned, done, then priority
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary
@@ -458,7 +458,10 @@ running in the daemon and are re-adopted on start.
    updates. See "Features" below.
 4. **Codex and Copilot adapters** (done): tested against recorded
    sessions, and end to end by `npm run smoke:agents`.
-5. Later, each needing its own discussion: git status and diff per agent;
+5. Later, each needing its own discussion: git diff per agent, including
+   "what did the last turn change" (the file tree could highlight entries
+   whose mtime moved since its previous refresh, fading after a while, but
+   that is a view of the same question a diff answers properly);
    worktrees and multi-agent coordination; interactive permissions;
    idle timeout and automatic resume; clone-from-URL; roles; log
    retention.

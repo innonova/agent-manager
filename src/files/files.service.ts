@@ -22,7 +22,17 @@ export interface DirEntry {
    * tree in any useful sense. Always false outside a git repository.
    */
   ignored: boolean;
+  /**
+   * Working-tree status from `git status` for the entry, or for a
+   * directory the most significant status among its contents (conflict,
+   * then modified, added, untracked), as VS Code tints folders. Null when
+   * clean, ignored, or outside a repository.
+   */
+  status: EntryStatus | null;
 }
+
+export type EntryStatus =
+  'modified' | 'added' | 'deleted' | 'untracked' | 'conflict';
 
 export interface FileContent {
   path: string;
@@ -98,6 +108,7 @@ export class FilesService {
             size: 0,
             mtime: st?.mtimeMs ?? 0,
             ignored: false,
+            status: null,
           };
         }),
       );
@@ -138,18 +149,31 @@ export class FilesService {
               size,
               mtime,
               ignored: false,
+              status: null,
             };
         } catch {
           /* dangling symlink or vanished entry: reported as is */
         }
-        return { name: d.name, path: p, type, size, mtime, ignored: false };
+        return {
+          name: d.name,
+          path: p,
+          type,
+          size,
+          mtime,
+          ignored: false,
+          status: null,
+        };
       }),
     );
-    const ignored = await gitIgnored(
-      abs,
-      entries.map((e) => e.name),
-    );
-    for (const e of entries) e.ignored = ignored.has(e.name);
+    const entryNames = entries.map((e) => e.name);
+    const [ignored, status] = await Promise.all([
+      gitIgnored(abs, entryNames),
+      gitStatus(abs, entryNames),
+    ]);
+    for (const e of entries) {
+      e.ignored = ignored.has(e.name);
+      e.status = status.get(e.name) ?? null;
+    }
     entries.sort((a, b) =>
       (a.type === 'dir') === (b.type === 'dir')
         ? a.name.localeCompare(b.name)
@@ -218,5 +242,85 @@ export function gitIgnored(dir: string, names: string[]): Promise<Set<string>> {
       /* git exited before reading; the callback reports the outcome */
     });
     child.stdin?.end(candidates.join('\0') + '\0');
+  });
+}
+
+const STATUS_RANK: Record<EntryStatus, number> = {
+  untracked: 1,
+  added: 2,
+  deleted: 3,
+  modified: 4,
+  conflict: 5,
+};
+
+/** Porcelain v1 `XY` code to a status; `!!` (ignored) is not a status. */
+function classify(xy: string): EntryStatus | null {
+  if (xy === '??') return 'untracked';
+  if (xy === '!!') return null;
+  if (xy.includes('U') || xy === 'AA' || xy === 'DD') return 'conflict';
+  const [x, y] = xy;
+  if ('MTRC'.includes(y!) || 'MTRC'.includes(x!)) return 'modified';
+  if (x === 'A') return 'added';
+  if (x === 'D' || y === 'D') return 'deleted';
+  return 'modified';
+}
+
+/**
+ * Status of `names` (entries of directory `dir`), from one `git status`
+ * limited to that subtree. Paths in porcelain output are relative to the
+ * repository root, so the directory's own prefix is resolved first. An
+ * entry that is itself a directory takes the highest-ranked status found
+ * beneath it, with a deleted child counting as modified. Any failure
+ * (not a repository, no git, timeout) means no status, not an error.
+ */
+export function gitStatus(
+  dir: string,
+  names: string[],
+): Promise<Map<string, EntryStatus>> {
+  const result = new Map<string, EntryStatus>();
+  const wanted = new Set(names.filter((n) => n !== '.git'));
+  if (wanted.size === 0) return Promise.resolve(result);
+  const opts = { cwd: dir, timeout: 10000, maxBuffer: 64 * 1024 * 1024 };
+  return new Promise((resolve) => {
+    execFile('git', ['rev-parse', '--show-prefix'], opts, (err, out) => {
+      if (err) return resolve(result);
+      const prefix = String(out).trim();
+      execFile(
+        'git',
+        [
+          '--no-optional-locks',
+          'status',
+          '--porcelain=v1',
+          '-z',
+          '--untracked-files=all',
+          '--',
+          '.',
+        ],
+        opts,
+        (err2, out2) => {
+          if (err2) return resolve(result);
+          const tokens = String(out2).split('\0');
+          for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i]!;
+            if (t.length < 4) continue;
+            const xy = t.slice(0, 2);
+            const p = t.slice(3);
+            if (xy[0] === 'R' || xy[0] === 'C') i++; // the source path follows
+            if (!p.startsWith(prefix)) continue;
+            const rel = p.slice(prefix.length);
+            const slash = rel.indexOf('/');
+            const name = slash < 0 ? rel : rel.slice(0, slash);
+            if (!wanted.has(name)) continue;
+            let st = classify(xy);
+            if (!st) continue;
+            if (slash >= 0 && st === 'deleted') st = 'modified';
+            const prev = result.get(name);
+            if (!prev || STATUS_RANK[st] > STATUS_RANK[prev])
+              result.set(name, st);
+          }
+          resolve(result);
+        },
+      );
+    });
   });
 }

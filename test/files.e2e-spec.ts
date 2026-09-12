@@ -86,6 +86,54 @@ describe('files', () => {
     ]);
   });
 
+  it('reports git status per entry, directories taking the most significant of their contents', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'am-status-'));
+    const git = (...args: string[]) =>
+      execFileSync(
+        'git',
+        ['-c', 'user.name=t', '-c', 'user.email=t@t.t', ...args],
+        { cwd: repo },
+      );
+    git('init', '-q');
+    fs.mkdirSync(path.join(repo, 'src'));
+    fs.writeFileSync(path.join(repo, 'README.md'), 'r\n');
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'a\n');
+    fs.writeFileSync(path.join(repo, 'src', 'gone.ts'), 'g\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'init');
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'changed\n'); // modified, and so is src/
+    fs.unlinkSync(path.join(repo, 'src', 'gone.ts')); // deleted inside src/
+    fs.writeFileSync(path.join(repo, 'new.ts'), ''); // untracked
+    fs.writeFileSync(path.join(repo, 'staged.ts'), '');
+    git('add', 'staged.ts'); // added
+    fs.mkdirSync(path.join(repo, 'fresh'));
+    fs.writeFileSync(path.join(repo, 'fresh', 'x.ts'), ''); // an untracked directory
+    const created = await api.post('/api/projects', {
+      name: 'status',
+      repos: [{ name: 'repo', path: repo }],
+    });
+    const id = created.body.project.id;
+    const r = await api.get(`/api/projects/${id}/files?path=repo`);
+    const status = Object.fromEntries(
+      r.body.entries.map((e: any) => [e.name, e.status]),
+    );
+    expect(status).toEqual({
+      '.git': null,
+      fresh: 'untracked',
+      src: 'modified',
+      'README.md': null,
+      'new.ts': 'untracked',
+      'staged.ts': 'added',
+    });
+    const inner = await api.get(`/api/projects/${id}/files?path=repo/src`);
+    expect(inner.body.entries).toMatchObject([
+      { name: 'a.ts', status: 'modified' },
+    ]);
+    // no repository: no status
+    const plain = await api.get(`/api/projects/${projectId}/files?path=main`);
+    expect(plain.body.entries.every((e: any) => e.status === null)).toBe(true);
+  });
+
   it('lists the repos at the root, then each repo with directories first and every entry typed', async () => {
     const root = await api.get(`/api/projects/${projectId}/files`);
     expect(root.status).toBe(200);
