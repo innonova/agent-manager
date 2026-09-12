@@ -146,7 +146,9 @@ command items at turn end; Copilot reports the call completed at once
 with "started in background" in the result, sends the output as a
 status-less `tool_call_update` after the turn and may go on talking
 without a turn ("continued on its own" item), so the count is those
-calls until their output arrives.
+calls until their output arrives. That last one rests on the wording of
+Copilot's result text; if Copilot sees real use here, rerun the probe
+(ask it to background `sleep 25` and end its turn) and firm this up.
 
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
@@ -308,8 +310,8 @@ state. That was replaced: the injected turn arrived without context, the
 agent could neither push back nor be told a caveat, its closing summary
 was lost in the transcript, and every safeguard around the queue (runs,
 in-progress ownership, outcome from state) was a source of bugs. The
-`feature_queue` and `feature_runs` tables from that version are left in
-existing databases, unused.
+`feature_queue` and `feature_runs` tables from that version are dropped
+at startup.
 
 ## Daemon integration
 

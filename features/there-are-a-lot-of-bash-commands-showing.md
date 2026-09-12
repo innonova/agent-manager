@@ -1,6 +1,6 @@
 ---
 title: there are a lot of bash commands showing
-status: review
+status: done
 priority: 100
 ---
 

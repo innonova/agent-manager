@@ -54,23 +54,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   ended_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS agent_sessions_agent ON agent_sessions(agent_id);
-CREATE TABLE IF NOT EXISTS feature_queue (
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  slug TEXT NOT NULL,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  queued_at INTEGER NOT NULL,
-  PRIMARY KEY (project_id, slug)
-);
-CREATE TABLE IF NOT EXISTS feature_runs (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  slug TEXT NOT NULL,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  started_at INTEGER NOT NULL,
-  ended_at INTEGER,
-  outcome TEXT
-);
-CREATE INDEX IF NOT EXISTS feature_runs_open ON feature_runs(agent_id, ended_at);
+DROP TABLE IF EXISTS feature_queue;
+DROP TABLE IF EXISTS feature_runs;
 CREATE TABLE IF NOT EXISTS read_cursors (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
