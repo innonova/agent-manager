@@ -111,6 +111,13 @@ interface Live {
   syncPending: boolean;
   /** Sessions may exist that the database does not know; cleared only after an adoption pass succeeds. */
   adoptionNeeded: boolean;
+  /**
+   * The status changed while a replay was in flight and has not been
+   * announced: states derived from history are applied silently and only
+   * the state at the end of the replay is emitted, so listeners (the
+   * feature queue above all) never act on a transition that is long past.
+   */
+  stateHeld: boolean;
 }
 
 export interface AgentEvents {
@@ -695,6 +702,7 @@ export class AgentsService
       sl.pendingBoundary = null;
       this.endBoundary(agent, live, sl, s);
     }
+    this.releaseState(agent, live);
   }
 
   /** Writes adapter-produced lines to a live, current session; failures are logged, the record path continues. */
@@ -804,9 +812,16 @@ export class AgentsService
         sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
       else this.sendLines(agent, sl, ingest.send);
     }
-    // State from a session that is no longer current is history, not now.
+    // State from a session that is no longer current is history, not now;
+    // state from a replay in flight is applied but announced only at its end.
     if (ingest.state && sl.id === agent.currentSessionId)
-      this.setState(agent, live, ingest.state, ingest.error ?? null);
+      this.setState(
+        agent,
+        live,
+        ingest.state,
+        ingest.error ?? null,
+        sl.attaching,
+      );
   }
 
   private applyOp(
@@ -1105,6 +1120,7 @@ export class AgentsService
         markSynced: () => undefined,
         syncPending: false,
         adoptionNeeded: true,
+        stateHeld: false,
       };
       this.live.set(agent.id, live);
     }
@@ -1189,14 +1205,29 @@ export class AgentsService
     return stored;
   }
 
+  /** Records the status; announces it unless `quiet` (a replay in flight), in which case `releaseState` will. */
   private setState(
     agent: Agent,
     live: Live,
     state: AgentState,
     error: string | null,
+    quiet = false,
   ): void {
     if (live.status.state === state && live.status.error === error) return;
     live.status = { state, error, lastActivityAt: Date.now() };
+    if (quiet) {
+      live.stateHeld = true;
+      return;
+    }
+    live.stateHeld = false;
+    this.emit('state', agent.id, agent.projectId, live.status);
+    this.emit('counts', agent.projectId, this.counts(agent.projectId));
+  }
+
+  /** Announces a status that replay applied silently, once the replay is over. */
+  private releaseState(agent: Agent, live: Live): void {
+    if (!live.stateHeld) return;
+    live.stateHeld = false;
     this.emit('state', agent.id, agent.projectId, live.status);
     this.emit('counts', agent.projectId, this.counts(agent.projectId));
   }

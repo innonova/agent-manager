@@ -221,7 +221,9 @@ its `repo` is the repository it lives in and its `path` is
 `<repo>/features/<slug>.md`. Slugs are unique per project: on a
 duplicate the first repository wins and the manager logs the shadowed
 file. A new feature is created in the primary repository unless the
-request names another.
+request names another (the UI always uses the primary: which repository
+a feature "belongs to" is rarely obvious up front, and the agent works
+across the project anyway).
 
 ```markdown
 ---
@@ -247,11 +249,18 @@ ends; a human then marks it `done` or reopens it.
 Queueing puts the feature on one agent's queue (SQLite `feature_queue`)
 and, if that agent is not busy, starts it at once: a `feature_runs` row is
 opened, the file goes to `in-progress`, and the agent receives one turn
-containing the title, the file's absolute path, the body, the repository
-layout when the project has more than one, and the instruction not to
-edit the status field. When the agent's state changes, the open run on that
+containing the title, the file's absolute path (with the repository's
+name when the project has more than one) and the body, nothing else.
+Standing rules such as where the sibling repositories are and that the
+manager owns the status field belong in the project's own agent
+instructions (`CLAUDE.md`/`AGENTS.md`), which the agent reads anyway;
+repeating them per turn was noise. When the agent's state changes, the open run on that
 agent gets its outcome (`review`, or `blocked: <reason>`), and the next
-queued feature starts. A queued feature can be dequeued back to
+queued feature starts. Only live state changes count: while a session's
+log is being replayed (after a manager restart or a reconnect) the states
+it yields are history and are applied silently, and one `state` event
+goes out at the end of the replay, so a run is never settled by an
+`idle` from a turn that finished long before the one in progress. A queued feature can be dequeued back to
 `planned`. Dependencies are checked at queue time only. Nothing here is
 agent-specific: the feature is an ordinary turn.
 

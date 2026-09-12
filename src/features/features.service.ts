@@ -450,19 +450,12 @@ export function prompt(f: FeatureFile, repos: Repo[]): string {
   const repo = repos.find((r) => r.name === f.repo);
   // Absolute: the agent's cwd may be another repository of the project.
   const file = repo ? path.join(repo.path, 'features', `${f.slug}.md`) : f.path;
+  // Just the pointer and the spec. Standing rules (where the sibling
+  // repositories are, who owns the status field) belong in the project's
+  // own agent instructions, not in every turn.
   return [
-    `Implement the feature "${f.title}", described in ${file}${multi ? ` (repository "${f.repo}")` : ''}.`,
+    `Implement the feature "${f.title}": ${file}${multi ? ` (repository "${f.repo}")` : ''}`,
     '',
-    ...(multi
-      ? [
-          'This project spans several repositories; your working directory is one of them and the others are reachable at these paths:',
-          ...repos.map((r) => `- ${r.name}: ${r.path}`),
-          '',
-        ]
-      : []),
     f.body.trim() || '(The feature file has no description beyond its title.)',
-    '',
-    `Work directly in the ${multi ? 'repositories' : 'repository'}. When you are done, reply with a short summary of what you changed and anything you left open.`,
-    `Do not change the status field in ${file}; the manager maintains it.`,
   ].join('\n');
 }

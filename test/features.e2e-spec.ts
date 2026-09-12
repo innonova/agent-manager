@@ -6,6 +6,7 @@ import {
   Events,
   TestDaemon,
   TestManager,
+  sleep,
   startDaemon,
   startManager,
 } from './helpers.js';
@@ -198,14 +199,11 @@ describe('features', () => {
       10000,
       mark,
     );
-    expect(turn.item.item.text).toContain(
-      `Implement the feature "Login page", described in ${path.join(root, 'features', 'login.md')} (repository "main")`,
+    // The turn is the pointer and the spec, nothing else: standing rules
+    // live in the project's agent instructions.
+    expect(turn.item.item.text).toBe(
+      `Implement the feature "Login page": ${path.join(root, 'features', 'login.md')} (repository "main")\n\nAdd a login page.\n\nWith a form.`,
     );
-    expect(turn.item.item.text).toContain(
-      'This project spans several repositories; your working directory is one of them',
-    );
-    expect(turn.item.item.text).toContain('With a form.');
-    expect(turn.item.item.text).toContain('Do not change the status field');
     const done = await featureEvent('login', 'review', mark);
     expect(done.feature.lastRun).toMatchObject({ agentId, outcome: 'review' });
     expect(done.feature.lastRun.endedAt).toBeTruthy();
@@ -336,6 +334,41 @@ describe('features', () => {
     expect(text).toContain('owner: anders');
     expect(text).toMatch(/tags:\n\s+- a\n\s+- b/);
     expect(text).toContain('Body stays.\n\n- one\n- two\n');
+  });
+
+  it('a manager restart mid-turn does not settle the run: replayed states are history', async () => {
+    const slow = (
+      await api.post(`/api/projects/${projectId}/agents`, { name: 'slowpoke' })
+    ).body.agent.id as string;
+    write(
+      'slow',
+      { title: 'Slow one', status: 'planned', priority: 9 },
+      'take it slow please',
+    );
+    const mark = events.mark();
+    await api.post(`/api/projects/${projectId}/features/slow/queue`, {
+      agentId: slow,
+    });
+    await featureEvent('slow', 'in-progress', mark);
+
+    await events.close();
+    await m.stop();
+    m = await startManager(daemon.url, m.dataDir);
+    api = new Api(m.url);
+    await api.login();
+    events = await Events.connect(m.url, api.cookie);
+    const afterRestart = events.mark();
+    await sleep(500); // the resync replays the log, which contains earlier idle states
+    expect(status('slow')).toBe('in-progress');
+    const agent = await api.get(`/api/agents/${slow}`);
+    expect(agent.body.status.state).toBe('working');
+
+    const done = await featureEvent('slow', 'review', afterRestart);
+    expect(done.feature.lastRun).toMatchObject({
+      agentId: slow,
+      outcome: 'review',
+    });
+    expect(status('slow')).toBe('review');
   });
 
   it('creates a feature in a chosen repo and reads it back from there', async () => {
