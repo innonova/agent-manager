@@ -63,6 +63,7 @@ Copilot's ACP.
 | A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
 | Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
 | Git status/diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. |
+| No file containment beyond rejecting `..` | Agents run with permissions bypassed and sudo on an isolated VM; containing the editor would be patching a missing barn wall with toothpicks. Authentication is the boundary. Symlinks are followed. |
 
 ## Terminology
 
@@ -275,16 +276,17 @@ POST   /api/agents/:id/archive
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean }
 
-GET    /api/projects/:id/files?path=<dir>                       -> tree entries        (milestone 2)
-GET    /api/projects/:id/file?path=<file>                       -> content, size-capped (milestone 2)
+GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime }] }, directories first
+GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
 GET    /api/projects/:id/features                               -> parsed feature files (milestone 3)
 POST   /api/projects/:id/features/:slug/queue                                           (milestone 3)
 ```
 
-Paths for files are resolved inside the project root only; `..` is
-rejected. That is a correctness rule, not a security one, on this VM.
-`path.resolve` alone is not containment (symlinks escape without `..`);
-the file endpoints need a real-path check before milestone two ships.
+File paths are relative to the project root, normalised, and `..` is
+rejected as a correctness rule; symlinks are followed and nothing else is
+contained (see the decisions table). A symlink to a directory lists as a
+directory; other symlinks are typed `symlink`. Binary detection is a NUL
+byte in the first 8 KB.
 
 Every mutating request must be a JSON object (400 otherwise) and, when the
 browser sends an `Origin` header, that origin must be the manager's own
@@ -369,8 +371,8 @@ running in the daemon and are re-adopted on start.
    adapter, state and items, REST and events, rebuild-from-daemon. UI:
    login, project list with counts, agent view with transcript and turn
    input.
-2. **Files**: tree and file endpoints; UI file browser with Monaco,
-   read-only.
+2. **Files** (done): tree and file endpoints; UI file browser with Monaco,
+   read-only, refreshed when an agent in the project finishes a turn.
 3. **Features**: `features/*.md` convention, parsing, listing, queueing a
    feature as a turn for a chosen agent, manager-owned status updates.
 4. Later, each needing its own discussion: git status and diff per agent;

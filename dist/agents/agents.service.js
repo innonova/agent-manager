@@ -279,8 +279,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         this.deleting.delete(projectId);
     }
     async stopLocked(agent, wait = false) {
-        if (!agent.currentSessionId && this.ensureLive(agent).syncPending) {
+        const liveAgent = this.ensureLive(agent);
+        if (!agent.currentSessionId && liveAgent.adoptionNeeded) {
             this.adoptSessions(agent, await this.daemon.listSessions());
+            liveAgent.adoptionNeeded = false;
         }
         const id = agent.currentSessionId;
         if (!id)
@@ -584,6 +586,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         });
     }
     gate(live) {
+        live.adoptionNeeded = true;
         if (live.syncPending)
             return;
         const d = deferred();
@@ -618,6 +621,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 const sessions = await this.daemon.listSessions();
                 const byId = new Map(sessions.map((s) => [s.id, s]));
                 this.adoptSessions(agent, sessions);
+                live.adoptionNeeded = false;
                 let refs = this.sessions(agent.id);
                 const failedEarlier = refs.some((ref, i) => i < refs.length - 1 &&
                     live.sessions.get(ref.daemonSessionId)?.complete === false);
@@ -655,14 +659,14 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                     const isCurrent = s.id === agent.currentSessionId;
                     if (isCurrent &&
                         s.state === 'running' &&
-                        live.status.state === 'starting') {
+                        (live.status.state === 'starting' || live.status.state === 'exited')) {
                         this.setState(agent, live, sl.adapter.initialState ?? 'starting', null);
                     }
                     if (!sl.replayed ||
                         sl.lastSeq < s.lastSeq ||
                         (isCurrent && s.state === 'running')) {
                         await this.attachSession(agent, live, sl);
-                        if (isCurrent && s.state === 'running')
+                        if (isCurrent && s.state === 'running' && sl.replayed)
                             this.reconcileTurnState(agent, live, sl);
                     }
                     if (s.state === 'exited' && !sl.pendingExit) {
@@ -729,6 +733,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 synced: Promise.resolve(),
                 markSynced: () => undefined,
                 syncPending: false,
+                adoptionNeeded: true,
             };
             this.live.set(agent.id, live);
         }
