@@ -4,12 +4,14 @@ describe('feature files', () => {
   it('parses frontmatter with defaults and keeps unknown keys', () => {
     const f = parseFeature(
       'login',
-      'features/login.md',
+      'app',
+      'app/features/login.md',
       '---\ntitle: Login\nstatus: review\npriority: 2\ndependsOn: [users, db]\nowner: anders\n---\n\n# Login\n\nAdd a login page.\n',
       5,
     );
     expect(f).toMatchObject({
       slug: 'login',
+      repo: 'app',
       title: 'Login',
       status: 'review',
       priority: 2,
@@ -22,7 +24,13 @@ describe('feature files', () => {
   });
 
   it('falls back to the first heading, planned and priority 100', () => {
-    const f = parseFeature('x', 'features/x.md', '# Something\n\nbody', 1);
+    const f = parseFeature(
+      'x',
+      'app',
+      'app/features/x.md',
+      '# Something\n\nbody',
+      1,
+    );
     expect(f).toMatchObject({
       title: 'Something',
       status: 'planned',
@@ -32,6 +40,7 @@ describe('feature files', () => {
     expect(
       parseFeature(
         'y',
+        'app',
         'p',
         '---\nstatus: nonsense\npriority: abc\n---\nno heading',
         1,
@@ -52,7 +61,7 @@ describe('feature files', () => {
     expect(text).toBe(
       '---\ntitle: T\nstatus: done\npriority: 1\nprofile: claude\ndependsOn:\n  - a\nowner: x\n---\n\nBody text.\n',
     );
-    expect(parseFeature('t', 'p', text, 0)).toMatchObject({
+    expect(parseFeature('t', 'app', 'p', text, 0)).toMatchObject({
       title: 'T',
       status: 'done',
       priority: 1,

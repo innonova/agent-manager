@@ -10,7 +10,6 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var AgentsService_1;
 import { BadRequestException, ConflictException, HttpException, Injectable, Logger, NotFoundException, } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AdaptersService } from '../adapters/adapters.service.js';
 import { DaemonClient, DaemonError, } from '../daemon/daemon-client.js';
@@ -139,8 +138,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         if (input.cwd !== undefined && typeof input.cwd !== 'string')
             throw new BadRequestException('"cwd" must be a string');
         const cwd = input.cwd
-            ? path.resolve(project.path, input.cwd)
+            ? this.projects.repoOf(project, input.cwd)?.path
             : project.path;
+        if (!cwd)
+            throw new BadRequestException(`"cwd" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`);
         const others = this.list(projectId).filter((a) => a.agent.cwd === cwd && a.status.state !== 'exited');
         if (others.length)
             this.logger.warn(`agent "${input.name}" shares cwd ${cwd} with ${others.map((o) => o.agent.name).join(', ')}; two writers in one tree is on the user`);
@@ -347,7 +348,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             session = await this.daemon.start({
                 id,
                 profile: agent.profile,
-                args: adapter.startArgs({ resume: agent.vendorConversationId }),
+                args: adapter.startArgs({
+                    resume: agent.vendorConversationId,
+                    extraDirs: this.extraDirs(agent),
+                }),
                 cwd: agent.cwd,
                 label: `${LABEL_PREFIX}${agent.id}`,
             });
@@ -387,6 +391,17 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 resume: agent.vendorConversationId,
             }));
         await this.reconcileCurrent(agent, live);
+    }
+    extraDirs(agent) {
+        try {
+            return this.projects
+                .get(agent.projectId)
+                .repos.map((r) => r.path)
+                .filter((p) => p !== agent.cwd);
+        }
+        catch {
+            return [];
+        }
     }
     trackSession(agent, live, sessionId, adapter) {
         let sl = live.sessions.get(sessionId);

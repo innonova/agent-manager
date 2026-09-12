@@ -2,7 +2,7 @@ import { OnModuleInit } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { AgentsService } from '../agents/agents.service.js';
 import { DbService } from '../db/db.service.js';
-import { ProjectsService } from '../projects/projects.service.js';
+import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { FeatureFile } from './feature-file.js';
 export interface Feature extends Omit<FeatureFile, 'extra'> {
     agentId: string | null;
@@ -25,6 +25,8 @@ export declare class FeaturesService extends EventEmitter<{
     constructor(dbs: DbService, projects: ProjectsService, agents: AgentsService);
     private get db();
     onModuleInit(): void;
+    private readAll;
+    private readOne;
     list(projectId: string): Promise<Feature[]>;
     get(projectId: string, slug: string): Promise<Feature>;
     private decorate;
@@ -34,6 +36,7 @@ export declare class FeaturesService extends EventEmitter<{
         body?: unknown;
         priority?: unknown;
         dependsOn?: unknown;
+        repo?: unknown;
     }): Promise<Feature>;
     setStatus(projectId: string, slug: string, status: unknown): Promise<Feature>;
     queue(projectId: string, slug: string, input: {
@@ -44,4 +47,4 @@ export declare class FeaturesService extends EventEmitter<{
     private onAgentState;
     private finishRun;
 }
-export declare function prompt(f: FeatureFile): string;
+export declare function prompt(f: FeatureFile, repos: Repo[]): string;

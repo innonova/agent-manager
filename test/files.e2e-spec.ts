@@ -36,7 +36,12 @@ beforeAll(async () => {
   );
   fs.symlinkSync(path.join(root, 'src'), path.join(root, 'srclink'));
   fs.symlinkSync('/etc/hostname', path.join(root, 'outside'));
-  const r = await api.post('/api/projects', { name: 'files', path: root });
+  fs.mkdirSync(path.join(root, 'second', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'second', 'lib', 'x.txt'), 'second repo\n');
+  const r = await api.post('/api/projects', {
+    name: 'files',
+    repos: [{ name: 'main', path: root }, { path: path.join(root, 'second') }],
+  });
   projectId = r.body.project.id;
 }, 30000);
 
@@ -46,69 +51,90 @@ afterAll(async () => {
 });
 
 describe('files', () => {
-  it('lists the root with directories first and every entry typed', async () => {
-    const r = await api.get(`/api/projects/${projectId}/files`);
+  it('lists the repos at the root, then each repo with directories first and every entry typed', async () => {
+    const root = await api.get(`/api/projects/${projectId}/files`);
+    expect(root.status).toBe(200);
+    expect(root.body).toMatchObject({
+      path: '',
+      entries: [
+        { name: 'main', path: 'main', type: 'dir' },
+        { name: 'second', path: 'second', type: 'dir' },
+      ],
+    });
+    const r = await api.get(`/api/projects/${projectId}/files?path=main`);
     expect(r.status).toBe(200);
-    expect(r.body.path).toBe('');
+    expect(r.body.path).toBe('main');
     const names = r.body.entries.map((e: any) => `${e.type}:${e.name}`);
-    expect(names.slice(0, 2)).toEqual(['dir:src', 'dir:srclink']); // a symlink to a directory lists as a directory
+    expect(names.slice(0, 3)).toEqual(['dir:second', 'dir:src', 'dir:srclink']); // a symlink to a directory lists as a directory
     expect(names).toContain('file:.hidden');
     expect(names).toContain('symlink:outside');
     const readme = r.body.entries.find((e: any) => e.name === 'README.md');
-    expect(readme).toMatchObject({ path: 'README.md', type: 'file', size: 8 });
+    expect(readme).toMatchObject({
+      path: 'main/README.md',
+      type: 'file',
+      size: 8,
+    });
     expect(typeof readme.mtime).toBe('number');
   });
 
   it('lists nested directories by relative path and rejects leaving the project', async () => {
-    const r = await api.get(`/api/projects/${projectId}/files?path=src/deep`);
+    const r = await api.get(
+      `/api/projects/${projectId}/files?path=main/src/deep`,
+    );
     expect(r.body).toMatchObject({
-      path: 'src/deep',
-      entries: [{ name: 'note.txt', path: 'src/deep/note.txt', type: 'file' }],
+      path: 'main/src/deep',
+      entries: [
+        { name: 'note.txt', path: 'main/src/deep/note.txt', type: 'file' },
+      ],
     });
     expect(
-      (await api.get(`/api/projects/${projectId}/files?path=/src/`)).body.path,
-    ).toBe('src');
+      (await api.get(`/api/projects/${projectId}/files?path=/main/src/`)).body
+        .path,
+    ).toBe('main/src');
     expect(
       (await api.get(`/api/projects/${projectId}/files?path=..`)).status,
     ).toBe(400);
     expect(
-      (await api.get(`/api/projects/${projectId}/files?path=src/../..`)).status,
+      (await api.get(`/api/projects/${projectId}/files?path=main/../..`))
+        .status,
     ).toBe(400);
     expect(
       (await api.get(`/api/projects/${projectId}/files?path=nope`)).status,
     ).toBe(404);
     expect(
-      (await api.get(`/api/projects/${projectId}/files?path=README.md`)).status,
+      (await api.get(`/api/projects/${projectId}/files?path=main/README.md`))
+        .status,
     ).toBe(400);
     expect((await api.get(`/api/projects/nope/files`)).status).toBe(404);
   });
 
   it('reads text files, flags binary and oversized ones', async () => {
     const r = await api.get(
-      `/api/projects/${projectId}/file?path=src/index.ts`,
+      `/api/projects/${projectId}/file?path=main/src/index.ts`,
     );
     expect(r.body).toMatchObject({
-      path: 'src/index.ts',
+      path: 'main/src/index.ts',
       content: 'export const x = 1;\n',
       binary: false,
       truncated: false,
       size: 20,
     });
     expect(
-      (await api.get(`/api/projects/${projectId}/file?path=blob.bin`)).body,
+      (await api.get(`/api/projects/${projectId}/file?path=main/blob.bin`))
+        .body,
     ).toMatchObject({ binary: true, content: '' });
     expect(
-      (await api.get(`/api/projects/${projectId}/file?path=big.txt`)).body,
+      (await api.get(`/api/projects/${projectId}/file?path=main/big.txt`)).body,
     ).toMatchObject({
       truncated: true,
       content: '',
       size: 2 * 1024 * 1024 + 1,
     });
     expect(
-      (await api.get(`/api/projects/${projectId}/file?path=src`)).status,
+      (await api.get(`/api/projects/${projectId}/file?path=main/src`)).status,
     ).toBe(400);
     expect(
-      (await api.get(`/api/projects/${projectId}/file?path=missing.txt`))
+      (await api.get(`/api/projects/${projectId}/file?path=main/missing.txt`))
         .status,
     ).toBe(404);
     expect(
@@ -117,7 +143,8 @@ describe('files', () => {
     ).toBe(400);
     // symlinks are followed; containment is deliberately not attempted
     expect(
-      (await api.get(`/api/projects/${projectId}/file?path=outside`)).status,
+      (await api.get(`/api/projects/${projectId}/file?path=main/outside`))
+        .status,
     ).toBe(200);
   });
 

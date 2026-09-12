@@ -8,7 +8,6 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentAdapter,
@@ -305,10 +304,14 @@ export class AgentsService
       throw new BadRequestException(`no adapter for profile "${profile}"`);
     if (input.cwd !== undefined && typeof input.cwd !== 'string')
       throw new BadRequestException('"cwd" must be a string');
-    // A relative cwd is relative to the project, never to the daemon.
+    // cwd is one of the project's repos, by name or absolute path; default the primary.
     const cwd = input.cwd
-      ? path.resolve(project.path, input.cwd)
+      ? this.projects.repoOf(project, input.cwd as string)?.path
       : project.path;
+    if (!cwd)
+      throw new BadRequestException(
+        `"cwd" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`,
+      );
     const others = this.list(projectId).filter(
       (a) => a.agent.cwd === cwd && a.status.state !== 'exited',
     );
@@ -557,7 +560,10 @@ export class AgentsService
       session = await this.daemon.start({
         id,
         profile: agent.profile,
-        args: adapter.startArgs({ resume: agent.vendorConversationId }),
+        args: adapter.startArgs({
+          resume: agent.vendorConversationId,
+          extraDirs: this.extraDirs(agent),
+        }),
         cwd: agent.cwd,
         label: `${LABEL_PREFIX}${agent.id}`,
       });
@@ -605,6 +611,18 @@ export class AgentsService
         }),
       );
     await this.reconcileCurrent(agent, live);
+  }
+
+  /** The project's other repositories, for agents that need to be told about them. */
+  private extraDirs(agent: Agent): string[] {
+    try {
+      return this.projects
+        .get(agent.projectId)
+        .repos.map((r) => r.path)
+        .filter((p) => p !== agent.cwd);
+    } catch {
+      return [];
+    }
   }
 
   private trackSession(

@@ -10,8 +10,8 @@ export class CopilotAdapter {
     thought = '';
     cwd = '';
     resume = null;
-    startArgs() {
-        return ['--allow-all'];
+    startArgs({ extraDirs = [], } = {}) {
+        return ['--allow-all', ...extraDirs.flatMap((d) => ['--add-dir', d])];
     }
     startLines(opts) {
         this.cwd = opts.cwd;

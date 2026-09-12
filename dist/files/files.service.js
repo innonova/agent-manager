@@ -18,7 +18,7 @@ let FilesService = class FilesService {
         this.projects = projects;
     }
     resolve(projectId, rel) {
-        const root = this.projects.get(projectId).path;
+        const project = this.projects.get(projectId);
         const raw = rel === undefined || rel === null ? '' : rel;
         if (typeof raw !== 'string')
             throw new BadRequestException('"path" must be a string');
@@ -31,10 +31,31 @@ let FilesService = class FilesService {
             normalised.includes('/../'))
             throw new BadRequestException('"path" may not leave the project');
         const clean = normalised === '.' ? '' : normalised;
-        return { abs: path.join(root, clean), rel: clean, root };
+        if (clean === '')
+            return { root: true };
+        const [repoName, ...rest] = clean.split('/');
+        const repo = project.repos.find((r) => r.name === repoName);
+        if (!repo)
+            throw new NotFoundException(`no such repository in this project: ${repoName}`);
+        return { abs: path.join(repo.path, ...rest), rel: clean, repo: repo.name };
     }
     async list(projectId, rel) {
-        const { abs, rel: clean } = this.resolve(projectId, rel);
+        const target = this.resolve(projectId, rel);
+        if ('root' in target) {
+            const project = this.projects.get(projectId);
+            const entries = await Promise.all(project.repos.map(async (r) => {
+                const st = await fs.stat(r.path).catch(() => null);
+                return {
+                    name: r.name,
+                    path: r.name,
+                    type: 'dir',
+                    size: 0,
+                    mtime: st?.mtimeMs ?? 0,
+                };
+            }));
+            return { path: '', entries };
+        }
+        const { abs, rel: clean } = target;
         let names;
         try {
             names = await fs.readdir(abs, { withFileTypes: true });
@@ -82,7 +103,10 @@ let FilesService = class FilesService {
         return { path: clean, entries };
     }
     async read(projectId, rel) {
-        const { abs, rel: clean } = this.resolve(projectId, rel);
+        const target = this.resolve(projectId, rel);
+        if ('root' in target)
+            throw new BadRequestException('is a directory: /');
+        const { abs, rel: clean } = target;
         let st;
         try {
             st = await fs.stat(abs);

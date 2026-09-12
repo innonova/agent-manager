@@ -83,6 +83,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     releaseProject(projectId: string): void;
     private stopLocked;
     private startSession;
+    private extraDirs;
     private trackSession;
     private attachSession;
     private sendLines;

@@ -32,7 +32,7 @@ function split(text) {
         body: m[2],
     };
 }
-export function parseFeature(slug, filePath, text, mtime) {
+export function parseFeature(slug, repo, filePath, text, mtime) {
     const { front, body } = split(text);
     const { title, status, priority, profile, dependsOn, ...extra } = front;
     const st = FEATURE_STATUSES.includes(status)
@@ -51,6 +51,7 @@ export function parseFeature(slug, filePath, text, mtime) {
     const firstHeading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
     return {
         slug,
+        repo,
         path: filePath,
         title: typeof title === 'string' && title.trim()
             ? title.trim()
@@ -77,8 +78,8 @@ export function serializeFeature(f) {
     Object.assign(front, f.extra);
     return `---\n${YAML.stringify(front).trimEnd()}\n---\n\n${f.body.replace(/\s+$/, '')}\n`;
 }
-export async function readFeatures(projectRoot) {
-    const dir = path.join(projectRoot, FEATURES_DIR);
+export async function readFeatures(repo) {
+    const dir = path.join(repo.path, FEATURES_DIR);
     let names;
     try {
         names = await fs.readdir(dir);
@@ -101,27 +102,27 @@ export async function readFeatures(projectRoot) {
                 fs.readFile(p, 'utf8'),
                 fs.stat(p),
             ]);
-            out.push(parseFeature(slug, path.posix.join(FEATURES_DIR, name), text, st.mtimeMs));
+            out.push(parseFeature(slug, repo.name, path.posix.join(repo.name, FEATURES_DIR, name), text, st.mtimeMs));
         }
         catch {
         }
     }
     return out;
 }
-export async function readFeature(projectRoot, slug) {
+export async function readFeature(repo, slug) {
     if (!isSlug(slug))
         return null;
-    const p = path.join(projectRoot, FEATURES_DIR, `${slug}.md`);
+    const p = path.join(repo.path, FEATURES_DIR, `${slug}.md`);
     try {
         const [text, st] = await Promise.all([fs.readFile(p, 'utf8'), fs.stat(p)]);
-        return parseFeature(slug, path.posix.join(FEATURES_DIR, `${slug}.md`), text, st.mtimeMs);
+        return parseFeature(slug, repo.name, path.posix.join(repo.name, FEATURES_DIR, `${slug}.md`), text, st.mtimeMs);
     }
     catch {
         return null;
     }
 }
-export async function writeFeature(projectRoot, f) {
-    const dir = path.join(projectRoot, FEATURES_DIR);
+export async function writeFeature(repoPath, f) {
+    const dir = path.join(repoPath, FEATURES_DIR);
     await fs.mkdir(dir, { recursive: true });
     const p = path.join(dir, `${f.slug}.md`);
     const tmp = `${p}.tmp`;

@@ -31,8 +31,10 @@ export class CopilotAdapter implements AgentAdapter {
   private cwd = '';
   private resume: string | null = null;
 
-  startArgs(): string[] {
-    return ['--allow-all'];
+  startArgs({
+    extraDirs = [],
+  }: { resume?: string | null; extraDirs?: string[] } = {}): string[] {
+    return ['--allow-all', ...extraDirs.flatMap((d) => ['--add-dir', d])];
   }
 
   startLines(opts: { cwd: string; resume?: string | null }): unknown[] {

@@ -46,8 +46,11 @@ export class ProjectsController {
   update(
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
-  ): { project: Project } {
-    return { project: this.projects.update(id, body) };
+  ): { project: Project; agentCounts: AgentCounts } {
+    return {
+      project: this.projects.update(id, body),
+      agentCounts: this.agents.counts(id),
+    };
   }
 
   /** Stops the project's agents, forgets them, then deletes the project. The repository is untouched. */

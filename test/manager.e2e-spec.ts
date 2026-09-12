@@ -473,6 +473,61 @@ describe('agents', () => {
     ).toBe(409);
   });
 
+  it('accepts a repo set, defaults the agent cwd to the primary repo, and resolves cwd by repo name', async () => {
+    const second = fs.mkdtempSync(path.join(os.tmpdir(), 'am-second-'));
+    const r = await api.post('/api/projects', {
+      name: 'multi',
+      repos: [{ path: projectDir }, { name: 'ui', path: second }],
+      defaultProfile: 'fake',
+    });
+    expect(r.status).toBe(201);
+    expect(r.body.project.repos.map((x: any) => x.name)).toEqual([
+      path.basename(projectDir),
+      'ui',
+    ]);
+    expect(r.body.project.path).toBe(projectDir);
+    const a = await api.post(`/api/projects/${r.body.project.id}/agents`, {
+      name: 'a',
+    });
+    expect(a.status).toBe(201);
+    expect(fs.realpathSync(a.body.agent.cwd)).toBe(fs.realpathSync(projectDir));
+    const b = await api.post(`/api/projects/${r.body.project.id}/agents`, {
+      name: 'b',
+      cwd: 'ui',
+    });
+    expect(b.status).toBe(201);
+    expect(fs.realpathSync(b.body.agent.cwd)).toBe(fs.realpathSync(second));
+    expect(
+      (
+        await api.post(`/api/projects/${r.body.project.id}/agents`, {
+          name: 'c',
+          cwd: 'elsewhere',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await api.post('/api/projects', {
+          name: 'dup',
+          repos: [
+            { name: 'x', path: projectDir },
+            { name: 'x', path: second },
+          ],
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await api.post('/api/projects', { name: 'none', repos: [] })).status,
+    ).toBe(400);
+    const patched = await api.patch(`/api/projects/${r.body.project.id}`, {
+      repos: [{ name: 'ui', path: second }],
+    });
+    expect(patched.status).toBe(200);
+    expect(patched.body.project.repos).toEqual([{ name: 'ui', path: second }]);
+    expect(patched.body.project.path).toBe(second);
+    await api.delete(`/api/projects/${r.body.project.id}`);
+  });
+
   it('validates', async () => {
     const p = await createProject();
     expect(

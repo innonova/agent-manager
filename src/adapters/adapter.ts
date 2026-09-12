@@ -58,7 +58,7 @@ export interface AgentAdapter {
   /** State right after the process starts, before it has said anything. Default 'starting'. */
   readonly initialState?: AgentState;
   /** Extra daemon args for a new session; `resume` is the vendor conversation id. */
-  startArgs(opts: { resume?: string | null }): string[];
+  startArgs(opts: { resume?: string | null; extraDirs?: string[] }): string[];
   /** stdin lines to send once the session is running and attached (protocol handshakes). */
   startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
   /** stdin lines for a user turn. */

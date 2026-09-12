@@ -38,12 +38,16 @@ export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export class FilesService {
   constructor(private readonly projects: ProjectsService) {}
 
-  /** Resolves a client path inside the project; returns the absolute path and the normalised relative one. */
+  /**
+   * Resolves a client path. The first segment names a repo of the project;
+   * the rest is relative inside it. `..` is rejected as a correctness rule;
+   * nothing else is contained (see docs/design.md, principles).
+   */
   resolve(
     projectId: string,
     rel: unknown,
-  ): { abs: string; rel: string; root: string } {
-    const root = this.projects.get(projectId).path;
+  ): { abs: string; rel: string; repo: string } | { root: true } {
+    const project = this.projects.get(projectId);
     const raw = rel === undefined || rel === null ? '' : rel;
     if (typeof raw !== 'string')
       throw new BadRequestException('"path" must be a string');
@@ -58,14 +62,39 @@ export class FilesService {
     )
       throw new BadRequestException('"path" may not leave the project');
     const clean = normalised === '.' ? '' : normalised;
-    return { abs: path.join(root, clean), rel: clean, root };
+    if (clean === '') return { root: true };
+    const [repoName, ...rest] = clean.split('/');
+    const repo = project.repos.find((r) => r.name === repoName);
+    if (!repo)
+      throw new NotFoundException(
+        `no such repository in this project: ${repoName}`,
+      );
+    return { abs: path.join(repo.path, ...rest), rel: clean, repo: repo.name };
   }
 
   async list(
     projectId: string,
     rel: unknown,
   ): Promise<{ path: string; entries: DirEntry[] }> {
-    const { abs, rel: clean } = this.resolve(projectId, rel);
+    const target = this.resolve(projectId, rel);
+    if ('root' in target) {
+      // The virtual root: one folder per repository.
+      const project = this.projects.get(projectId);
+      const entries = await Promise.all(
+        project.repos.map(async (r): Promise<DirEntry> => {
+          const st = await fs.stat(r.path).catch(() => null);
+          return {
+            name: r.name,
+            path: r.name,
+            type: 'dir',
+            size: 0,
+            mtime: st?.mtimeMs ?? 0,
+          };
+        }),
+      );
+      return { path: '', entries };
+    }
+    const { abs, rel: clean } = target;
     let names: import('node:fs').Dirent[];
     try {
       names = await fs.readdir(abs, { withFileTypes: true });
@@ -117,7 +146,9 @@ export class FilesService {
   }
 
   async read(projectId: string, rel: unknown): Promise<FileContent> {
-    const { abs, rel: clean } = this.resolve(projectId, rel);
+    const target = this.resolve(projectId, rel);
+    if ('root' in target) throw new BadRequestException('is a directory: /');
+    const { abs, rel: clean } = target;
     let st: import('node:fs').Stats;
     try {
       st = await fs.stat(abs);

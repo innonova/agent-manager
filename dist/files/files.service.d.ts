@@ -21,7 +21,9 @@ export declare class FilesService {
     resolve(projectId: string, rel: unknown): {
         abs: string;
         rel: string;
-        root: string;
+        repo: string;
+    } | {
+        root: true;
     };
     list(projectId: string, rel: unknown): Promise<{
         path: string;

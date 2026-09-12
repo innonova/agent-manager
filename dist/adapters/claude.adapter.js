@@ -3,10 +3,12 @@ export class ClaudeAdapter {
     message = 0;
     streaming = null;
     turnOpen = false;
-    startArgs({ resume }) {
+    startArgs({ resume, extraDirs = [], }) {
         const args = ['--dangerously-skip-permissions'];
         if (resume)
             args.push('--resume', resume);
+        for (const d of extraDirs)
+            args.push('--add-dir', d);
         return args;
     }
     turnInProgress() {

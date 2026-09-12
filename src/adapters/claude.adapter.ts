@@ -28,9 +28,16 @@ export class ClaudeAdapter implements AgentAdapter {
   } | null = null;
   private turnOpen = false;
 
-  startArgs({ resume }: { resume?: string | null }): string[] {
+  startArgs({
+    resume,
+    extraDirs = [],
+  }: {
+    resume?: string | null;
+    extraDirs?: string[];
+  }): string[] {
     const args = ['--dangerously-skip-permissions'];
     if (resume) args.push('--resume', resume);
+    for (const d of extraDirs) args.push('--add-dir', d); // the project's other repositories
     return args;
   }
 

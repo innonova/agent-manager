@@ -37,7 +37,10 @@ let ProjectsController = class ProjectsController {
         };
     }
     update(id, body) {
-        return { project: this.projects.update(id, body) };
+        return {
+            project: this.projects.update(id, body),
+            agentCounts: this.agents.counts(id),
+        };
     }
     async remove(id) {
         this.projects.get(id);

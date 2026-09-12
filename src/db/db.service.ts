@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS projects (
   default_profile TEXT,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS project_repos (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (project_id, name)
+);
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -79,6 +86,17 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    // Projects created before repos existed: their path becomes the single repo.
+    const legacy = this.db
+      .prepare(
+        'SELECT id, path FROM projects WHERE id NOT IN (SELECT project_id FROM project_repos)',
+      )
+      .all() as { id: string; path: string }[];
+    const insert = this.db.prepare(
+      'INSERT INTO project_repos (project_id, name, path, position) VALUES (?, ?, ?, 0)',
+    );
+    for (const p of legacy)
+      insert.run(p.id, path.basename(p.path) || 'repo', p.path);
   }
 
   onModuleDestroy(): void {

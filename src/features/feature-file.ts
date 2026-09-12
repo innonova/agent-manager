@@ -14,6 +14,9 @@ export type FeatureStatus = (typeof FEATURE_STATUSES)[number];
 
 export interface FeatureFile {
   slug: string;
+  /** The repo (by name) the file lives in. */
+  repo: string;
+  /** `<repo>/features/<slug>.md`. */
   path: string;
   title: string;
   status: FeatureStatus;
@@ -54,6 +57,7 @@ function split(text: string): { front: Record<string, unknown>; body: string } {
 
 export function parseFeature(
   slug: string,
+  repo: string,
   filePath: string,
   text: string,
   mtime: number,
@@ -77,6 +81,7 @@ export function parseFeature(
   const firstHeading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
   return {
     slug,
+    repo,
     path: filePath,
     title:
       typeof title === 'string' && title.trim()
@@ -109,10 +114,11 @@ export function serializeFeature(
   return `---\n${YAML.stringify(front).trimEnd()}\n---\n\n${f.body.replace(/\s+$/, '')}\n`;
 }
 
-export async function readFeatures(
-  projectRoot: string,
-): Promise<FeatureFile[]> {
-  const dir = path.join(projectRoot, FEATURES_DIR);
+export async function readFeatures(repo: {
+  name: string;
+  path: string;
+}): Promise<FeatureFile[]> {
+  const dir = path.join(repo.path, FEATURES_DIR);
   let names: string[];
   try {
     names = await fs.readdir(dir);
@@ -134,7 +140,8 @@ export async function readFeatures(
       out.push(
         parseFeature(
           slug,
-          path.posix.join(FEATURES_DIR, name),
+          repo.name,
+          path.posix.join(repo.name, FEATURES_DIR, name),
           text,
           st.mtimeMs,
         ),
@@ -147,16 +154,17 @@ export async function readFeatures(
 }
 
 export async function readFeature(
-  projectRoot: string,
+  repo: { name: string; path: string },
   slug: string,
 ): Promise<FeatureFile | null> {
   if (!isSlug(slug)) return null;
-  const p = path.join(projectRoot, FEATURES_DIR, `${slug}.md`);
+  const p = path.join(repo.path, FEATURES_DIR, `${slug}.md`);
   try {
     const [text, st] = await Promise.all([fs.readFile(p, 'utf8'), fs.stat(p)]);
     return parseFeature(
       slug,
-      path.posix.join(FEATURES_DIR, `${slug}.md`),
+      repo.name,
+      path.posix.join(repo.name, FEATURES_DIR, `${slug}.md`),
       text,
       st.mtimeMs,
     );
@@ -167,10 +175,10 @@ export async function readFeature(
 
 /** Rewrites a feature file with new frontmatter values, keeping the body and unknown keys. */
 export async function writeFeature(
-  projectRoot: string,
+  repoPath: string,
   f: FeatureFile,
 ): Promise<void> {
-  const dir = path.join(projectRoot, FEATURES_DIR);
+  const dir = path.join(repoPath, FEATURES_DIR);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${f.slug}.md`);
   const tmp = `${p}.tmp`;

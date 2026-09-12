@@ -58,10 +58,18 @@ beforeAll(async () => {
     'please error out',
   );
   fs.writeFileSync(path.join(root, 'features', 'notes.txt'), 'ignored');
+  fs.mkdirSync(path.join(root, 'ui', 'features'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'ui', 'features', 'theme.md'),
+    '---\ntitle: Theme\nstatus: planned\npriority: 8\n---\n\nDark mode.\n',
+  );
   projectId = (
     await api.post('/api/projects', {
       name: 'feat',
-      path: root,
+      repos: [
+        { name: 'main', path: root },
+        { name: 'ui', path: path.join(root, 'ui') },
+      ],
       defaultProfile: 'fake',
     })
   ).body.project.id;
@@ -103,13 +111,15 @@ describe('features', () => {
       'login:planned:2',
       'reports:planned:3',
       'oops:planned:5',
+      'theme:planned:8',
       'db:done:1',
     ]);
     const login = r.body.features.find((f: any) => f.slug === 'login');
     expect(login).toMatchObject({
       title: 'Login page',
       dependsOn: ['db'],
-      path: 'features/login.md',
+      repo: 'main',
+      path: 'main/features/login.md',
       agentId: null,
       lastRun: null,
     });
@@ -189,7 +199,10 @@ describe('features', () => {
       mark,
     );
     expect(turn.item.item.text).toContain(
-      'Implement the feature "Login page", described in features/login.md',
+      'Implement the feature "Login page", described in main/features/login.md',
+    );
+    expect(turn.item.item.text).toContain(
+      'This project spans several repositories:',
     );
     expect(turn.item.item.text).toContain('With a form.');
     expect(turn.item.item.text).toContain('Do not change the status field');
@@ -323,6 +336,34 @@ describe('features', () => {
     expect(text).toContain('owner: anders');
     expect(text).toMatch(/tags:\n\s+- a\n\s+- b/);
     expect(text).toContain('Body stays.\n\n- one\n- two\n');
+  });
+
+  it('creates a feature in a chosen repo and reads it back from there', async () => {
+    const r = await api.post(`/api/projects/${projectId}/features`, {
+      slug: 'palette',
+      title: 'Palette',
+      repo: 'ui',
+    });
+    expect(r.status).toBe(201);
+    expect(r.body.feature).toMatchObject({
+      repo: 'ui',
+      path: 'ui/features/palette.md',
+    });
+    expect(fs.existsSync(path.join(root, 'ui', 'features', 'palette.md'))).toBe(
+      true,
+    );
+    expect(
+      (await api.get(`/api/projects/${projectId}/features/theme`)).body.feature,
+    ).toMatchObject({ repo: 'ui', title: 'Theme' });
+    expect(
+      (
+        await api.post(`/api/projects/${projectId}/features`, {
+          slug: 'x',
+          title: 'x',
+          repo: 'nope',
+        })
+      ).status,
+    ).toBe(400);
   });
 
   it('rejects an agent from another project', async () => {

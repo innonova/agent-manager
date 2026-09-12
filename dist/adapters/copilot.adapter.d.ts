@@ -12,7 +12,10 @@ export declare class CopilotAdapter implements AgentAdapter {
     private thought;
     private cwd;
     private resume;
-    startArgs(): string[];
+    startArgs({ extraDirs, }?: {
+        resume?: string | null;
+        extraDirs?: string[];
+    }): string[];
     startLines(opts: {
         cwd: string;
         resume?: string | null;

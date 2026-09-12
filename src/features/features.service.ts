@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { AgentsService } from '../agents/agents.service.js';
 import type { AgentStatus } from '../agents/agents.service.js';
 import { DbService } from '../db/db.service.js';
-import { ProjectsService } from '../projects/projects.service.js';
+import { ProjectsService, Repo } from '../projects/projects.service.js';
 import {
   FEATURE_STATUSES,
   FeatureFile,
@@ -50,12 +50,17 @@ interface RunRow {
   ended_at: number | null;
   outcome: string | null;
 }
+interface Found {
+  file: FeatureFile;
+  repoPath: string;
+}
 
 /**
- * Features are markdown files under `features/` in the project; their
- * `status` is owned by the manager while they move through the queue, and
- * by the human otherwise. A queue per agent starts the next feature when
- * the agent goes idle; the run's outcome comes from the agent's state.
+ * Features are markdown files under `features/` in any of the project's
+ * repositories; their `status` is owned by the manager while they move
+ * through the queue, and by the human otherwise. A queue per agent starts
+ * the next feature when the agent is free; the run's outcome comes from
+ * the agent's state.
  */
 @Injectable()
 export class FeaturesService
@@ -86,12 +91,40 @@ export class FeaturesService
     );
   }
 
-  // ---- queries ------------------------------------------------------------
+  // ---- reading --------------------------------------------------------------
+
+  /** Every repo's features; a slug present in two repos keeps the first (the primary wins) and is logged. */
+  private async readAll(repos: Repo[]): Promise<FeatureFile[]> {
+    const seen = new Map<string, FeatureFile>();
+    for (const repo of repos) {
+      for (const f of await readFeatures(repo)) {
+        const first = seen.get(f.slug);
+        if (first) {
+          this.logger.warn(
+            `feature slug ${f.slug} exists in both ${first.repo} and ${repo.name}; using ${first.repo}`,
+          );
+          continue;
+        }
+        seen.set(f.slug, f);
+      }
+    }
+    return [...seen.values()];
+  }
+
+  private async readOne(repos: Repo[], slug: string): Promise<Found | null> {
+    if (!isSlug(slug)) return null;
+    for (const repo of repos) {
+      const file = await readFeature(repo, slug);
+      if (file) return { file, repoPath: repo.path };
+    }
+    return null;
+  }
 
   async list(projectId: string): Promise<Feature[]> {
     const project = this.projects.get(projectId);
-    const files = await readFeatures(project.path);
-    const features = files.map((f) => this.decorate(projectId, f));
+    const features = (await this.readAll(project.repos)).map((f) =>
+      this.decorate(projectId, f),
+    );
     const order: Record<FeatureStatus, number> = {
       'in-progress': 0,
       queued: 1,
@@ -110,9 +143,9 @@ export class FeaturesService
 
   async get(projectId: string, slug: string): Promise<Feature> {
     const project = this.projects.get(projectId);
-    const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-    if (!f) throw new NotFoundException(`no feature ${slug}`);
-    return this.decorate(projectId, f);
+    const found = await this.readOne(project.repos, slug);
+    if (!found) throw new NotFoundException(`no feature ${slug}`);
+    return this.decorate(projectId, found.file);
   }
 
   private decorate(projectId: string, f: FeatureFile): Feature {
@@ -142,7 +175,7 @@ export class FeaturesService
     };
   }
 
-  // ---- commands -----------------------------------------------------------
+  // ---- commands -------------------------------------------------------------
 
   async create(
     projectId: string,
@@ -152,6 +185,7 @@ export class FeaturesService
       body?: unknown;
       priority?: unknown;
       dependsOn?: unknown;
+      repo?: unknown;
     },
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
@@ -175,11 +209,20 @@ export class FeaturesService
           : null;
     if (!dependsOn)
       throw new BadRequestException('"dependsOn" must be a list of slugs');
-    if (await readFeature(project.path, input.slug))
+    const repo =
+      input.repo === undefined || input.repo === null || input.repo === ''
+        ? project.repos[0]
+        : this.projects.repoOf(project, String(input.repo));
+    if (!repo)
+      throw new BadRequestException(
+        `"repo" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`,
+      );
+    if (await this.readOne(project.repos, input.slug))
       throw new ConflictException(`feature ${input.slug} already exists`);
     const f: FeatureFile = {
       slug: input.slug,
-      path: `features/${input.slug}.md`,
+      repo: repo.name,
+      path: `${repo.name}/features/${input.slug}.md`,
       title: input.title.trim(),
       status: 'planned',
       priority,
@@ -189,7 +232,7 @@ export class FeaturesService
       extra: {},
       mtime: Date.now(),
     };
-    await writeFeature(project.path, f);
+    await writeFeature(repo.path, f);
     const feature = await this.get(projectId, f.slug);
     this.emit('changed', projectId, feature);
     return feature;
@@ -211,23 +254,23 @@ export class FeaturesService
         '"status" must be one of planned, review, blocked, done',
       );
     }
-    const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-    if (!f) throw new NotFoundException(`no feature ${slug}`);
-    if (f.status === 'in-progress')
+    const found = await this.readOne(project.repos, slug);
+    if (!found) throw new NotFoundException(`no feature ${slug}`);
+    if (found.file.status === 'in-progress')
       throw new ConflictException(
         'feature is being worked on; stop or wait first',
       );
     this.db
       .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
       .run(projectId, slug);
-    f.status = status as FeatureStatus;
-    await writeFeature(project.path, f);
+    found.file.status = status as FeatureStatus;
+    await writeFeature(found.repoPath, found.file);
     const feature = await this.get(projectId, slug);
     this.emit('changed', projectId, feature);
     return feature;
   }
 
-  /** Puts a feature on an agent's queue; starts at once if the agent is idle. */
+  /** Puts a feature on an agent's queue; starts at once if the agent is free. */
   async queue(
     projectId: string,
     slug: string,
@@ -239,13 +282,14 @@ export class FeaturesService
     const agent = this.agents.get(input.agentId);
     if (agent.projectId !== projectId || agent.archivedAt)
       throw new BadRequestException('agent does not belong to this project');
-    const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-    if (!f) throw new NotFoundException(`no feature ${slug}`);
+    const found = await this.readOne(project.repos, slug);
+    if (!found) throw new NotFoundException(`no feature ${slug}`);
+    const f = found.file;
     if (f.status === 'in-progress' || f.status === 'queued')
       throw new ConflictException(`feature is already ${f.status}`);
     if (f.status === 'done')
       throw new ConflictException('feature is done; reopen it first');
-    const all = await readFeatures(project.path);
+    const all = await this.readAll(project.repos);
     const unmet = f.dependsOn.filter(
       (d) => all.find((x) => x.slug === d)?.status !== 'done',
     );
@@ -259,7 +303,7 @@ export class FeaturesService
       )
       .run(projectId, slug, agent.id, Date.now());
     f.status = 'queued';
-    await writeFeature(project.path, f);
+    await writeFeature(found.repoPath, f);
     this.emit('changed', projectId, await this.get(projectId, slug));
     await this.startNext(agent.id);
     return this.get(projectId, slug);
@@ -267,23 +311,23 @@ export class FeaturesService
 
   async dequeue(projectId: string, slug: string): Promise<Feature> {
     const project = this.projects.get(projectId);
-    const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-    if (!f) throw new NotFoundException(`no feature ${slug}`);
-    if (f.status !== 'queued')
+    const found = await this.readOne(project.repos, slug);
+    if (!found) throw new NotFoundException(`no feature ${slug}`);
+    if (found.file.status !== 'queued')
       throw new ConflictException('feature is not queued');
     this.db
       .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
       .run(projectId, slug);
-    f.status = 'planned';
-    await writeFeature(project.path, f);
+    found.file.status = 'planned';
+    await writeFeature(found.repoPath, found.file);
     const feature = await this.get(projectId, slug);
     this.emit('changed', projectId, feature);
     return feature;
   }
 
-  // ---- the queue ----------------------------------------------------------
+  // ---- the queue ------------------------------------------------------------
 
-  /** If the agent is idle and has no open run, start its oldest queued feature. */
+  /** If the agent is free and has no open run, start its oldest queued feature. */
   private async startNext(agentId: string): Promise<void> {
     // An agent takes a turn whenever it is not busy: idle, exited (resumes) or in error.
     const status = this.agents.status(agentId);
@@ -306,11 +350,12 @@ export class FeaturesService
       .get(agentId) as QueueRow | undefined;
     if (!next) return;
     const project = this.projects.get(next.project_id);
-    const f = await readFeature(project.path, next.slug);
+    const found = await this.readOne(project.repos, next.slug);
     this.db
       .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
       .run(next.project_id, next.slug);
-    if (!f) return this.startNext(agentId); // the file vanished: skip it
+    if (!found) return this.startNext(agentId); // the file vanished: skip it
+    const f = found.file;
     const run: RunRow = {
       id: randomUUID(),
       project_id: next.project_id,
@@ -326,14 +371,14 @@ export class FeaturesService
       )
       .run(run.id, run.project_id, run.slug, run.agent_id, run.started_at);
     f.status = 'in-progress';
-    await writeFeature(project.path, f);
+    await writeFeature(found.repoPath, f);
     this.emit(
       'changed',
       next.project_id,
       await this.get(next.project_id, next.slug),
     );
     try {
-      await this.agents.turn(agentId, prompt(f));
+      await this.agents.turn(agentId, prompt(f, project.repos));
     } catch (err) {
       this.logger.warn(
         `could not start feature ${next.slug} on agent ${agentId}: ${(err as Error).message}`,
@@ -385,10 +430,10 @@ export class FeaturesService
       )
       .run(Date.now(), note ? `${status}: ${note}` : status, run.id);
     const project = this.projects.get(run.project_id);
-    const f = await readFeature(project.path, run.slug);
-    if (f && f.status === 'in-progress') {
-      f.status = status;
-      await writeFeature(project.path, f);
+    const found = await this.readOne(project.repos, run.slug);
+    if (found && found.file.status === 'in-progress') {
+      found.file.status = status;
+      await writeFeature(found.repoPath, found.file);
     }
     this.emit(
       'changed',
@@ -399,13 +444,21 @@ export class FeaturesService
 }
 
 /** What the agent is told. The feature file itself is the spec. */
-export function prompt(f: FeatureFile): string {
+export function prompt(f: FeatureFile, repos: Repo[]): string {
+  const multi = repos.length > 1;
   return [
-    `Implement the feature "${f.title}", described in ${f.path} of this repository.`,
+    `Implement the feature "${f.title}", described in ${f.path}${multi ? '' : ' of this repository'}.`,
     '',
+    ...(multi
+      ? [
+          'This project spans several repositories:',
+          ...repos.map((r) => `- ${r.name}: ${r.path}`),
+          '',
+        ]
+      : []),
     f.body.trim() || '(The feature file has no description beyond its title.)',
     '',
-    'Work directly in this repository. When you are done, reply with a short summary of what you changed and anything you left open.',
+    `Work directly in the ${multi ? 'repositories' : 'repository'}. When you are done, reply with a short summary of what you changed and anything you left open.`,
     `Do not change the status field in ${f.path}; the manager maintains it.`,
   ].join('\n');
 }

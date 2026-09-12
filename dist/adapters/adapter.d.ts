@@ -52,6 +52,7 @@ export interface AgentAdapter {
     readonly initialState?: AgentState;
     startArgs(opts: {
         resume?: string | null;
+        extraDirs?: string[];
     }): string[];
     startLines?(opts: {
         cwd: string;

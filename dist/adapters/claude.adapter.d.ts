@@ -5,8 +5,9 @@ export declare class ClaudeAdapter implements AgentAdapter {
     private message;
     private streaming;
     private turnOpen;
-    startArgs({ resume }: {
+    startArgs({ resume, extraDirs, }: {
         resume?: string | null;
+        extraDirs?: string[];
     }): string[];
     turnInProgress(): boolean;
     turn(text: string): unknown[];

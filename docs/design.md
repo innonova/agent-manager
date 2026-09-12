@@ -54,6 +54,7 @@ Copilot's ACP.
 | An agent may span several daemon sessions | A headless process exits (end of input, daemon restart, crash) but the conversation continues via the vendor's resume; the user thinks in agents, not processes. |
 | Idle agent processes stay alive | Instant next turn, intact context; memory is cheap on the VM. An idle timeout with automatic resume is a later feature. |
 | Permissions bypassed by default | The VM is isolated for exactly this purpose, and humans approving tool calls one by one is the weaker control anyway. Interactive permissions are a later, opt-in feature; the state model reserves a state for it. |
+| A project is an ordered set of repositories, the first one primary | Real work spans several repos (this system is three). An agent's cwd is one repo; the others are handed to the CLI as extra directories (`--add-dir` for Claude Code and Copilot; Codex runs with full sandbox access and needs nothing). The primary repo is the default cwd and the default home of new features. |
 | Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
 | SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
 | Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. The cookie carries an opaque 256-bit server-side token rather than a signed value; revocation is a row delete. |
@@ -67,14 +68,16 @@ Copilot's ACP.
 
 ## Terminology
 
-- **Project**: a git repository on this machine, registered by absolute
-  path, plus manager-side metadata.
+- **Project**: one or more git repositories on this machine, each
+  registered by absolute path under a short name, plus manager-side
+  metadata. The first repository is the *primary* one.
 - **Agent**: a named, long-lived conversation in a project: a profile
   (which CLI), a cwd, a vendor conversation id, and a history of sessions.
 - **Session**: one daemon session, i.e. one process. An agent's current
   session is where its turns go; earlier sessions are history.
-- **Feature**: a markdown file under `features/` in the project describing
-  a unit of work, with frontmatter for status and metadata.
+- **Feature**: a markdown file under `features/` in one of the project's
+  repositories describing a unit of work, with frontmatter for status and
+  metadata.
 - **Turn**: one user message and everything the agent does until it stops.
 - **Item**: one normalised transcript entry (text, thinking, tool call,
   tool result, error, system note).
@@ -83,20 +86,28 @@ Copilot's ACP.
 
 ```
 User      { id, name, passwordHash, createdAt }
-Project   { id, name, path, defaultProfile, createdAt }
+Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }   // path = repos[0].path
 Agent     { id, projectId, name, profile, cwd, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
-Feature   { projectId, slug, title, status, priority, profile?, dependsOn[] }   // derived from files, not stored
+Feature   { projectId, repo, slug, title, status, priority, profile?, dependsOn[] }   // derived from files, not stored
 ```
 
 Agents and their sessions are stored so the manager knows which daemon
 sessions belong to which agent after a restart. Everything about what
-happened inside a session is rebuilt from the daemon. A relative agent
-`cwd` is resolved against the project path, never against the daemon's
-working directory. Deleting a project stops its agents (stdin close, then
-SIGTERM, then SIGKILL, bounded) and forgets them; the repository is not
+happened inside a session is rebuilt from the daemon. An agent's `cwd` is
+one of the project's repositories, given by name or absolute path and
+defaulting to the primary one; it is stored absolute. When the session
+starts, the project's other repositories are passed to the adapter as
+`extraDirs`, so an agent working in one repo can read and edit the
+others. Deleting a project stops its agents (stdin close, then SIGTERM,
+then SIGKILL, bounded) and forgets them; the repositories are not
 touched.
+
+Repository names are unique within a project, match
+`[A-Za-z0-9][A-Za-z0-9._-]*`, and default to the directory's basename.
+Projects created before repositories existed were migrated to one
+repository named after their directory.
 
 The daemon session `label` also carries `agent-manager:<agentId>` so that a
 session can be attributed even if the manager's database is lost.
@@ -205,7 +216,12 @@ ended, history unavailable) have `seqFrom` 0.
 
 ## Features
 
-A feature is `features/<slug>.md` in the project repository:
+A feature is `features/<slug>.md` in any of the project's repositories;
+its `repo` is the repository it lives in and its `path` is
+`<repo>/features/<slug>.md`. Slugs are unique per project: on a
+duplicate the first repository wins and the manager logs the shadowed
+file. A new feature is created in the primary repository unless the
+request names another.
 
 ```markdown
 ---
@@ -231,8 +247,9 @@ ends; a human then marks it `done` or reopens it.
 Queueing puts the feature on one agent's queue (SQLite `feature_queue`)
 and, if that agent is not busy, starts it at once: a `feature_runs` row is
 opened, the file goes to `in-progress`, and the agent receives one turn
-containing the title, the path, the body, and the instruction not to edit
-the status field. When the agent's state changes, the open run on that
+containing the title, the path, the body, the repository layout when the
+project has more than one, and the instruction not to edit the status
+field. When the agent's state changes, the open run on that
 agent gets its outcome (`review`, or `blocked: <reason>`), and the next
 queued feature starts. A queued feature can be dequeued back to
 `planned`. Dependencies are checked at queue time only. Nothing here is
@@ -314,13 +331,13 @@ POST   /api/auth/logout
 GET    /api/auth/me
 
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]
-POST   /api/projects                { name, path, defaultProfile? }
+POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile? }   (`path` alone is accepted as a one-repo shorthand)
 GET    /api/projects/:id
-PATCH  /api/projects/:id
+PATCH  /api/projects/:id            same fields; `repos` replaces the whole list, order included
 DELETE /api/projects/:id            (does not touch the repository)
 
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }
-POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session
+POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=<n>                           -> { items: StoredItem[] }, n a non-negative integer index
 POST   /api/agents/:id/turn         { text }                    -> 202; 409 { code: 'agent-busy' } while a turn runs; 503 { code: 'agent-unavailable' } if the session's output cannot be attached
@@ -331,18 +348,19 @@ POST   /api/agents/:id/archive
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean }
 
-GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime }] }, directories first
+GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime }] }, directories first; the root lists one dir per repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, queued, review, blocked, planned, done, then priority
-POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn? } -> creates features/<slug>.md as planned
+POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary
 GET    /api/projects/:id/features/:slug
 PATCH  /api/projects/:id/features/:slug  { status }             -> the human's transitions: planned, review, blocked, done (never queued or in-progress)
 POST   /api/projects/:id/features/:slug/queue { agentId }       -> 202; 409 if already queued/running, done, or a dependency is not done
 POST   /api/projects/:id/features/:slug/dequeue                 -> back to planned
 ```
 
-File paths are relative to the project root, normalised, and `..` is
-rejected as a correctness rule; symlinks are followed and nothing else is
+File paths are `<repository name>/<path inside it>`, normalised, and
+`..` is rejected as a correctness rule; an unknown repository name is a
+404. Symlinks are followed and nothing else is
 contained (see the decisions table). A symlink to a directory lists as a
 directory; other symlinks are typed `symlink`. Binary detection is a NUL
 byte in the first 8 KB.

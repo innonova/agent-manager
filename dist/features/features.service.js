@@ -32,10 +32,33 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
     onModuleInit() {
         this.agents.on('state', (agentId, projectId, status) => void this.onAgentState(agentId, projectId, status).catch((err) => this.logger.error(`feature update failed: ${err.message}`)));
     }
+    async readAll(repos) {
+        const seen = new Map();
+        for (const repo of repos) {
+            for (const f of await readFeatures(repo)) {
+                const first = seen.get(f.slug);
+                if (first) {
+                    this.logger.warn(`feature slug ${f.slug} exists in both ${first.repo} and ${repo.name}; using ${first.repo}`);
+                    continue;
+                }
+                seen.set(f.slug, f);
+            }
+        }
+        return [...seen.values()];
+    }
+    async readOne(repos, slug) {
+        if (!isSlug(slug))
+            return null;
+        for (const repo of repos) {
+            const file = await readFeature(repo, slug);
+            if (file)
+                return { file, repoPath: repo.path };
+        }
+        return null;
+    }
     async list(projectId) {
         const project = this.projects.get(projectId);
-        const files = await readFeatures(project.path);
-        const features = files.map((f) => this.decorate(projectId, f));
+        const features = (await this.readAll(project.repos)).map((f) => this.decorate(projectId, f));
         const order = {
             'in-progress': 0,
             queued: 1,
@@ -50,10 +73,10 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
     }
     async get(projectId, slug) {
         const project = this.projects.get(projectId);
-        const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-        if (!f)
+        const found = await this.readOne(project.repos, slug);
+        if (!found)
             throw new NotFoundException(`no feature ${slug}`);
-        return this.decorate(projectId, f);
+        return this.decorate(projectId, found.file);
     }
     decorate(projectId, f) {
         const q = this.db
@@ -96,11 +119,17 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
                 : null;
         if (!dependsOn)
             throw new BadRequestException('"dependsOn" must be a list of slugs');
-        if (await readFeature(project.path, input.slug))
+        const repo = input.repo === undefined || input.repo === null || input.repo === ''
+            ? project.repos[0]
+            : this.projects.repoOf(project, String(input.repo));
+        if (!repo)
+            throw new BadRequestException(`"repo" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`);
+        if (await this.readOne(project.repos, input.slug))
             throw new ConflictException(`feature ${input.slug} already exists`);
         const f = {
             slug: input.slug,
-            path: `features/${input.slug}.md`,
+            repo: repo.name,
+            path: `${repo.name}/features/${input.slug}.md`,
             title: input.title.trim(),
             status: 'planned',
             priority,
@@ -110,7 +139,7 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
             extra: {},
             mtime: Date.now(),
         };
-        await writeFeature(project.path, f);
+        await writeFeature(repo.path, f);
         const feature = await this.get(projectId, f.slug);
         this.emit('changed', projectId, feature);
         return feature;
@@ -122,16 +151,16 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
             status === 'in-progress') {
             throw new BadRequestException('"status" must be one of planned, review, blocked, done');
         }
-        const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-        if (!f)
+        const found = await this.readOne(project.repos, slug);
+        if (!found)
             throw new NotFoundException(`no feature ${slug}`);
-        if (f.status === 'in-progress')
+        if (found.file.status === 'in-progress')
             throw new ConflictException('feature is being worked on; stop or wait first');
         this.db
             .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
             .run(projectId, slug);
-        f.status = status;
-        await writeFeature(project.path, f);
+        found.file.status = status;
+        await writeFeature(found.repoPath, found.file);
         const feature = await this.get(projectId, slug);
         this.emit('changed', projectId, feature);
         return feature;
@@ -143,14 +172,15 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
         const agent = this.agents.get(input.agentId);
         if (agent.projectId !== projectId || agent.archivedAt)
             throw new BadRequestException('agent does not belong to this project');
-        const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-        if (!f)
+        const found = await this.readOne(project.repos, slug);
+        if (!found)
             throw new NotFoundException(`no feature ${slug}`);
+        const f = found.file;
         if (f.status === 'in-progress' || f.status === 'queued')
             throw new ConflictException(`feature is already ${f.status}`);
         if (f.status === 'done')
             throw new ConflictException('feature is done; reopen it first');
-        const all = await readFeatures(project.path);
+        const all = await this.readAll(project.repos);
         const unmet = f.dependsOn.filter((d) => all.find((x) => x.slug === d)?.status !== 'done');
         if (unmet.length)
             throw new ConflictException(`depends on unfinished feature(s): ${unmet.join(', ')}`);
@@ -158,23 +188,23 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
             .prepare('INSERT INTO feature_queue (project_id, slug, agent_id, queued_at) VALUES (?, ?, ?, ?)')
             .run(projectId, slug, agent.id, Date.now());
         f.status = 'queued';
-        await writeFeature(project.path, f);
+        await writeFeature(found.repoPath, f);
         this.emit('changed', projectId, await this.get(projectId, slug));
         await this.startNext(agent.id);
         return this.get(projectId, slug);
     }
     async dequeue(projectId, slug) {
         const project = this.projects.get(projectId);
-        const f = isSlug(slug) ? await readFeature(project.path, slug) : null;
-        if (!f)
+        const found = await this.readOne(project.repos, slug);
+        if (!found)
             throw new NotFoundException(`no feature ${slug}`);
-        if (f.status !== 'queued')
+        if (found.file.status !== 'queued')
             throw new ConflictException('feature is not queued');
         this.db
             .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
             .run(projectId, slug);
-        f.status = 'planned';
-        await writeFeature(project.path, f);
+        found.file.status = 'planned';
+        await writeFeature(found.repoPath, found.file);
         const feature = await this.get(projectId, slug);
         this.emit('changed', projectId, feature);
         return feature;
@@ -196,12 +226,13 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
         if (!next)
             return;
         const project = this.projects.get(next.project_id);
-        const f = await readFeature(project.path, next.slug);
+        const found = await this.readOne(project.repos, next.slug);
         this.db
             .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
             .run(next.project_id, next.slug);
-        if (!f)
+        if (!found)
             return this.startNext(agentId);
+        const f = found.file;
         const run = {
             id: randomUUID(),
             project_id: next.project_id,
@@ -215,10 +246,10 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
             .prepare('INSERT INTO feature_runs (id, project_id, slug, agent_id, started_at) VALUES (?, ?, ?, ?, ?)')
             .run(run.id, run.project_id, run.slug, run.agent_id, run.started_at);
         f.status = 'in-progress';
-        await writeFeature(project.path, f);
+        await writeFeature(found.repoPath, f);
         this.emit('changed', next.project_id, await this.get(next.project_id, next.slug));
         try {
-            await this.agents.turn(agentId, prompt(f));
+            await this.agents.turn(agentId, prompt(f, project.repos));
         }
         catch (err) {
             this.logger.warn(`could not start feature ${next.slug} on agent ${agentId}: ${err.message}`);
@@ -250,10 +281,10 @@ let FeaturesService = FeaturesService_1 = class FeaturesService extends EventEmi
             .prepare('UPDATE feature_runs SET ended_at = ?, outcome = ? WHERE id = ? AND ended_at IS NULL')
             .run(Date.now(), note ? `${status}: ${note}` : status, run.id);
         const project = this.projects.get(run.project_id);
-        const f = await readFeature(project.path, run.slug);
-        if (f && f.status === 'in-progress') {
-            f.status = status;
-            await writeFeature(project.path, f);
+        const found = await this.readOne(project.repos, run.slug);
+        if (found && found.file.status === 'in-progress') {
+            found.file.status = status;
+            await writeFeature(found.repoPath, found.file);
         }
         this.emit('changed', run.project_id, await this.get(run.project_id, run.slug));
     }
@@ -265,13 +296,21 @@ FeaturesService = FeaturesService_1 = __decorate([
         AgentsService])
 ], FeaturesService);
 export { FeaturesService };
-export function prompt(f) {
+export function prompt(f, repos) {
+    const multi = repos.length > 1;
     return [
-        `Implement the feature "${f.title}", described in ${f.path} of this repository.`,
+        `Implement the feature "${f.title}", described in ${f.path}${multi ? '' : ' of this repository'}.`,
         '',
+        ...(multi
+            ? [
+                'This project spans several repositories:',
+                ...repos.map((r) => `- ${r.name}: ${r.path}`),
+                '',
+            ]
+            : []),
         f.body.trim() || '(The feature file has no description beyond its title.)',
         '',
-        'Work directly in this repository. When you are done, reply with a short summary of what you changed and anything you left open.',
+        `Work directly in the ${multi ? 'repositories' : 'repository'}. When you are done, reply with a short summary of what you changed and anything you left open.`,
         `Do not change the status field in ${f.path}; the manager maintains it.`,
     ].join('\n');
 }

@@ -329,6 +329,15 @@ describe('ClaudeAdapter', () => {
       '--resume',
       'abc',
     ]);
+    expect(
+      a.startArgs({ resume: null, extraDirs: ['/r/ui', '/r/api'] }),
+    ).toEqual([
+      '--dangerously-skip-permissions',
+      '--add-dir',
+      '/r/ui',
+      '--add-dir',
+      '/r/api',
+    ]);
     expect(a.turn('x')).toEqual([
       { type: 'user', message: { role: 'user', content: 'x' } },
     ]);

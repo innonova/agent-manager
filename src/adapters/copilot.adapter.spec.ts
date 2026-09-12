@@ -6,6 +6,11 @@ describe('CopilotAdapter', () => {
   it('drives the ACP handshake from the replies', () => {
     const a = new CopilotAdapter();
     expect(a.startArgs()).toEqual(['--allow-all']);
+    expect(a.startArgs({ extraDirs: ['/r/ui'] })).toEqual([
+      '--allow-all',
+      '--add-dir',
+      '/r/ui',
+    ]);
     const start = a.startLines({ cwd: '/w', resume: null }) as any[];
     expect(start[0]).toMatchObject({
       method: 'initialize',
