@@ -1,6 +1,6 @@
 ---
 title: favicon
-status: review
+status: done
 priority: 100
 ---
 
