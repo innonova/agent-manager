@@ -1,6 +1,6 @@
 ---
 title: adding new features while a feature run is ongoing
-status: review
+status: done
 priority: 100
 ---
 

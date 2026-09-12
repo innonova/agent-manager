@@ -1,6 +1,6 @@
 ---
 title: edit for planned features
-status: review
+status: done
 priority: 100
 ---
 

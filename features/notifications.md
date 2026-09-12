@@ -1,6 +1,6 @@
 ---
 title: notifications
-status: review
+status: done
 priority: 100
 ---
 
