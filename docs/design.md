@@ -1,0 +1,290 @@
+# agent-manager design
+
+Status: draft, 2026-09-12, written before implementation. Kept in step
+with the code once it exists.
+
+## The system
+
+Three components, three repositories, one machine (an isolated VM):
+
+```
+agent-manager-ui  (Vue)      browser; renders what the manager tells it
+      │  https, cookie session, REST + one websocket
+agent-manager     (Nest)     projects, agents, users; understands the agent protocols
+      │  ws://127.0.0.1:4267, no auth, loopback only
+agent-daemon      (Nest)     holds the agent processes; dumb line forwarder with a disk log
+      │  stdin / stdout, newline-delimited JSON
+claude / codex / copilot     the agent CLIs in their headless modes
+```
+
+The daemon exists so that the manager and the UI can be rebuilt at will
+while agents keep working. The manager is therefore the layer that may
+churn, and everything below assumes it will be restarted often.
+
+## Purpose
+
+The manager makes the daemon usable: it knows what a project is, what an
+agent is, what the agents are saying, and who is allowed to look. It
+exposes that to the UI over an authenticated API. It is the only component
+that understands Claude's stream-json, Codex's app-server protocol and
+Copilot's ACP.
+
+## Principles
+
+1. **All agent knowledge lives here.** The daemon forwards lines; the
+   manager gives them meaning. The UI never talks to the daemon and never
+   parses an agent line.
+2. **Rebuildable from the daemon.** Every transcript and every agent state
+   is derived from daemon session logs. On start the manager lists the
+   daemon's sessions, replays them and reconstructs everything. It persists
+   only what the daemon cannot know: projects, agents, users, features.
+3. **One normalised model.** Three vendor dialects go in, one agent state
+   model and one transcript item model come out. Vendor specifics stay
+   inside adapters.
+4. **Trusted VM, real front door.** Agents run with permissions bypassed on
+   an isolated VM. The manager is nevertheless the security boundary
+   between the network and a machine that runs arbitrary commands, so it
+   authenticates every request and every websocket.
+5. **Single origin.** The manager serves the built UI and its API from one
+   origin, so cookies and the websocket need no cross-origin handling.
+
+## Decisions and why
+
+| Decision | Reason |
+|---|---|
+| An agent may span several daemon sessions | A headless process exits (end of input, daemon restart, crash) but the conversation continues via the vendor's resume; the user thinks in agents, not processes. |
+| Idle agent processes stay alive | Instant next turn, intact context; memory is cheap on the VM. An idle timeout with automatic resume is a later feature. |
+| Permissions bypassed by default | The VM is isolated for exactly this purpose, and humans approving tool calls one by one is the weaker control anyway. Interactive permissions are a later, opt-in feature; the state model reserves a state for it. |
+| Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
+| SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
+| Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. |
+| Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
+| A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
+| Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
+| Git status/diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. |
+
+## Terminology
+
+- **Project**: a git repository on this machine, registered by absolute
+  path, plus manager-side metadata.
+- **Agent**: a named, long-lived conversation in a project: a profile
+  (which CLI), a cwd, a vendor conversation id, and a history of sessions.
+- **Session**: one daemon session, i.e. one process. An agent's current
+  session is where its turns go; earlier sessions are history.
+- **Feature**: a markdown file under `features/` in the project describing
+  a unit of work, with frontmatter for status and metadata.
+- **Turn**: one user message and everything the agent does until it stops.
+- **Item**: one normalised transcript entry (text, thinking, tool call,
+  tool result, error, system note).
+
+## Domain model
+
+```
+User      { id, name, passwordHash, createdAt }
+Project   { id, name, path, defaultProfile, createdAt }
+Agent     { id, projectId, name, profile, cwd, vendorConversationId | null,
+            currentSessionId | null, createdAt, archivedAt | null }
+AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
+Feature   { projectId, slug, title, status, priority, profile?, dependsOn[] }   // derived from files, not stored
+```
+
+Agents and their sessions are stored so the manager knows which daemon
+sessions belong to which agent after a restart. Everything about what
+happened inside a session is rebuilt from the daemon.
+
+The daemon session `label` also carries `agent-manager:<agentId>` so that a
+session can be attributed even if the manager's database is lost.
+
+## Agent state
+
+One model for all vendors, derived by the adapter from the line stream:
+
+| State | Meaning |
+|---|---|
+| `starting` | session started, vendor init not yet seen |
+| `idle` | ready for a turn |
+| `working` | a turn is in progress |
+| `waiting-input` | the agent asked the user a question and stopped (vendor-specific; e.g. ACP `end_turn` after a question is still `idle`, so this is mostly reserved) |
+| `waiting-permission` | reserved for the interactive-permissions feature |
+| `error` | the vendor reported an error that ended the turn (usage limit, auth, API error); the process may still be alive |
+| `exited` | no live session; resumable |
+
+Transitions are events, broadcast to the UI and aggregated per project as
+counts by state. `error` carries the vendor message verbatim.
+
+## Adapters
+
+```ts
+interface AgentAdapter {
+  readonly profile: string;
+  /** args to add to the profile for a new conversation, or to resume one */
+  startArgs(opts: { resume?: string; cwd: string }): string[];
+  /** the stdin line(s) for a user turn */
+  turn(text: string): unknown[];
+  /** the stdin line(s) to interrupt the current turn, if the vendor supports it */
+  interrupt?(): unknown[];
+  /** feed one daemon log record; returns state changes and transcript items */
+  ingest(record: LogRecord): { state?: AgentState; items: Item[]; conversationId?: string };
+}
+```
+
+- **claude**: native stream-json. Init event gives `session_id`
+  (the vendor conversation id, used for `--resume`). `assistant` events
+  become text / thinking / tool_use items, `user` events with
+  `tool_result` become tool results, `stream_event` deltas update the
+  current text item, `result` ends the turn. Errors surface as `result`
+  with `is_error`, or as `error`-typed lines.
+- **copilot**: ACP over stdio. `initialize`, `session/new` (or
+  `session/load` to resume), `session/prompt`; `session/update`
+  notifications map onto items; the prompt reply's `stopReason` ends the
+  turn.
+- **codex**: app-server JSON-RPC. `initialize`/`initialized`,
+  `thread/start` (or `thread/resume`), `turn/start`; `item/*` and `turn/*`
+  notifications map onto items; `error` notifications become `error`.
+- **fake**: drives the daemon's fake agent fixture for tests and UI
+  development; produces realistic items and state changes without tokens.
+
+Adapters are pure: a log record in, items and state out. Tests feed them
+recorded logs from real sessions (`test/fixtures/<vendor>/*.ndjson`) and
+assert the items and state sequence.
+
+## Transcript items
+
+```ts
+type Item =
+  | { kind: 'user'; text: string }
+  | { kind: 'text'; text: string; streaming: boolean }
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool_use'; id: string; name: string; input: unknown }
+  | { kind: 'tool_result'; toolUseId: string; output: string; isError: boolean }
+  | { kind: 'error'; message: string }
+  | { kind: 'system'; text: string }        // daemon notices, session boundaries, resumes
+  | { kind: 'turn_end'; usage?: {...}; costUsd?: number; durationMs?: number };
+```
+
+Each item records the daemon session id and the `seq` range it was built
+from, so a client can always go back to the raw lines.
+
+## Daemon integration
+
+- One websocket to the daemon, reconnecting with backoff. On (re)connect:
+  `sessions.list`, attach with replay to every session that belongs to a
+  known agent, rebuild items and state. Sessions the manager does not know
+  but whose label says `agent-manager:<id>` are adopted.
+- Turns go through `session.input`; the `ok` reply is awaited so the
+  manager is flow-controlled by the agent.
+- A session exit moves the agent to `exited`. The next turn starts a new
+  session with the adapter's resume args, records it under the agent, and
+  sends the turn.
+- The manager never sends `session.remove`; logs are kept until a later
+  retention feature.
+
+## API
+
+All under `/api`, JSON, cookie-authenticated except `POST /api/auth/login`.
+
+```
+POST   /api/auth/login              { name, password }         -> { user }
+POST   /api/auth/logout
+GET    /api/auth/me
+
+GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]
+POST   /api/projects                { name, path, defaultProfile? }
+GET    /api/projects/:id
+PATCH  /api/projects/:id
+DELETE /api/projects/:id            (does not touch the repository)
+
+GET    /api/projects/:id/agents                                 -> [{ agent, state }]
+POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session
+GET    /api/agents/:id                                          -> { agent, state, sessions }
+GET    /api/agents/:id/items?from=<n>                           -> transcript items
+POST   /api/agents/:id/turn         { text }                    -> 202
+POST   /api/agents/:id/interrupt
+POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
+POST   /api/agents/:id/archive
+
+GET    /api/profiles                                            -> daemon profiles
+
+GET    /api/projects/:id/files?path=<dir>                       -> tree entries        (milestone 2)
+GET    /api/projects/:id/file?path=<file>                       -> content, size-capped (milestone 2)
+GET    /api/projects/:id/features                               -> parsed feature files (milestone 3)
+POST   /api/projects/:id/features/:slug/queue                                           (milestone 3)
+```
+
+Paths for files are resolved inside the project root only; `..` is
+rejected. That is a correctness rule, not a security one, on this VM.
+
+### Websocket `/api/events`
+
+Authenticated on upgrade with the same cookie. Server to client only in
+milestone one; every frame has a `type`:
+
+```
+project.counts   { projectId, counts }
+agent.state      { agentId, state, error? }
+agent.item       { agentId, item, index }          // new or updated (streaming text) item
+agent.session    { agentId, session }              // a new session started or one ended
+```
+
+Clients subscribe to nothing; they receive everything for the projects
+they can see, which in milestone one is all of them.
+
+## Auth
+
+- Users in SQLite, passwords hashed with argon2id.
+- Cookie session (signed, HttpOnly, SameSite=Lax, Secure when behind TLS),
+  server-side session table so logout is real.
+- First admin: `AGENT_MANAGER_ADMIN_PASSWORD` on first start creates
+  `admin`, or `npm run user:add -- <name>`.
+- No roles in milestone one; every user sees every project.
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENT_MANAGER_LISTEN` | `0.0.0.0:4268` | bind address; behind haproxy for TLS |
+| `AGENT_MANAGER_DAEMON_URL` | `ws://127.0.0.1:4267/` | the daemon |
+| `AGENT_MANAGER_DATA_DIR` | `~/.local/state/agent-manager` | SQLite database, session secret |
+| `AGENT_MANAGER_UI_DIR` | `<install>/ui` | built UI to serve at `/` |
+| `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
+
+## Testing
+
+- Unit: adapters against recorded logs; state machine; feature file
+  parsing; path resolution.
+- End-to-end: a real daemon on an ephemeral port (from the agent-daemon
+  repo's build, or `npx` of it) with the fake profile, the manager on an
+  ephemeral port, supertest for REST and `ws` for events. Covers login,
+  project and agent lifecycle, turns and items through the fake agent,
+  manager restart with state rebuilt from the daemon.
+- Opt-in smoke: one real Claude turn through manager and daemon.
+
+## Running it
+
+A systemd user service like the daemon, installed by
+`npm run install:service`, serving the UI build copied in from
+`agent-manager-ui/dist`. The manager may be restarted freely; agents keep
+running in the daemon and are re-adopted on start.
+
+## Milestones
+
+1. **Usable**: auth, projects, agents, the Claude adapter and the fake
+   adapter, state and items, REST and events, rebuild-from-daemon. UI:
+   login, project list with counts, agent view with transcript and turn
+   input.
+2. **Files**: tree and file endpoints; UI file browser with Monaco,
+   read-only.
+3. **Features**: `features/*.md` convention, parsing, listing, queueing a
+   feature as a turn for a chosen agent, manager-owned status updates.
+4. Later, each needing its own discussion: git status and diff per agent;
+   worktrees and multi-agent coordination; interactive permissions;
+   idle timeout and automatic resume; Codex and Copilot adapters (the
+   interface is designed for them; milestone one ships Claude and fake);
+   clone-from-URL; roles; log retention.
+
+## Open questions
+
+- Whether `waiting-input` is derivable for Claude at all, or whether "idle
+  after a turn whose last text ends in a question" is as good as it gets.
+- Streaming granularity for `agent.item`: per delta, or coalesced on a
+  short timer to spare the UI.
