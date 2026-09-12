@@ -2,6 +2,7 @@ export class FakeAdapter {
     streamingText = '';
     textKey = '';
     texts = 0;
+    turnOpen = false;
     startArgs({ resume }) {
         return resume ? ['--resume', resume] : [];
     }
@@ -22,11 +23,13 @@ export class FakeAdapter {
             return { ops: [append({ kind: 'system', text: record.d })] };
         }
         if (record.s === 'in') {
-            if (line.type === 'user')
+            if (line.type === 'user') {
+                this.turnOpen = true;
                 return {
                     state: 'working',
                     ops: [append({ kind: 'user', text: line.text })],
                 };
+            }
             if (line.type === 'interrupt')
                 return {
                     ops: [append({ kind: 'system', text: 'interrupt requested' })],
@@ -35,7 +38,10 @@ export class FakeAdapter {
         }
         switch (line.type) {
             case 'init':
-                return { conversationId: line.conversationId, state: 'idle' };
+                return {
+                    conversationId: line.conversationId,
+                    state: this.turnOpen ? 'working' : 'idle',
+                };
             case 'text_start':
                 this.streamingText = '';
                 this.textKey = `t${++this.texts}`;
@@ -98,6 +104,7 @@ export class FakeAdapter {
                     ],
                 };
             case 'result':
+                this.turnOpen = false;
                 return {
                     state: 'idle',
                     ops: [
@@ -109,6 +116,7 @@ export class FakeAdapter {
                     ],
                 };
             case 'error':
+                this.turnOpen = false;
                 return {
                     state: 'error',
                     error: line.message,

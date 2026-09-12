@@ -18,6 +18,7 @@ import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
 export const LABEL_PREFIX = 'agent-manager:';
 const STARTING_GRACE_MS = 5000;
+const LOCK_PATIENCE_MS = 2000;
 const toAgent = (r) => ({
     id: r.id,
     projectId: r.project_id,
@@ -45,6 +46,12 @@ export function emptyCounts() {
         exited: 0,
     };
 }
+const busy = () => new HttpException({ statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' }, 409);
+const unavailable = (why) => new HttpException({
+    statusCode: 503,
+    message: `agent unavailable: ${why}`,
+    code: 'agent-unavailable',
+}, 503);
 let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
     dbs;
     daemon;
@@ -53,6 +60,7 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
     logger = new Logger(AgentsService_1.name);
     live = new Map();
     sessionOwner = new Map();
+    deleting = new Set();
     resyncChain = Promise.resolve();
     resyncGeneration = 0;
     constructor(dbs, daemon, adapters, projects) {
@@ -84,6 +92,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             throw new NotFoundException(`no agent ${id}`);
         return toAgent(row);
     }
+    find(id) {
+        const row = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id);
+        return row ? toAgent(row) : null;
+    }
     status(id) {
         return this.ensureLive(this.get(id)).status;
     }
@@ -108,6 +120,8 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
     }
     async create(projectId, input) {
         const project = this.projects.get(projectId);
+        if (this.deleting.has(projectId))
+            throw new ConflictException('project is being deleted');
         const profile = input.profile ?? project.defaultProfile;
         if (typeof input.name !== 'string' || input.name.trim() === '')
             throw new BadRequestException('"name" is required');
@@ -138,7 +152,6 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             .prepare('INSERT INTO agents (id, project_id, name, profile, cwd, created_at) VALUES (?, ?, ?, ?, ?, ?)')
             .run(agent.id, projectId, agent.name, profile, cwd, agent.createdAt);
         const live = this.ensureLive(agent);
-        live.rebuilt = true;
         await this.withLock(live, () => this.startSession(agent, live));
         return { agent: this.get(agent.id), status: live.status };
     }
@@ -150,44 +163,54 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             let agent = this.get(id);
             if (agent.archivedAt)
                 throw new ConflictException('agent is archived');
-            await this.awaitStarting(live);
-            if (live.status.state === 'working' || live.status.state === 'starting') {
-                throw new HttpException({
-                    statusCode: 409,
-                    message: 'a turn is in progress',
-                    code: 'agent-busy',
-                }, 409);
-            }
+            if (this.deleting.has(agent.projectId))
+                throw new ConflictException('project is being deleted');
             if (!agent.currentSessionId) {
                 await this.startSession(agent, live);
                 agent = this.get(id);
             }
+            await this.awaitStarting(live);
+            if (live.status.state === 'working' || live.status.state === 'starting')
+                throw busy();
             const sl = live.sessions.get(agent.currentSessionId);
-            for (const line of sl.adapter.turn(text))
-                await this.daemon.input(agent.currentSessionId, line);
+            if (!sl)
+                throw unavailable('session not tracked');
+            if (!sl.replayed) {
+                await this.attachSession(agent, live, sl);
+                if (!sl.replayed)
+                    throw unavailable('the session log could not be read');
+            }
+            const before = live.status;
             this.setState(agent, live, 'working', null);
+            try {
+                for (const line of sl.adapter.turn(text))
+                    await this.daemon.input(agent.currentSessionId, line);
+            }
+            catch (err) {
+                if (live.status.state === 'working')
+                    this.setState(agent, live, before.state, before.error);
+                throw err instanceof DaemonError ? unavailable(err.message) : err;
+            }
         });
     }
     async interrupt(id) {
         const live = this.ensureLive(this.get(id));
-        await this.withLock(live, async () => {
-            const agent = this.get(id);
-            const sl = agent.currentSessionId
-                ? live.sessions.get(agent.currentSessionId)
-                : undefined;
-            if (!sl?.adapter.interrupt)
-                throw new ConflictException('nothing to interrupt');
-            for (const line of sl.adapter.interrupt())
-                await this.daemon.input(agent.currentSessionId, line);
-        });
+        const agent = this.get(id);
+        const sl = agent.currentSessionId
+            ? live.sessions.get(agent.currentSessionId)
+            : undefined;
+        if (!sl?.adapter.interrupt)
+            throw new ConflictException('nothing to interrupt');
+        for (const line of sl.adapter.interrupt())
+            await this.daemon.input(agent.currentSessionId, line);
     }
     async stop(id) {
         const live = this.ensureLive(this.get(id));
-        await this.withLock(live, () => this.stopLocked(this.get(id)));
+        await this.withLockOrForce(live, id, () => this.stopLocked(this.get(id)));
     }
     async archive(id) {
         const live = this.ensureLive(this.get(id));
-        await this.withLock(live, async () => {
+        await this.withLockOrForce(live, id, async () => {
             const agent = this.get(id);
             await this.stopLocked(agent, true);
             this.db
@@ -197,19 +220,32 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         });
     }
     async removeProject(projectId) {
-        const rows = this.db
-            .prepare('SELECT * FROM agents WHERE project_id = ?')
-            .all(projectId);
-        for (const row of rows) {
-            const agent = toAgent(row);
-            const live = this.ensureLive(agent);
-            await this.withLock(live, async () => {
-                await this.stopLocked(agent, true);
-                for (const sid of live.sessions.keys())
-                    this.sessionOwner.delete(sid);
-                this.live.delete(agent.id);
-            });
+        this.deleting.add(projectId);
+        try {
+            for (;;) {
+                const row = this.db
+                    .prepare('SELECT * FROM agents WHERE project_id = ? ORDER BY created_at LIMIT 1')
+                    .get(projectId);
+                if (!row)
+                    return;
+                const live = this.ensureLive(toAgent(row));
+                await this.withLockOrForce(live, row.id, async () => {
+                    const agent = this.get(row.id);
+                    await this.stopLocked(agent, true);
+                    for (const sid of live.sessions.keys())
+                        this.sessionOwner.delete(sid);
+                    this.live.delete(agent.id);
+                    this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
+                });
+            }
         }
+        catch (err) {
+            this.deleting.delete(projectId);
+            throw err;
+        }
+    }
+    releaseProject(projectId) {
+        this.deleting.delete(projectId);
     }
     async stopLocked(agent, wait = false) {
         const id = agent.currentSessionId;
@@ -221,7 +257,8 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         catch (err) {
             if (!(err instanceof DaemonError) || err.code === 'disconnected')
                 throw err;
-            await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
+            if (err.code !== 'unknown-session')
+                await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
         }
         if (!wait)
             return;
@@ -234,12 +271,20 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 await this.daemon.signal(id, signal).catch(() => undefined);
             const until = Date.now() + ms;
             while (Date.now() < until) {
-                const s = await this.daemon.getSession(id).catch(() => null);
-                if (!s || s.state === 'exited')
-                    return;
+                try {
+                    const s = await this.daemon.getSession(id);
+                    if (s.state === 'exited')
+                        return;
+                }
+                catch (err) {
+                    if (err instanceof DaemonError && err.code === 'unknown-session')
+                        return;
+                    throw err instanceof DaemonError ? unavailable(err.message) : err;
+                }
                 await new Promise((r) => setTimeout(r, 50));
             }
         }
+        throw unavailable('the process did not exit');
     }
     async startSession(agent, live) {
         const adapter = this.adapters.create(agent.profile);
@@ -313,17 +358,19 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         }
     }
     async reconcileCurrent(agent, live) {
-        if (!agent.currentSessionId)
+        const fresh = this.find(agent.id);
+        if (!fresh?.currentSessionId)
             return;
+        agent.currentSessionId = fresh.currentSessionId;
         try {
-            const s = await this.daemon.getSession(agent.currentSessionId);
+            const s = await this.daemon.getSession(fresh.currentSessionId);
             if (s.state === 'exited')
                 this.applyExit(agent, live, s);
         }
         catch (err) {
             if (err instanceof DaemonError && err.code === 'unknown-session') {
                 this.applyExit(agent, live, {
-                    id: agent.currentSessionId,
+                    id: fresh.currentSessionId,
                     state: 'exited',
                     exitReason: 'removed',
                     exitCode: null,
@@ -346,12 +393,10 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         if (record.seq <= sl.lastSeq)
             return;
         sl.lastSeq = record.seq;
-        const row = this.db
-            .prepare('SELECT * FROM agents WHERE id = ?')
-            .get(agentId);
-        if (!row)
+        const agent = this.find(agentId);
+        if (!agent)
             return;
-        this.apply(toAgent(row), live, sl, record, sl.adapter.ingest(record));
+        this.apply(agent, live, sl, record, sl.adapter.ingest(record));
     }
     apply(agent, live, sl, record, ingest) {
         if (ingest.conversationId &&
@@ -391,12 +436,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 : undefined);
         if (!agentId)
             return;
-        const row = this.db
-            .prepare('SELECT * FROM agents WHERE id = ?')
-            .get(agentId);
-        if (!row)
+        const agent = this.find(agentId);
+        if (!agent)
             return;
-        const agent = toAgent(row);
         const live = this.ensureLive(agent);
         const sl = live.sessions.get(session.id);
         if (sl?.attaching) {
@@ -409,13 +451,13 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         this.db
             .prepare('UPDATE agent_sessions SET ended_at = ? WHERE daemon_session_id = ? AND ended_at IS NULL')
             .run(session.exitedAt ?? Date.now(), session.id);
-        if (agent.currentSessionId !== session.id)
+        const cleared = this.db
+            .prepare('UPDATE agents SET current_session_id = NULL WHERE id = ? AND current_session_id = ?')
+            .run(agent.id, session.id).changes;
+        if (cleared === 0)
             return;
-        this.db
-            .prepare('UPDATE agents SET current_session_id = NULL WHERE id = ?')
-            .run(agent.id);
         agent.currentSessionId = null;
-        this.appendItem(agent.id, live, session.id, session.lastSeq, {
+        this.appendItem(agent.id, live, session.id, 0, {
             kind: 'system',
             text: `session ended${exitWhy(session)}`,
         });
@@ -433,19 +475,38 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             .catch((err) => this.logger.error(`resync failed: ${err.message}`));
     }
     async resync(generation) {
-        const sessions = await this.daemon.listSessions();
-        const byId = new Map(sessions.map((s) => [s.id, s]));
-        const rows = this.db.prepare('SELECT * FROM agents').all();
+        const ids = this.db.prepare('SELECT id FROM agents').all().map((r) => r.id);
         let done = 0;
-        for (const row of rows) {
+        for (const id of ids) {
             if (generation !== this.resyncGeneration)
                 return;
-            const agent = toAgent(row);
-            const live = this.ensureLive(agent);
+            const stale = this.find(id);
+            if (!stale)
+                continue;
+            const live = this.ensureLive(stale);
             await this.withLock(live, async () => {
+                const agent = this.find(id);
+                if (!agent || generation !== this.resyncGeneration)
+                    return;
+                const sessions = await this.daemon.listSessions();
+                const byId = new Map(sessions.map((s) => [s.id, s]));
                 this.adoptSessions(agent, sessions);
-                const refs = this.sessions(agent.id);
-                for (const ref of refs) {
+                let refs = this.sessions(agent.id);
+                const failedEarlier = refs.some((ref, i) => i < refs.length - 1 &&
+                    live.sessions.get(ref.daemonSessionId)?.replayed === false);
+                if (failedEarlier && live.items.length > 0) {
+                    this.logger.log(`agent ${agent.id}: rebuilding transcript so recovered history keeps its order`);
+                    live.items = [];
+                    for (const sl of live.sessions.values()) {
+                        sl.lastSeq = 0;
+                        sl.replayed = false;
+                        sl.keys.clear();
+                        sl.adapter = this.adapters.create(agent.profile);
+                    }
+                    this.emit('reset', agent.id);
+                }
+                refs = this.sessions(agent.id);
+                for (const [i, ref] of refs.entries()) {
                     if (generation !== this.resyncGeneration)
                         return;
                     const s = byId.get(ref.daemonSessionId);
@@ -454,19 +515,28 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                     const isNew = !live.sessions.has(s.id);
                     const sl = this.trackSession(agent, live, s.id, live.sessions.get(s.id)?.adapter ??
                         this.adapters.create(agent.profile));
-                    if (isNew)
-                        this.appendItem(agent.id, live, s.id, 0, {
-                            kind: 'system',
-                            text: `${ref === refs[0] ? 'session started' : 'session resumed'} (${s.id})`,
-                        });
+                    if (isNew || sl.lastSeq === 0) {
+                        if (isNew || live.items.length === 0)
+                            this.appendItem(agent.id, live, s.id, 0, {
+                                kind: 'system',
+                                text: `${i === 0 ? 'session started' : 'session resumed'} (${s.id})`,
+                            });
+                    }
                     const isCurrent = s.id === agent.currentSessionId;
-                    if (!sl.replayed || (isCurrent && s.state === 'running'))
+                    if (isCurrent &&
+                        s.state === 'running' &&
+                        live.status.state === 'starting') {
+                        this.setState(agent, live, sl.adapter.initialState ?? 'starting', null);
+                    }
+                    if (!sl.replayed ||
+                        sl.lastSeq < s.lastSeq ||
+                        (isCurrent && s.state === 'running'))
                         await this.attachSession(agent, live, sl);
                     if (s.state === 'exited' && !sl.pendingExit) {
                         if (isCurrent)
                             this.applyExit(agent, live, s);
                         else if (isNew)
-                            this.appendItem(agent.id, live, s.id, s.lastSeq, {
+                            this.appendItem(agent.id, live, s.id, 0, {
                                 kind: 'system',
                                 text: `session ended${exitWhy(s)}`,
                             });
@@ -476,14 +546,14 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                                 .run(s.exitedAt ?? Date.now(), s.id);
                     }
                 }
-                live.rebuilt = [...live.sessions.values()].every((sl) => sl.replayed);
                 await this.reconcileCurrent(agent, live);
-                if (!agent.currentSessionId && live.status.state !== 'exited')
+                const fresh = this.find(agent.id);
+                if (fresh && !fresh.currentSessionId && live.status.state !== 'exited')
                     this.setState(agent, live, 'exited', null);
             });
             done++;
         }
-        this.logger.log(`resynced ${done} agent(s) against ${sessions.length} daemon session(s)`);
+        this.logger.log(`resynced ${done} agent(s)`);
     }
     adoptSessions(agent, sessions) {
         const known = new Set(this.sessions(agent.id).map((r) => r.daemonSessionId));
@@ -503,9 +573,9 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
             if (running.length) {
                 const current = running[running.length - 1];
                 this.db
-                    .prepare('UPDATE agents SET current_session_id = ? WHERE id = ?')
+                    .prepare('UPDATE agents SET current_session_id = ? WHERE id = ? AND current_session_id IS NULL')
                     .run(current.id, agent.id);
-                agent.currentSessionId = current.id;
+                agent.currentSessionId = this.find(agent.id)?.currentSessionId ?? null;
                 for (const extra of running.slice(0, -1)) {
                     this.logger.warn(`agent ${agent.id} has a second live session ${extra.id}; ending it`);
                     void this.daemon.endInput(extra.id).catch(() => undefined);
@@ -525,7 +595,6 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
                 },
                 items: [],
                 lock: Promise.resolve(),
-                rebuilt: false,
             };
             this.live.set(agent.id, live);
         }
@@ -535,6 +604,20 @@ let AgentsService = AgentsService_1 = class AgentsService extends EventEmitter {
         const run = live.lock.then(fn, fn);
         live.lock = run.catch(() => undefined);
         return run;
+    }
+    async withLockOrForce(live, agentId, fn) {
+        const free = await Promise.race([
+            live.lock.then(() => true, () => true),
+            new Promise((r) => setTimeout(() => r(false), LOCK_PATIENCE_MS)),
+        ]);
+        if (!free) {
+            const sid = this.find(agentId)?.currentSessionId;
+            if (sid) {
+                this.logger.warn(`agent ${agentId}: a command is blocked; signalling the process to free it`);
+                await this.daemon.signal(sid, 'SIGTERM').catch(() => undefined);
+            }
+        }
+        return this.withLock(live, fn);
     }
     async awaitStarting(live) {
         const until = Date.now() + STARTING_GRACE_MS;

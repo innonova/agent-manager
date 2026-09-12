@@ -41,12 +41,12 @@ async function handle(text) {
     return;
   }
   if (text.includes('block stdin')) {
-    // stop reading stdin for good; the daemon's next large write blocks
-    out({ type: 'result', durationMs: 1 });
-    await sleep(20);
-    process.stdin.pause();
+    // stop reading stdin for good before reporting, so the daemon's next
+    // large write is guaranteed to block
     rl.pause();
+    process.stdin.pause();
     setInterval(() => {}, 1000);
+    out({ type: 'result', durationMs: 1 });
     return;
   }
   if (text.includes('tool')) {

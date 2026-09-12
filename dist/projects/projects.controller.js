@@ -42,7 +42,12 @@ let ProjectsController = class ProjectsController {
     async remove(id) {
         this.projects.get(id);
         await this.agents.removeProject(id);
-        this.projects.remove(id);
+        try {
+            this.projects.remove(id);
+        }
+        finally {
+            this.agents.releaseProject(id);
+        }
         return { ok: true };
     }
 };

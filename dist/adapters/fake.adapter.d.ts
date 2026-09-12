@@ -4,6 +4,7 @@ export declare class FakeAdapter implements AgentAdapter {
     private streamingText;
     private textKey;
     private texts;
+    private turnOpen;
     startArgs({ resume }: {
         resume?: string | null;
     }): string[];

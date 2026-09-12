@@ -28,6 +28,10 @@ export function loadConfig(env = process.env) {
             (env.AGENT_MANAGER_PUBLIC_ORIGIN ?? '').startsWith('https://'),
         sessionTtlMs: Number(env.AGENT_MANAGER_SESSION_TTL_MS ?? 30 * 24 * 3600 * 1000),
         loginAttemptsPerMinute: Number(env.AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE ?? 10),
+        trustedProxies: (env.AGENT_MANAGER_TRUSTED_PROXIES ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
     };
 }
 //# sourceMappingURL=config.js.map

@@ -12,6 +12,8 @@ export async function createApp(overrides = {}, options = {}) {
     app.useWebSocketAdapter(new WsAdapter(app));
     app.use(express.json({ limit: '1mb' }));
     const config = app.get(MANAGER_CONFIG);
+    if (config.trustedProxies.length)
+        app.set('trust proxy', config.trustedProxies);
     app.use('/api', (req, res, next) => {
         const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
         if (mutating &&

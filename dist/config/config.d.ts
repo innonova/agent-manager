@@ -9,6 +9,7 @@ export interface ManagerConfig {
     secureCookie: boolean;
     sessionTtlMs: number;
     loginAttemptsPerMinute: number;
+    trustedProxies: string[];
 }
 export declare const MANAGER_CONFIG: unique symbol;
 export declare function loadConfig(env?: NodeJS.ProcessEnv): ManagerConfig;

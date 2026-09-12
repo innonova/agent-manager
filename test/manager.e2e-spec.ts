@@ -572,6 +572,57 @@ describe('resilience', () => {
 });
 
 describe('manager restart', () => {
+  it('a stop right after a restart yields one ended boundary, after the history', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'stop-after-restart');
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'one' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    await events.close();
+    await m.stop();
+    m = await startManager(daemon.url, m.dataDir);
+    api = new Api(m.url);
+    await api.login();
+    events = await Events.connect(m.url, api.cookie);
+    // no sleep: the stop must wait for the resync, not race it
+    expect((await api.post(`/api/agents/${agent.id}/stop`)).status).toBe(201);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'exited',
+    );
+    const kinds = (
+      await api.get(`/api/agents/${agent.id}/items`)
+    ).body.items.map((i: any) => i.item.kind);
+    expect(kinds).toEqual(['system', 'user', 'text', 'turn_end', 'system']);
+  }, 30000);
+
+  it('creating an agent while the daemon is down fails cleanly and leaves nothing behind', async () => {
+    const p = await createProject();
+    const mark = events.mark();
+    await daemon.stop('SIGKILL');
+    await events.waitFor(
+      (f) => f.type === 'daemon' && f.connected === false,
+      10000,
+      mark,
+    );
+    const r = await api.post(`/api/projects/${p.id}/agents`, { name: 'ghost' });
+    expect(r.status).toBe(503);
+    expect(r.body.code).toBe('agent-unavailable');
+    expect((await api.get(`/api/projects/${p.id}/agents`)).body).toEqual([]);
+    daemon = await startDaemon({ root: daemon.root, port: daemon.port });
+    await events.waitFor(
+      (f) => f.type === 'daemon' && f.connected === true,
+      15000,
+      mark,
+    );
+  }, 40000);
+
   it('keeps exited and archived agents right, and adopts a session the database lost', async () => {
     const p = await createProject();
     const { agent: exitedAgent } = await createAgent(p.id, 'exited');

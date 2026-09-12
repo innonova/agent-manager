@@ -37,6 +37,7 @@ export type AgentCounts = Record<AgentState, number>;
 export interface AgentEvents {
     state: [agentId: string, projectId: string, status: AgentStatus];
     item: [agentId: string, item: StoredItem];
+    reset: [agentId: string];
     session: [agentId: string, session: AgentSessionRef];
     counts: [projectId: string, counts: AgentCounts];
 }
@@ -50,6 +51,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private readonly logger;
     private readonly live;
     private readonly sessionOwner;
+    private readonly deleting;
     private resyncChain;
     private resyncGeneration;
     constructor(dbs: DbService, daemon: DaemonClient, adapters: AdaptersService, projects: ProjectsService);
@@ -60,6 +62,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
         status: AgentStatus;
     }[];
     get(id: string): Agent;
+    private find;
     status(id: string): AgentStatus;
     sessions(id: string): AgentSessionRef[];
     items(id: string, from?: number): StoredItem[];
@@ -77,6 +80,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     stop(id: string): Promise<void>;
     archive(id: string): Promise<void>;
     removeProject(projectId: string): Promise<void>;
+    releaseProject(projectId: string): void;
     private stopLocked;
     private startSession;
     private trackSession;
@@ -92,6 +96,7 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private adoptSessions;
     private ensureLive;
     private withLock;
+    private withLockOrForce;
     private awaitStarting;
     private appendItem;
     private setState;

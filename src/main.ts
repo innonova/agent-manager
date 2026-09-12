@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AppModule } from './app.module.js';
 import { MANAGER_CONFIG, ManagerConfig } from './config/config.js';
+import { DaemonErrorFilter } from './daemon/daemon-error.filter.js';
 import { originAllowed } from './origin.js';
 
 export async function createApp(
@@ -18,6 +19,7 @@ export async function createApp(
     { logger: options.quiet ? false : ['log', 'warn', 'error'] },
   );
   app.useWebSocketAdapter(new WsAdapter(app));
+  app.useGlobalFilters(new DaemonErrorFilter());
   app.use(express.json({ limit: '1mb' }));
   const config = app.get<ManagerConfig>(MANAGER_CONFIG);
   // Only a configured proxy may tell us the client address (login throttling keys on it).

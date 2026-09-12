@@ -80,11 +80,16 @@ interface SessionLive {
   id: string;
   adapter: AgentAdapter;
   lastSeq: number;
-  /** The last attach with replay succeeded; the cursor is at the daemon's boundary as of then. */
+  /** The last attach with replay on the current socket succeeded; the cursor is at the daemon's boundary as of then. */
   replayed: boolean;
   attaching: boolean;
-  /** Exit notice that arrived while replaying; applied once replay completes. */
+  /** Exit notice that arrived before the log was replayed; applied once it is. */
   pendingExit: DaemonSession | null;
+  /** Records are ignored (not even cursored) until the next replay attach; set while a rebuild is pending. */
+  suspended: boolean;
+  /** Boundary items written for this session, so a rebuild can write them again. */
+  startedBoundary: boolean;
+  endedBoundary: boolean;
   keys: Map<string, number>;
 }
 
@@ -95,6 +100,9 @@ interface Live {
   items: StoredItem[];
   /** Serialises commands and rebuilds for this agent. */
   lock: Promise<unknown>;
+  /** Resolves once the pending resync has handled this agent; commands wait for it. */
+  synced: Promise<void>;
+  markSynced: () => void;
 }
 
 export interface AgentEvents {
@@ -141,6 +149,12 @@ export function emptyCounts(): AgentCounts {
   };
 }
 
+const deferred = (): { promise: Promise<void>; resolve: () => void } => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+};
+
 const busy = () =>
   new HttpException(
     { statusCode: 409, message: 'a turn is in progress', code: 'agent-busy' },
@@ -155,16 +169,17 @@ const unavailable = (why: string) =>
     },
     503,
   );
+const asHttp = (err: unknown): unknown =>
+  err instanceof DaemonError ? unavailable(err.message) : err;
 
 /**
  * Agents: definitions in SQLite, everything live rebuilt from the daemon.
  * Each daemon session has its own adapter and cursor; records flow through
  * them into items and state. Commands and rebuilds are serialised per
- * agent, and every command re-reads the agent row under the lock. On
- * (re)connect every session whose cursor trails the daemon's boundary is
- * caught up; a session whose replay failed is retried, and if it lies
- * before newer history the transcript is rebuilt from scratch so order is
- * preserved.
+ * agent, every command re-reads the agent row under the lock, and commands
+ * wait for a pending resync. Attachments live on the daemon socket, so a
+ * disconnect invalidates every session until it is re-attached; an exit
+ * for a session whose log has not been replayed yet is held until it has.
  */
 @Injectable()
 export class AgentsService
@@ -197,6 +212,7 @@ export class AgentsService
     this.daemon.on('output', (id, record) => this.onOutput(id, record));
     this.daemon.on('changed', (session) => this.onSessionChanged(session));
     this.daemon.on('connected', () => this.scheduleResync());
+    this.daemon.on('disconnected', () => this.onDaemonLost());
   }
 
   // ---- queries ------------------------------------------------------------
@@ -309,20 +325,28 @@ export class AgentsService
       )
       .run(agent.id, projectId, agent.name, profile, cwd, agent.createdAt);
     const live = this.ensureLive(agent);
-    await this.withLock(live, () => this.startSession(agent, live));
+    try {
+      await this.withLock(live, () => this.startSession(agent, live));
+    } catch (err) {
+      // No process, no agent: leave nothing behind for the user to wonder about.
+      this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
+      this.live.delete(agent.id);
+      throw asHttp(err);
+    }
     return { agent: this.get(agent.id), status: live.status };
   }
 
   /**
-   * Sends a user turn. Refused while a turn is in progress (`agent-busy`),
-   * since neither vendor lets us represent a queue faithfully, and while
-   * the current session's output is not attached (`agent-unavailable`).
-   * Starts or resumes a session first if none is live.
+   * Sends a user turn. Waits for a pending resync, refuses while a turn is
+   * in progress (`agent-busy`) and while the current session's output is
+   * not attached (`agent-unavailable`). Starts or resumes a session first
+   * if none is live.
    */
   async turn(id: string, text: unknown): Promise<void> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
     const live = this.ensureLive(this.get(id));
+    await live.synced;
     await this.withLock(live, async () => {
       let agent = this.get(id);
       if (agent.archivedAt) throw new ConflictException('agent is archived');
@@ -353,7 +377,7 @@ export class AgentsService
       } catch (err) {
         if ((live.status as AgentStatus).state === 'working')
           this.setState(agent, live, before.state, before.error);
-        throw err instanceof DaemonError ? unavailable(err.message) : err;
+        throw asHttp(err);
       }
     });
   }
@@ -367,8 +391,12 @@ export class AgentsService
     if (!sl?.adapter.interrupt)
       throw new ConflictException('nothing to interrupt');
     // Deliberately outside the lock: an interrupt must reach a turn that is blocked on stdin.
-    for (const line of sl.adapter.interrupt())
-      await this.daemon.input(agent.currentSessionId!, line);
+    try {
+      for (const line of sl.adapter.interrupt())
+        await this.daemon.input(agent.currentSessionId!, line);
+    } catch (err) {
+      throw asHttp(err);
+    }
   }
 
   /** Ends the current session politely; the agent stays resumable. */
@@ -416,7 +444,7 @@ export class AgentsService
       }
     } catch (err) {
       this.deleting.delete(projectId);
-      throw err;
+      throw asHttp(err);
     }
   }
 
@@ -435,8 +463,8 @@ export class AgentsService
     try {
       await this.daemon.endInput(id);
     } catch (err) {
-      if (!(err instanceof DaemonError) || err.code === 'disconnected')
-        throw err;
+      if (!(err instanceof DaemonError)) throw err;
+      if (err.code === 'disconnected') throw unavailable(err.message);
       if (err.code !== 'unknown-session')
         await this.daemon.signal(id, 'SIGTERM').catch(() => undefined);
     }
@@ -455,7 +483,7 @@ export class AgentsService
         } catch (err) {
           if (err instanceof DaemonError && err.code === 'unknown-session')
             return;
-          throw err instanceof DaemonError ? unavailable(err.message) : err;
+          throw asHttp(err);
         }
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -490,6 +518,7 @@ export class AgentsService
         ? `session resumed (${session.id})`
         : `session started (${session.id})`,
     });
+    sl.startedBoundary = true;
     this.setState(agent, live, adapter.initialState ?? 'starting', null);
     this.emit('session', agent.id, {
       daemonSessionId: session.id,
@@ -517,6 +546,9 @@ export class AgentsService
         replayed: false,
         attaching: false,
         pendingExit: null,
+        suspended: false,
+        startedBoundary: false,
+        endedBoundary: false,
         keys: new Map(),
       };
       live.sessions.set(sessionId, sl);
@@ -532,6 +564,7 @@ export class AgentsService
     sl: SessionLive,
   ): Promise<void> {
     sl.attaching = true;
+    sl.suspended = false;
     try {
       await this.daemon.attach(sl.id, sl.lastSeq + 1);
       sl.replayed = true;
@@ -547,7 +580,7 @@ export class AgentsService
     } finally {
       sl.attaching = false;
     }
-    if (sl.pendingExit) {
+    if (sl.pendingExit && sl.replayed) {
       const s = sl.pendingExit;
       sl.pendingExit = null;
       this.applyExit(agent, live, s);
@@ -583,7 +616,7 @@ export class AgentsService
     if (!agentId) return;
     const live = this.live.get(agentId);
     const sl = live?.sessions.get(sessionId);
-    if (!live || !sl) return;
+    if (!live || !sl || sl.suspended) return;
     if (record.seq <= sl.lastSeq) return; // overlap after a reconnect
     sl.lastSeq = record.seq;
     const agent = this.find(agentId);
@@ -647,9 +680,18 @@ export class AgentsService
     const agent = this.find(agentId);
     if (!agent) return;
     const live = this.ensureLive(agent);
-    const sl = live.sessions.get(session.id);
-    if (sl?.attaching) {
-      sl.pendingExit = session; // the exit boundary goes after the records still being replayed
+    const sl =
+      live.sessions.get(session.id) ??
+      this.trackSession(
+        agent,
+        live,
+        session.id,
+        this.adapters.create(agent.profile),
+      );
+    if (sl.attaching || !sl.replayed) {
+      // The boundary goes after the records: wait for this session's replay
+      // (in flight, or coming with the next resync after a restart).
+      sl.pendingExit = session;
       return;
     }
     this.applyExit(agent, live, session);
@@ -673,10 +715,13 @@ export class AgentsService
       .run(agent.id, session.id).changes;
     if (cleared === 0) return;
     agent.currentSessionId = null;
-    this.appendItem(agent.id, live, session.id, 0, {
-      kind: 'system',
-      text: `session ended${exitWhy(session)}`,
-    });
+    const sl = live.sessions.get(session.id);
+    if (!sl?.endedBoundary)
+      this.appendItem(agent.id, live, session.id, 0, {
+        kind: 'system',
+        text: `session ended${exitWhy(session)}`,
+      });
+    if (sl) sl.endedBoundary = true;
     this.setState(agent, live, 'exited', null);
     this.emit('session', agent.id, {
       daemonSessionId: session.id,
@@ -689,18 +734,41 @@ export class AgentsService
 
   private scheduleResync(): void {
     const generation = ++this.resyncGeneration;
+    // Every known agent waits for this resync before accepting commands.
+    for (const { id } of this.db.prepare('SELECT id FROM agents').all() as {
+      id: string;
+    }[]) {
+      const agent = this.find(id);
+      if (agent) this.gate(this.ensureLive(agent));
+    }
     this.resyncChain = this.resyncChain
       .then(() => this.resync(generation))
-      .catch((err: Error) =>
-        this.logger.error(`resync failed: ${err.message}`),
-      );
+      .catch((err: Error) => this.logger.error(`resync failed: ${err.message}`))
+      .finally(() => {
+        // Whatever happened, nobody stays gated behind a resync that is over.
+        for (const live of this.live.values()) live.markSynced();
+      });
+  }
+
+  private gate(live: Live): void {
+    const d = deferred();
+    live.synced = d.promise;
+    live.markSynced = d.resolve;
+  }
+
+  /** The socket the attachments lived on is gone; every session must be re-attached before it is trusted. */
+  private onDaemonLost(): void {
+    for (const live of this.live.values()) {
+      for (const sl of live.sessions.values()) sl.replayed = false;
+      this.gate(live);
+    }
   }
 
   /**
    * After (re)connecting to the daemon: bring every agent up to date with
-   * its sessions. Runs one agent at a time under that agent's lock (so
-   * commands wait), re-reading the agent row and the daemon's session
-   * records inside the lock. A newer resync supersedes an older one.
+   * its sessions. Runs one agent at a time under that agent's lock,
+   * re-reading the agent row and the daemon's session records inside the
+   * lock. A newer resync supersedes an older one.
    */
   private async resync(generation: number): Promise<void> {
     const ids = (
@@ -725,7 +793,8 @@ export class AgentsService
         const failedEarlier = refs.some(
           (ref, i) =>
             i < refs.length - 1 &&
-            live.sessions.get(ref.daemonSessionId)?.replayed === false,
+            live.sessions.get(ref.daemonSessionId)?.replayed === false &&
+            live.sessions.get(ref.daemonSessionId)?.lastSeq === 0,
         );
         if (failedEarlier && live.items.length > 0) {
           this.logger.log(
@@ -735,6 +804,9 @@ export class AgentsService
           for (const sl of live.sessions.values()) {
             sl.lastSeq = 0;
             sl.replayed = false;
+            sl.suspended = true; // live frames must not advance the cursor before the replay attach
+            sl.startedBoundary = false;
+            sl.endedBoundary = false;
             sl.keys.clear();
             sl.adapter = this.adapters.create(agent.profile);
           }
@@ -745,7 +817,6 @@ export class AgentsService
           if (generation !== this.resyncGeneration) return;
           const s = byId.get(ref.daemonSessionId);
           if (!s) continue;
-          const isNew = !live.sessions.has(s.id);
           const sl = this.trackSession(
             agent,
             live,
@@ -753,12 +824,12 @@ export class AgentsService
             live.sessions.get(s.id)?.adapter ??
               this.adapters.create(agent.profile),
           );
-          if (isNew || sl.lastSeq === 0) {
-            if (isNew || live.items.length === 0)
-              this.appendItem(agent.id, live, s.id, 0, {
-                kind: 'system',
-                text: `${i === 0 ? 'session started' : 'session resumed'} (${s.id})`,
-              });
+          if (!sl.startedBoundary) {
+            this.appendItem(agent.id, live, s.id, 0, {
+              kind: 'system',
+              text: `${i === 0 ? 'session started' : 'session resumed'} (${s.id})`,
+            });
+            sl.startedBoundary = true;
           }
           const isCurrent = s.id === agent.currentSessionId;
           if (
@@ -782,11 +853,13 @@ export class AgentsService
             await this.attachSession(agent, live, sl);
           if (s.state === 'exited' && !sl.pendingExit) {
             if (isCurrent) this.applyExit(agent, live, s);
-            else if (isNew)
+            else if (!sl.endedBoundary) {
               this.appendItem(agent.id, live, s.id, 0, {
                 kind: 'system',
                 text: `session ended${exitWhy(s)}`,
               });
+              sl.endedBoundary = true;
+            }
             if (ref.endedAt === null)
               this.db
                 .prepare(
@@ -799,6 +872,7 @@ export class AgentsService
         const fresh = this.find(agent.id);
         if (fresh && !fresh.currentSessionId && live.status.state !== 'exited')
           this.setState(agent, live, 'exited', null);
+        live.markSynced();
       });
       done++;
     }
@@ -856,6 +930,8 @@ export class AgentsService
         },
         items: [],
         lock: Promise.resolve(),
+        synced: Promise.resolve(),
+        markSynced: () => undefined,
       };
       this.live.set(agent.id, live);
     }
@@ -869,32 +945,42 @@ export class AgentsService
   }
 
   /**
-   * For stop-like commands: if the lock does not free up quickly (a turn
-   * blocked on a stdin write the agent is not reading), signal the process
-   * first so that write fails and the lock is released, then proceed.
+   * For stop-like commands: queue behind the lock first, so a turn arriving
+   * meanwhile lands behind the stop. If the lock does not free up (a turn
+   * blocked on a stdin write the agent is not reading), signal the process,
+   * escalating to SIGKILL, so that write fails and the queue moves.
    */
   private async withLockOrForce<T>(
     live: Live,
     agentId: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    const free = await Promise.race([
-      live.lock.then(
-        () => true,
-        () => true,
-      ),
-      new Promise<boolean>((r) => setTimeout(() => r(false), LOCK_PATIENCE_MS)),
-    ]);
-    if (!free) {
+    let acquired = false;
+    const run = this.withLock(live, () => {
+      acquired = true;
+      return fn();
+    });
+    const settled = run.then(
+      () => true,
+      () => true,
+    );
+    for (const [signal, wait] of [
+      ['SIGTERM', LOCK_PATIENCE_MS],
+      ['SIGKILL', LOCK_PATIENCE_MS + 1000],
+    ] as const) {
+      const free = await Promise.race([
+        settled,
+        new Promise<boolean>((r) => setTimeout(() => r(false), wait)),
+      ]);
+      if (free || acquired) break;
       const sid = this.find(agentId)?.currentSessionId;
-      if (sid) {
-        this.logger.warn(
-          `agent ${agentId}: a command is blocked; signalling the process to free it`,
-        );
-        await this.daemon.signal(sid, 'SIGTERM').catch(() => undefined);
-      }
+      if (!sid) break;
+      this.logger.warn(
+        `agent ${agentId}: a command is blocked; sending ${signal} to free it`,
+      );
+      await this.daemon.signal(sid, signal).catch(() => undefined);
     }
-    return this.withLock(live, fn);
+    return run;
   }
 
   /** Gives a freshly started or resumed process a moment to report ready before a turn is judged. */

@@ -26,6 +26,7 @@ let AuthService = AuthService_1 = class AuthService extends EventEmitter {
     verifying = 0;
     verifyQueue = [];
     dummyHash = '';
+    cleanup = null;
     constructor(config, dbs) {
         super();
         this.config = config;
@@ -49,6 +50,14 @@ let AuthService = AuthService_1 = class AuthService extends EventEmitter {
         this.db
             .prepare('DELETE FROM login_sessions WHERE expires_at < ?')
             .run(Date.now());
+        this.cleanup = setInterval(() => this.db
+            .prepare('DELETE FROM login_sessions WHERE expires_at < ?')
+            .run(Date.now()), 3600_000);
+        this.cleanup.unref();
+    }
+    onModuleDestroy() {
+        if (this.cleanup)
+            clearInterval(this.cleanup);
     }
     async createUser(name, password) {
         const hash = await argon2.hash(password, { type: argon2.argon2id });

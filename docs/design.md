@@ -208,8 +208,15 @@ ended, history unavailable) have `seqFrom` 0.
   was down is not lost. If an earlier session's replay had failed and
   newer history is already shown, the transcript is rebuilt from scratch
   (`agent.reset`) so order is preserved.
+- Commands wait for a pending resync (the manager has just started, or
+  has just reconnected); attachments live on the daemon socket, so a
+  disconnect invalidates every session until it is re-attached. An exit
+  that arrives for a session whose log has not been replayed yet is held
+  until it has, so the boundary always follows the records.
 - A turn is refused with `agent-unavailable` (503) while the current
-  session's output is not attached; the attach is retried first. Stop,
+  session's output is not attached; the attach is retried first. Any
+  daemon failure surfaces as 503 `agent-unavailable`; creating an agent
+  while the daemon is unreachable leaves no agent behind. Stop,
   archive and project deletion wait briefly for the agent's lock and, if a
   turn is stuck on a stdin write the agent no longer reads, signal the
   process so the write fails and the command can proceed. Losing the

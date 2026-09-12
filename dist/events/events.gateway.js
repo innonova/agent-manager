@@ -37,6 +37,7 @@ let EventsGateway = EventsGateway_1 = class EventsGateway {
         this.agents.on('state', (agentId, projectId, status) => this.broadcast({ type: 'agent.state', agentId, projectId, status }));
         this.agents.on('item', (agentId, item) => this.broadcast({ type: 'agent.item', agentId, item }));
         this.agents.on('session', (agentId, session) => this.broadcast({ type: 'agent.session', agentId, session }));
+        this.agents.on('reset', (agentId) => this.broadcast({ type: 'agent.reset', agentId }));
         this.agents.on('counts', (projectId, counts) => this.broadcast({ type: 'project.counts', projectId, counts }));
         this.daemon.on('connected', () => this.broadcast({ type: 'daemon', connected: true }));
         this.daemon.on('disconnected', () => this.broadcast({ type: 'daemon', connected: false }));
