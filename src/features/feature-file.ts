@@ -4,7 +4,6 @@ import YAML from 'yaml';
 
 export const FEATURE_STATUSES = [
   'planned',
-  'queued',
   'in-progress',
   'review',
   'blocked',
@@ -21,8 +20,8 @@ export interface FeatureFile {
   title: string;
   status: FeatureStatus;
   priority: number;
-  profile: string | null;
   dependsOn: string[];
+  /** The spec, followed by `## Report` and `## Response` sections as the work proceeds. */
   body: string;
   /** Other frontmatter keys, kept verbatim. */
   extra: Record<string, unknown>;
@@ -63,7 +62,7 @@ export function parseFeature(
   mtime: number,
 ): FeatureFile {
   const { front, body } = split(text);
-  const { title, status, priority, profile, dependsOn, ...extra } = front;
+  const { title, status, priority, dependsOn, ...extra } = front;
   const st = FEATURE_STATUSES.includes(status as FeatureStatus)
     ? (status as FeatureStatus)
     : 'planned';
@@ -89,7 +88,6 @@ export function parseFeature(
         : (firstHeading ?? slug),
     status: st,
     priority: pr,
-    profile: typeof profile === 'string' && profile ? profile : null,
     dependsOn: deps,
     body: body.replace(/^\r?\n/, ''),
     extra,
@@ -100,7 +98,7 @@ export function parseFeature(
 export function serializeFeature(
   f: Pick<
     FeatureFile,
-    'title' | 'status' | 'priority' | 'profile' | 'dependsOn' | 'body' | 'extra'
+    'title' | 'status' | 'priority' | 'dependsOn' | 'body' | 'extra'
   >,
 ): string {
   const front: Record<string, unknown> = {
@@ -108,7 +106,6 @@ export function serializeFeature(
     status: f.status,
     priority: f.priority,
   };
-  if (f.profile) front.profile = f.profile;
   if (f.dependsOn.length) front.dependsOn = f.dependsOn;
   Object.assign(front, f.extra);
   return `---\n${YAML.stringify(front).trimEnd()}\n---\n\n${f.body.replace(/\s+$/, '')}\n`;

@@ -16,7 +16,6 @@ describe('feature files', () => {
       status: 'review',
       priority: 2,
       dependsOn: ['users', 'db'],
-      profile: null,
       extra: { owner: 'anders' },
       mtime: 5,
     });
@@ -53,22 +52,35 @@ describe('feature files', () => {
       title: 'T',
       status: 'done',
       priority: 1,
-      profile: 'claude',
       dependsOn: ['a'],
       body: 'Body text.',
       extra: { owner: 'x' },
     });
     expect(text).toBe(
-      '---\ntitle: T\nstatus: done\npriority: 1\nprofile: claude\ndependsOn:\n  - a\nowner: x\n---\n\nBody text.\n',
+      '---\ntitle: T\nstatus: done\npriority: 1\ndependsOn:\n  - a\nowner: x\n---\n\nBody text.\n',
     );
     expect(parseFeature('t', 'app', 'p', text, 0)).toMatchObject({
       title: 'T',
       status: 'done',
       priority: 1,
-      profile: 'claude',
       dependsOn: ['a'],
       body: 'Body text.\n',
       extra: { owner: 'x' },
     });
+  });
+
+  it('keeps keys from the first version (profile, a queued status) without meaning', () => {
+    const f = parseFeature(
+      'old',
+      'app',
+      'p',
+      '---\ntitle: Old\nstatus: queued\nprofile: claude\n---\n\nbody\n',
+      0,
+    );
+    expect(f).toMatchObject({
+      status: 'planned',
+      extra: { profile: 'claude' },
+    });
+    expect(serializeFeature(f)).toContain('profile: claude');
   });
 });

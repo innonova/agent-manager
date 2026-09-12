@@ -61,6 +61,7 @@ Copilot's ACP.
 | One turn at a time per agent | Neither vendor lets a queued turn be represented faithfully in the transcript, so a second turn while one runs is refused with 409 `agent-busy`; the UI offers interrupt instead. |
 | Archived agents keep their history | Archival hides an agent from lists and refuses commands; its transcript is still rebuilt and readable. |
 | Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
+| No feature queue; the human asks the agent in conversation | An injected turn arrives without context and cannot be given a caveat or refused; the file carries spec, report and response instead, and the agent edits it itself. See Features. |
 | A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
 | Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
 | Git diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. Per-entry status in the file listing (`git status` and `git check-ignore` per directory) is cheap and is done, so the tree can tint entries as VS Code does. |
@@ -228,41 +229,55 @@ across the project anyway).
 ```markdown
 ---
 title: Login page
-status: planned          # planned | queued | in-progress | review | blocked | done
-priority: 2              # lower runs first; default 100
-dependsOn: [db]          # slugs that must be done before this can be queued
+status: planned          # planned | in-progress | review | blocked | done
+priority: 2              # a hint for the agent; lower first
+dependsOn: [db]          # a hint for the agent
 ---
 
-Add a login page with a form. (The body is the spec the agent is given.)
+Add a login page with a form. (The body is the spec.)
+
+## Report (2026-09-12)
+
+Added the page and a test. Left open: password reset.
+
+## Response (2026-09-13)
+
+Good. Also handle the reset; see the manager's design doc for the token.
 ```
 
-Unknown frontmatter keys and the body are preserved when the manager
-rewrites the file. A missing title falls back to the first heading, then
-the slug; a missing or unknown status is `planned`.
+Unknown frontmatter keys are preserved when the manager rewrites the
+file. A missing title falls back to the first heading, then the slug; a
+missing or unknown status is `planned`.
 
-Ownership of `status`: the manager owns `queued` and `in-progress`; the
-human sets `planned`, `review`, `blocked` and `done` through the API or by
-editing the file. The manager moves a feature to `review` when the agent's
-turn ends normally and to `blocked` when it ends in error or the session
-ends; a human then marks it `done` or reopens it.
+The file is the whole channel. Nothing queues or starts work: the human
+asks an agent, in its ordinary conversation, to work on one or more
+features, and can phrase that however the situation needs. The agent
+reads the file (spec, earlier reports, the human's responses), sets
+`status: in-progress`, does the work, appends a dated `## Report` with
+what changed, what was verified and what is left open, and sets
+`status: review` (or `blocked`, with the reason in the report). The human
+reads the report in the UI, answers under a dated `## Response` and sets
+the status back to `planned`, or marks it `done`. This is spelled out for
+agents in each repository's `CLAUDE.md`.
 
-Queueing puts the feature on one agent's queue (SQLite `feature_queue`)
-and, if that agent is not busy, starts it at once: a `feature_runs` row is
-opened, the file goes to `in-progress`, and the agent receives one turn
-containing the title, the file's absolute path (with the repository's
-name when the project has more than one) and the body, nothing else.
-Standing rules such as where the sibling repositories are and that the
-manager owns the status field belong in the project's own agent
-instructions (`CLAUDE.md`/`AGENTS.md`), which the agent reads anyway;
-repeating them per turn was noise. When the agent's state changes, the open run on that
-agent gets its outcome (`review`, or `blocked: <reason>`), and the next
-queued feature starts. Only live state changes count: while a session's
-log is being replayed (after a manager restart or a reconnect) the states
-it yields are history and are applied silently, and one `state` event
-goes out at the end of the replay, so a run is never settled by an
-`idle` from a turn that finished long before the one in progress. A queued feature can be dequeued back to
-`planned`. Dependencies are checked at queue time only. Nothing here is
-agent-specific: the feature is an ordinary turn.
+Ownership of `status`: `in-progress` is the agent's; `planned`, `review`,
+`blocked` and `done` are set by either side, the human through the API.
+The manager never sets a status on its own.
+
+Because agents (and humans with an editor) write the files directly, the
+manager polls every project's feature files every few seconds and emits
+`feature.changed` for any whose mtime moved, so the UI shows a feature
+going in progress or landing in review without a refresh. The files are
+few and small; a watcher would only add lifecycle to manage.
+
+The first version instead queued features per agent and injected the
+spec as a turn, with the manager deriving the outcome from the agent's
+state. That was replaced: the injected turn arrived without context, the
+agent could neither push back nor be told a caveat, its closing summary
+was lost in the transcript, and every safeguard around the queue (runs,
+in-progress ownership, outcome from state) was a source of bugs. The
+`feature_queue` and `feature_runs` tables from that version are left in
+existing databases, unused.
 
 ## Daemon integration
 
@@ -359,12 +374,11 @@ GET    /api/health                  (public)                    -> { status: 'ok
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
-GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, queued, review, blocked, planned, done, then priority
+GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, review, blocked, planned, done, then priority
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary
 GET    /api/projects/:id/features/:slug
-PATCH  /api/projects/:id/features/:slug  { status }             -> the human's transitions: planned, review, blocked, done (never queued or in-progress)
-POST   /api/projects/:id/features/:slug/queue { agentId }       -> 202; 409 if already queued/running, done, or a dependency is not done
-POST   /api/projects/:id/features/:slug/dequeue                 -> back to planned
+PATCH  /api/projects/:id/features/:slug  { status }             -> the human's transitions: planned, review, blocked, done (in-progress is the agent's)
+POST   /api/projects/:id/features/:slug/respond { text, status? } -> appends a dated "## Response" section; status defaults to planned
 ```
 
 File paths are `<repository name>/<path inside it>`, normalised, and
@@ -463,8 +477,9 @@ running in the daemon and are re-adopted on start.
 2. **Files** (done): tree and file endpoints; UI file browser with Monaco,
    read-only, refreshed when an agent in the project finishes a turn.
 3. **Features** (done): `features/*.md` convention, parsing, listing,
-   queueing a feature as a turn for a chosen agent, manager-owned status
-   updates. See "Features" below.
+   the human's writes (create, respond, status) and a poller that turns
+   the agent's own edits into events. The first cut queued features as
+   injected turns; replaced, see "Features" below.
 4. **Codex and Copilot adapters** (done): tested against recorded
    sessions, and end to end by `npm run smoke:agents`.
 5. Later, each needing its own discussion: git diff per agent, including

@@ -1,12 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  Param,
-  Patch,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { Feature, FeaturesService } from './features.service.js';
 
 @Controller('api/projects/:id/features')
@@ -43,21 +35,12 @@ export class FeaturesController {
     return { feature: await this.features.setStatus(id, slug, body?.status) };
   }
 
-  @Post(':slug/queue')
-  @HttpCode(202)
-  async queue(
+  @Post(':slug/respond')
+  async respond(
     @Param('id') id: string,
     @Param('slug') slug: string,
-    @Body() body: { agentId?: unknown },
+    @Body() body: { text?: unknown; status?: unknown },
   ): Promise<{ feature: Feature }> {
-    return { feature: await this.features.queue(id, slug, body ?? {}) };
-  }
-
-  @Post(':slug/dequeue')
-  async dequeue(
-    @Param('id') id: string,
-    @Param('slug') slug: string,
-  ): Promise<{ feature: Feature }> {
-    return { feature: await this.features.dequeue(id, slug) };
+    return { feature: await this.features.respond(id, slug, body ?? {}) };
   }
 }

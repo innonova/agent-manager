@@ -1,17 +1,13 @@
-import path from 'node:path';
 import {
   BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
-import { AgentsService } from '../agents/agents.service.js';
-import type { AgentStatus } from '../agents/agents.service.js';
-import { DbService } from '../db/db.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import {
   FEATURE_STATUSES,
@@ -23,73 +19,63 @@ import {
   writeFeature,
 } from './feature-file.js';
 
-export interface Feature extends Omit<FeatureFile, 'extra'> {
-  /** The agent this feature is queued on or running on, if any. */
-  agentId: string | null;
-  queuedAt: number | null;
-  lastRun: {
-    id: string;
-    agentId: string;
-    startedAt: number;
-    endedAt: number | null;
-    outcome: string | null;
-  } | null;
-}
+export type Feature = Omit<FeatureFile, 'extra'>;
 
-interface QueueRow {
-  project_id: string;
-  slug: string;
-  agent_id: string;
-  queued_at: number;
-}
-interface RunRow {
-  id: string;
-  project_id: string;
-  slug: string;
-  agent_id: string;
-  started_at: number;
-  ended_at: number | null;
-  outcome: string | null;
-}
 interface Found {
   file: FeatureFile;
   repoPath: string;
 }
 
+/** The statuses a human sets through the API; `in-progress` is the agent's. */
+const HUMAN_STATUSES: FeatureStatus[] = [
+  'planned',
+  'review',
+  'blocked',
+  'done',
+];
+
+/** How often feature files are re-read to notice edits made by agents or by hand. */
+const POLL_MS = 3000;
+
+const today = () => new Date().toISOString().slice(0, 10);
+
 /**
  * Features are markdown files under `features/` in any of the project's
- * repositories; their `status` is owned by the manager while they move
- * through the queue, and by the human otherwise. A queue per agent starts
- * the next feature when the agent is free; the run's outcome comes from
- * the agent's state.
+ * repositories: a spec, followed by the conversation about it (`## Report`
+ * sections written by the agent, `## Response` sections by the human).
+ * Nothing here queues or starts work: a human asks an agent in its
+ * conversation, and the agent edits the file itself. The manager reads the
+ * files, writes what the human asks (create, respond, set a status) and
+ * polls for changes so the UI stays current.
  */
 @Injectable()
 export class FeaturesService
   extends EventEmitter<{ changed: [projectId: string, feature: Feature] }>
-  implements OnModuleInit
+  implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(FeaturesService.name);
+  private timer: NodeJS.Timeout | null = null;
+  /** project id -> slug -> mtime as last announced, so the poller announces only edits. */
+  private seen = new Map<string, Map<string, number>>();
 
-  constructor(
-    private readonly dbs: DbService,
-    private readonly projects: ProjectsService,
-    private readonly agents: AgentsService,
-  ) {
+  constructor(private readonly projects: ProjectsService) {
     super();
   }
 
-  private get db() {
-    return this.dbs.db;
+  onModuleInit(): void {
+    this.timer = setInterval(
+      () =>
+        void this.poll().catch((err: Error) =>
+          this.logger.warn(`feature poll failed: ${err.message}`),
+        ),
+      POLL_MS,
+    );
+    this.timer.unref();
   }
 
-  onModuleInit(): void {
-    this.agents.on(
-      'state',
-      (agentId, projectId, status) =>
-        void this.onAgentState(agentId, projectId, status).catch((err: Error) =>
-          this.logger.error(`feature update failed: ${err.message}`),
-        ),
-    );
+  onModuleDestroy(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
   }
 
   // ---- reading --------------------------------------------------------------
@@ -123,16 +109,13 @@ export class FeaturesService
 
   async list(projectId: string): Promise<Feature[]> {
     const project = this.projects.get(projectId);
-    const features = (await this.readAll(project.repos)).map((f) =>
-      this.decorate(projectId, f),
-    );
+    const features = (await this.readAll(project.repos)).map(strip);
     const order: Record<FeatureStatus, number> = {
       'in-progress': 0,
-      queued: 1,
-      review: 2,
-      blocked: 3,
-      planned: 4,
-      done: 5,
+      review: 1,
+      blocked: 2,
+      planned: 3,
+      done: 4,
     };
     return features.sort(
       (a, b) =>
@@ -146,37 +129,39 @@ export class FeaturesService
     const project = this.projects.get(projectId);
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
-    return this.decorate(projectId, found.file);
+    return strip(found.file);
   }
 
-  private decorate(projectId: string, f: FeatureFile): Feature {
-    const q = this.db
-      .prepare('SELECT * FROM feature_queue WHERE project_id = ? AND slug = ?')
-      .get(projectId, f.slug) as QueueRow | undefined;
-    const run = this.db
-      .prepare(
-        'SELECT * FROM feature_runs WHERE project_id = ? AND slug = ? ORDER BY started_at DESC LIMIT 1',
-      )
-      .get(projectId, f.slug) as RunRow | undefined;
-    const { extra: _extra, ...rest } = f;
-    return {
-      ...rest,
-      agentId:
-        q?.agent_id ?? (run && run.ended_at === null ? run.agent_id : null),
-      queuedAt: q?.queued_at ?? null,
-      lastRun: run
-        ? {
-            id: run.id,
-            agentId: run.agent_id,
-            startedAt: run.started_at,
-            endedAt: run.ended_at,
-            outcome: run.outcome,
-          }
-        : null,
-    };
+  /**
+   * Agents and humans edit feature files directly; this turns those edits
+   * into `changed` events. The files are few and small, so re-reading them
+   * every few seconds costs nothing and needs no watcher lifecycle tied to
+   * projects coming and going.
+   */
+  private async poll(): Promise<void> {
+    for (const project of this.projects.list()) {
+      const known = this.seen.get(project.id);
+      const files = await this.readAll(project.repos);
+      const next = new Map<string, number>();
+      for (const f of files) {
+        next.set(f.slug, f.mtime);
+        // The first pass only records what is there.
+        if (known && known.get(f.slug) !== f.mtime)
+          this.emit('changed', project.id, strip(f));
+      }
+      this.seen.set(project.id, next);
+    }
   }
 
-  // ---- commands -------------------------------------------------------------
+  /** Announces a feature the manager itself just wrote, and remembers its mtime so the poller does not repeat it. */
+  private announce(projectId: string, feature: Feature): void {
+    let known = this.seen.get(projectId);
+    if (!known) this.seen.set(projectId, (known = new Map()));
+    known.set(feature.slug, feature.mtime);
+    this.emit('changed', projectId, feature);
+  }
+
+  // ---- the human's writes ---------------------------------------------------
 
   async create(
     projectId: string,
@@ -227,7 +212,6 @@ export class FeaturesService
       title: input.title.trim(),
       status: 'planned',
       priority,
-      profile: null,
       dependsOn,
       body: (input.body as string | undefined) ?? '',
       extra: {},
@@ -235,227 +219,64 @@ export class FeaturesService
     };
     await writeFeature(repo.path, f);
     const feature = await this.get(projectId, f.slug);
-    this.emit('changed', projectId, feature);
+    this.announce(projectId, feature);
     return feature;
   }
 
-  /** The human's transitions: anything except the manager-owned queued and in-progress. */
+  /** The human's transitions: anything but `in-progress`, which the agent sets. */
   async setStatus(
     projectId: string,
     slug: string,
     status: unknown,
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
-    if (
-      !FEATURE_STATUSES.includes(status as FeatureStatus) ||
-      status === 'queued' ||
-      status === 'in-progress'
-    ) {
+    if (!HUMAN_STATUSES.includes(status as FeatureStatus))
       throw new BadRequestException(
-        '"status" must be one of planned, review, blocked, done',
+        `"status" must be one of ${HUMAN_STATUSES.join(', ')}`,
       );
-    }
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
-    if (found.file.status === 'in-progress')
-      throw new ConflictException(
-        'feature is being worked on; stop or wait first',
-      );
-    this.db
-      .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
-      .run(projectId, slug);
     found.file.status = status as FeatureStatus;
     await writeFeature(found.repoPath, found.file);
     const feature = await this.get(projectId, slug);
-    this.emit('changed', projectId, feature);
+    this.announce(projectId, feature);
     return feature;
   }
 
-  /** Puts a feature on an agent's queue; starts at once if the agent is free. */
-  async queue(
+  /**
+   * Appends the human's answer to the agent's report as a dated
+   * `## Response` section and sets the status, `planned` by default so the
+   * next time an agent is asked to work on the feature it picks it up with
+   * the answer in front of it.
+   */
+  async respond(
     projectId: string,
     slug: string,
-    input: { agentId?: unknown },
+    input: { text?: unknown; status?: unknown },
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
-    if (typeof input.agentId !== 'string')
-      throw new BadRequestException('"agentId" is required');
-    const agent = this.agents.get(input.agentId);
-    if (agent.projectId !== projectId || agent.archivedAt)
-      throw new BadRequestException('agent does not belong to this project');
+    if (typeof input.text !== 'string' || !input.text.trim())
+      throw new BadRequestException('"text" is required');
+    const status = input.status === undefined ? 'planned' : input.status;
+    if (!HUMAN_STATUSES.includes(status as FeatureStatus))
+      throw new BadRequestException(
+        `"status" must be one of ${HUMAN_STATUSES.join(', ')}`,
+      );
     const found = await this.readOne(project.repos, slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
     const f = found.file;
-    if (f.status === 'in-progress' || f.status === 'queued')
-      throw new ConflictException(`feature is already ${f.status}`);
-    if (f.status === 'done')
-      throw new ConflictException('feature is done; reopen it first');
-    const all = await this.readAll(project.repos);
-    const unmet = f.dependsOn.filter(
-      (d) => all.find((x) => x.slug === d)?.status !== 'done',
-    );
-    if (unmet.length)
-      throw new ConflictException(
-        `depends on unfinished feature(s): ${unmet.join(', ')}`,
-      );
-    this.db
-      .prepare(
-        'INSERT INTO feature_queue (project_id, slug, agent_id, queued_at) VALUES (?, ?, ?, ?)',
-      )
-      .run(projectId, slug, agent.id, Date.now());
-    f.status = 'queued';
+    f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${today()})\n\n${input.text.trim()}\n`;
+    f.status = status as FeatureStatus;
     await writeFeature(found.repoPath, f);
-    this.emit('changed', projectId, await this.get(projectId, slug));
-    await this.startNext(agent.id);
-    return this.get(projectId, slug);
-  }
-
-  async dequeue(projectId: string, slug: string): Promise<Feature> {
-    const project = this.projects.get(projectId);
-    const found = await this.readOne(project.repos, slug);
-    if (!found) throw new NotFoundException(`no feature ${slug}`);
-    if (found.file.status !== 'queued')
-      throw new ConflictException('feature is not queued');
-    this.db
-      .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
-      .run(projectId, slug);
-    found.file.status = 'planned';
-    await writeFeature(found.repoPath, found.file);
     const feature = await this.get(projectId, slug);
-    this.emit('changed', projectId, feature);
+    this.announce(projectId, feature);
     return feature;
   }
-
-  // ---- the queue ------------------------------------------------------------
-
-  /** If the agent is free and has no open run, start its oldest queued feature. */
-  private async startNext(agentId: string): Promise<void> {
-    // An agent takes a turn whenever it is not busy: idle, exited (resumes) or in error.
-    const status = this.agents.status(agentId);
-    if (
-      status.state !== 'idle' &&
-      status.state !== 'exited' &&
-      status.state !== 'error'
-    )
-      return;
-    const open = this.db
-      .prepare(
-        'SELECT * FROM feature_runs WHERE agent_id = ? AND ended_at IS NULL',
-      )
-      .get(agentId) as RunRow | undefined;
-    if (open) return;
-    const next = this.db
-      .prepare(
-        'SELECT * FROM feature_queue WHERE agent_id = ? ORDER BY queued_at LIMIT 1',
-      )
-      .get(agentId) as QueueRow | undefined;
-    if (!next) return;
-    const project = this.projects.get(next.project_id);
-    const found = await this.readOne(project.repos, next.slug);
-    this.db
-      .prepare('DELETE FROM feature_queue WHERE project_id = ? AND slug = ?')
-      .run(next.project_id, next.slug);
-    if (!found) return this.startNext(agentId); // the file vanished: skip it
-    const f = found.file;
-    const run: RunRow = {
-      id: randomUUID(),
-      project_id: next.project_id,
-      slug: next.slug,
-      agent_id: agentId,
-      started_at: Date.now(),
-      ended_at: null,
-      outcome: null,
-    };
-    this.db
-      .prepare(
-        'INSERT INTO feature_runs (id, project_id, slug, agent_id, started_at) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run(run.id, run.project_id, run.slug, run.agent_id, run.started_at);
-    f.status = 'in-progress';
-    await writeFeature(found.repoPath, f);
-    this.emit(
-      'changed',
-      next.project_id,
-      await this.get(next.project_id, next.slug),
-    );
-    try {
-      await this.agents.turn(agentId, prompt(f, project.repos));
-    } catch (err) {
-      this.logger.warn(
-        `could not start feature ${next.slug} on agent ${agentId}: ${(err as Error).message}`,
-      );
-      await this.finishRun(
-        run,
-        'blocked',
-        `could not send the turn: ${(err as Error).message}`,
-      );
-    }
-  }
-
-  /** The agent's state decides the outcome of its open run. */
-  private async onAgentState(
-    agentId: string,
-    projectId: string,
-    status: AgentStatus,
-  ): Promise<void> {
-    const open = this.db
-      .prepare(
-        'SELECT * FROM feature_runs WHERE agent_id = ? AND ended_at IS NULL',
-      )
-      .get(agentId) as RunRow | undefined;
-    if (open) {
-      if (status.state === 'idle') await this.finishRun(open, 'review', null);
-      else if (status.state === 'error')
-        await this.finishRun(open, 'blocked', status.error);
-      else if (status.state === 'exited')
-        await this.finishRun(open, 'blocked', 'the agent session ended');
-      else return;
-    }
-    if (
-      status.state === 'idle' ||
-      status.state === 'error' ||
-      status.state === 'exited'
-    )
-      await this.startNext(agentId);
-    void projectId;
-  }
-
-  private async finishRun(
-    run: RunRow,
-    status: 'review' | 'blocked',
-    note: string | null,
-  ): Promise<void> {
-    this.db
-      .prepare(
-        'UPDATE feature_runs SET ended_at = ?, outcome = ? WHERE id = ? AND ended_at IS NULL',
-      )
-      .run(Date.now(), note ? `${status}: ${note}` : status, run.id);
-    const project = this.projects.get(run.project_id);
-    const found = await this.readOne(project.repos, run.slug);
-    if (found && found.file.status === 'in-progress') {
-      found.file.status = status;
-      await writeFeature(found.repoPath, found.file);
-    }
-    this.emit(
-      'changed',
-      run.project_id,
-      await this.get(run.project_id, run.slug),
-    );
-  }
 }
 
-/** What the agent is told. The feature file itself is the spec. */
-export function prompt(f: FeatureFile, repos: Repo[]): string {
-  const multi = repos.length > 1;
-  const repo = repos.find((r) => r.name === f.repo);
-  // Absolute: the agent's cwd may be another repository of the project.
-  const file = repo ? path.join(repo.path, 'features', `${f.slug}.md`) : f.path;
-  // Just the pointer and the spec. Standing rules (where the sibling
-  // repositories are, who owns the status field) belong in the project's
-  // own agent instructions, not in every turn.
-  return [
-    `Implement the feature "${f.title}": ${file}${multi ? ` (repository "${f.repo}")` : ''}`,
-    '',
-    f.body.trim() || '(The feature file has no description beyond its title.)',
-  ].join('\n');
+function strip(f: FeatureFile): Feature {
+  const { extra: _extra, ...rest } = f;
+  return rest;
 }
+
+export { FEATURE_STATUSES };
