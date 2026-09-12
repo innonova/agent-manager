@@ -22,10 +22,10 @@ let AuthController = class AuthController {
         this.config = config;
         this.auth = auth;
     }
-    async login(body, res) {
+    async login(body, req, res) {
         if (typeof body?.name !== 'string' || typeof body?.password !== 'string')
             throw new UnauthorizedException('invalid credentials');
-        const { user, sessionId } = await this.auth.login(body.name, body.password);
+        const { user, sessionId } = await this.auth.login(body.name, body.password, req.ip ?? req.socket.remoteAddress ?? 'unknown');
         res.setHeader('Set-Cookie', stringifySetCookie({
             name: COOKIE_NAME,
             value: sessionId,
@@ -58,9 +58,10 @@ __decorate([
     Public(),
     Post('login'),
     __param(0, Body()),
-    __param(1, Res({ passthrough: true })),
+    __param(1, Req()),
+    __param(2, Res({ passthrough: true })),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:paramtypes", [Object, Object, Object]),
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "login", null);
 __decorate([

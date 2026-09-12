@@ -10,7 +10,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
-import { Body, Controller, Get, HttpCode, Param, Post, Query, } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, Param, Post, Query, } from '@nestjs/common';
 import { AgentsService, } from './agents.service.js';
 let AgentsController = class AgentsController {
     agents;
@@ -31,7 +31,10 @@ let AgentsController = class AgentsController {
         };
     }
     items(id, from) {
-        return { items: this.agents.items(id, from ? Number(from) : 0) };
+        const cursor = from === undefined || from === '' ? 0 : Number(from);
+        if (!Number.isSafeInteger(cursor) || cursor < 0)
+            throw new BadRequestException('"from" must be a non-negative integer');
+        return { items: this.agents.items(id, cursor) };
     }
     async turn(id, body) {
         await this.agents.turn(id, body?.text);

@@ -1,5 +1,7 @@
 export class FakeAdapter {
     streamingText = '';
+    textKey = '';
+    texts = 0;
     startArgs({ resume }) {
         return resume ? ['--resume', resume] : [];
     }
@@ -11,22 +13,24 @@ export class FakeAdapter {
     }
     ingest(record) {
         if (record.s === 'err')
-            return { append: [{ kind: 'system', text: record.d }] };
+            return { ops: [append({ kind: 'system', text: record.d })] };
         let line;
         try {
             line = JSON.parse(record.d);
         }
         catch {
-            return { append: [{ kind: 'system', text: record.d }] };
+            return { ops: [append({ kind: 'system', text: record.d })] };
         }
         if (record.s === 'in') {
-            if (line.type === 'user') {
-                this.streamingText = '';
+            if (line.type === 'user')
                 return {
                     state: 'working',
-                    append: [{ kind: 'user', text: line.text }],
+                    ops: [append({ kind: 'user', text: line.text })],
                 };
-            }
+            if (line.type === 'interrupt')
+                return {
+                    ops: [append({ kind: 'system', text: 'interrupt requested' })],
+                };
             return {};
         }
         switch (line.type) {
@@ -34,62 +38,83 @@ export class FakeAdapter {
                 return { conversationId: line.conversationId, state: 'idle' };
             case 'text_start':
                 this.streamingText = '';
-                return { append: [{ kind: 'text', text: '', streaming: true }] };
+                this.textKey = `t${++this.texts}`;
+                return {
+                    ops: [
+                        {
+                            op: 'append',
+                            key: this.textKey,
+                            item: { kind: 'text', text: '', streaming: true },
+                        },
+                    ],
+                };
             case 'text_delta':
                 this.streamingText += line.text;
                 return {
-                    updateLast: {
-                        kind: 'text',
-                        text: this.streamingText,
-                        streaming: true,
-                    },
+                    ops: [
+                        {
+                            op: 'update',
+                            key: this.textKey,
+                            item: { kind: 'text', text: this.streamingText, streaming: true },
+                        },
+                    ],
                 };
             case 'text_end':
                 return {
-                    updateLast: {
-                        kind: 'text',
-                        text: this.streamingText,
-                        streaming: false,
-                    },
+                    ops: [
+                        {
+                            op: 'update',
+                            key: this.textKey,
+                            item: {
+                                kind: 'text',
+                                text: this.streamingText,
+                                streaming: false,
+                            },
+                        },
+                    ],
                 };
             case 'thinking':
-                return { append: [{ kind: 'thinking', text: line.text }] };
+                return { ops: [append({ kind: 'thinking', text: line.text })] };
             case 'tool_use':
                 return {
-                    append: [
-                        {
+                    ops: [
+                        append({
                             kind: 'tool_use',
                             id: line.id,
                             name: line.name,
                             input: line.input,
-                        },
+                        }),
                     ],
                 };
             case 'tool_result':
                 return {
-                    append: [
-                        {
+                    ops: [
+                        append({
                             kind: 'tool_result',
                             toolUseId: line.id,
                             output: line.output,
                             isError: Boolean(line.isError),
-                        },
+                        }),
                     ],
                 };
             case 'result':
                 return {
                     state: 'idle',
-                    append: [
-                        { kind: 'turn_end', durationMs: line.durationMs, costUsd: 0 },
+                    ops: [
+                        append({
+                            kind: 'turn_end',
+                            durationMs: line.durationMs,
+                            costUsd: 0,
+                        }),
                     ],
                 };
             case 'error':
                 return {
                     state: 'error',
                     error: line.message,
-                    append: [
-                        { kind: 'error', message: line.message },
-                        { kind: 'turn_end' },
+                    ops: [
+                        append({ kind: 'error', message: line.message }),
+                        append({ kind: 'turn_end' }),
                     ],
                 };
             default:
@@ -97,6 +122,7 @@ export class FakeAdapter {
         }
     }
 }
+const append = (item) => ({ op: 'append', item });
 export const fakeAdapterFactory = {
     profile: 'fake',
     create: () => new FakeAdapter(),

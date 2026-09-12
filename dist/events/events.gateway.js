@@ -7,20 +7,28 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var EventsGateway_1;
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { WebSocketGateway, } from '@nestjs/websockets';
 import { AgentsService } from '../agents/agents.service.js';
 import { sessionIdFromCookieHeader } from '../auth/auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
+import { MANAGER_CONFIG } from '../config/config.js';
 import { DaemonClient } from '../daemon/daemon-client.js';
+import { originAllowed } from '../origin.js';
 let EventsGateway = EventsGateway_1 = class EventsGateway {
+    config;
     auth;
     agents;
     daemon;
     logger = new Logger(EventsGateway_1.name);
-    clients = new Set();
-    constructor(auth, agents, daemon) {
+    clients = new Map();
+    sweep = null;
+    constructor(config, auth, agents, daemon) {
+        this.config = config;
         this.auth = auth;
         this.agents = agents;
         this.daemon = daemon;
@@ -32,14 +40,34 @@ let EventsGateway = EventsGateway_1 = class EventsGateway {
         this.agents.on('counts', (projectId, counts) => this.broadcast({ type: 'project.counts', projectId, counts }));
         this.daemon.on('connected', () => this.broadcast({ type: 'daemon', connected: true }));
         this.daemon.on('disconnected', () => this.broadcast({ type: 'daemon', connected: false }));
+        this.auth.on('revoked', (sessionId) => {
+            for (const [c, sid] of this.clients)
+                if (sid === sessionId)
+                    c.close(4401, 'logged out');
+        });
+        this.sweep = setInterval(() => {
+            for (const [c, sid] of this.clients)
+                if (!this.auth.userForSession(sid))
+                    c.close(4401, 'session expired');
+        }, 60_000);
+        this.sweep.unref();
+    }
+    onModuleDestroy() {
+        if (this.sweep)
+            clearInterval(this.sweep);
     }
     handleConnection(client, req) {
-        const user = this.auth.userForSession(sessionIdFromCookieHeader(req.headers.cookie));
-        if (!user) {
+        if (!originAllowed(req.headers.origin, req.headers.host, this.config.publicOrigin)) {
+            client.close(4403, 'origin not allowed');
+            return;
+        }
+        const sessionId = sessionIdFromCookieHeader(req.headers.cookie);
+        const user = this.auth.userForSession(sessionId);
+        if (!user || !sessionId) {
             client.close(4401, 'unauthorized');
             return;
         }
-        this.clients.add(client);
+        this.clients.set(client, sessionId);
         client.send(JSON.stringify({
             type: 'hello',
             user: user.name,
@@ -51,7 +79,7 @@ let EventsGateway = EventsGateway_1 = class EventsGateway {
     }
     broadcast(frame) {
         const data = JSON.stringify(frame);
-        for (const c of this.clients) {
+        for (const c of this.clients.keys()) {
             if (c.readyState !== c.OPEN)
                 continue;
             if (c.bufferedAmount > 16 * 1024 * 1024) {
@@ -66,7 +94,8 @@ let EventsGateway = EventsGateway_1 = class EventsGateway {
 };
 EventsGateway = EventsGateway_1 = __decorate([
     WebSocketGateway({ path: '/api/events' }),
-    __metadata("design:paramtypes", [AuthService,
+    __param(0, Inject(MANAGER_CONFIG)),
+    __metadata("design:paramtypes", [Object, AuthService,
         AgentsService,
         DaemonClient])
 ], EventsGateway);

@@ -55,9 +55,19 @@ let DaemonClient = DaemonClient_1 = class DaemonClient extends EventEmitter {
             this.logger.log(`connected to daemon at ${this.config.daemonUrl}`);
             this.backoff = 500;
             this.connected = true;
-            this.emit('connected');
+            this.safeEmit('connected');
         });
-        ws.on('message', (data) => this.onFrame(JSON.parse(String(data))));
+        ws.on('message', (data) => {
+            let frame;
+            try {
+                frame = JSON.parse(String(data));
+            }
+            catch {
+                this.logger.warn('daemon sent a frame that is not JSON');
+                return;
+            }
+            this.onFrame(frame);
+        });
         ws.on('error', (err) => this.logger.warn(`daemon socket error: ${err.message}`));
         ws.on('close', () => {
             const was = this.connected;
@@ -66,13 +76,21 @@ let DaemonClient = DaemonClient_1 = class DaemonClient extends EventEmitter {
             for (const p of this.pending.values())
                 p.reject(new DaemonError('disconnected', 'daemon connection lost'));
             this.pending.clear();
-            if (was)
-                this.emit('disconnected');
             if (!this.closing) {
                 this.reconnectTimer = setTimeout(() => this.connect(), this.backoff);
                 this.backoff = Math.min(this.backoff * 2, 10_000);
             }
+            if (was)
+                this.safeEmit('disconnected');
         });
+    }
+    safeEmit(event, ...args) {
+        try {
+            this.emit(event, ...args);
+        }
+        catch (err) {
+            this.logger.error(`listener for ${String(event)} failed: ${err.stack ?? err}`);
+        }
     }
     onFrame(f) {
         if (f.ref !== undefined && this.pending.has(String(f.ref))) {
@@ -87,18 +105,12 @@ let DaemonClient = DaemonClient_1 = class DaemonClient extends EventEmitter {
         switch (f.type) {
             case 'session.output': {
                 const { id, seq, t, s, d } = f;
-                this.emit('output', id, { seq, t, s, d });
+                this.safeEmit('output', id, { seq, t, s, d });
                 return;
             }
-            case 'session.exit':
+            case 'session.changed':
+                this.safeEmit('changed', f.session);
                 return;
-            case 'session.changed': {
-                const session = f.session;
-                this.emit('changed', session);
-                if (session.state === 'exited')
-                    this.emit('exit', session);
-                return;
-            }
             case 'error':
                 this.logger.warn(`daemon error without ref: ${String(f.code)} ${String(f.message)}`);
                 return;
@@ -136,11 +148,7 @@ let DaemonClient = DaemonClient_1 = class DaemonClient extends EventEmitter {
         return this.request({
             type: 'session.start',
             ...req,
-        }).then((r) => {
-            if (req.attach && r.attached === false)
-                throw new DaemonError(r.attachError?.code ?? 'attach-failed', r.attachError?.message ?? 'attach failed');
-            return r.session;
-        });
+        }).then((r) => r.session);
     }
     attach(id, fromSeq) {
         return this.request({

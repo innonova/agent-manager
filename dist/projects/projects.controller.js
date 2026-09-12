@@ -39,7 +39,9 @@ let ProjectsController = class ProjectsController {
     update(id, body) {
         return { project: this.projects.update(id, body) };
     }
-    remove(id) {
+    async remove(id) {
+        this.projects.get(id);
+        await this.agents.removeProject(id);
         this.projects.remove(id);
         return { ok: true };
     }
@@ -77,7 +79,7 @@ __decorate([
     __param(0, Param('id')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
-    __metadata("design:returntype", Object)
+    __metadata("design:returntype", Promise)
 ], ProjectsController.prototype, "remove", null);
 ProjectsController = __decorate([
     Controller('api/projects'),

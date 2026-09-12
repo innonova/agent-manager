@@ -19,7 +19,7 @@ export declare class ProjectsController {
     update(id: string, body: Record<string, unknown>): {
         project: Project;
     };
-    remove(id: string): {
+    remove(id: string): Promise<{
         ok: true;
-    };
+    }>;
 }

@@ -11,23 +11,29 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 var AuthService_1;
-import { Inject, Injectable, Logger, UnauthorizedException, } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Logger, UnauthorizedException, } from '@nestjs/common';
 import argon2 from 'argon2';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { MANAGER_CONFIG } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
-let AuthService = AuthService_1 = class AuthService {
+const VERIFY_CONCURRENCY = 4;
+let AuthService = AuthService_1 = class AuthService extends EventEmitter {
     config;
     dbs;
     logger = new Logger(AuthService_1.name);
+    attempts = new Map();
+    verifying = 0;
+    verifyQueue = [];
+    dummyHash = '';
     constructor(config, dbs) {
+        super();
         this.config = config;
         this.dbs = dbs;
     }
     get db() {
         return this.dbs.db;
     }
-    dummyHash = '';
     async onModuleInit() {
         this.dummyHash = await argon2.hash(randomBytes(16).toString('hex'), {
             type: argon2.argon2id,
@@ -52,13 +58,12 @@ let AuthService = AuthService_1 = class AuthService {
             .run(user.id, name, hash, user.createdAt);
         return user;
     }
-    async login(name, password) {
+    async login(name, password, clientKey = 'unknown') {
+        this.throttle(clientKey);
         const row = this.db
             .prepare('SELECT * FROM users WHERE name = ?')
             .get(name);
-        const ok = row
-            ? await argon2.verify(row.password_hash, password)
-            : await argon2.verify(this.dummyHash, password);
+        const ok = await this.verify(row ? row.password_hash : this.dummyHash, password);
         if (!row || !ok)
             throw new UnauthorizedException('invalid credentials');
         const sessionId = randomBytes(32).toString('base64url');
@@ -69,6 +74,7 @@ let AuthService = AuthService_1 = class AuthService {
     }
     logout(sessionId) {
         this.db.prepare('DELETE FROM login_sessions WHERE id = ?').run(sessionId);
+        this.emit('revoked', sessionId);
     }
     userForSession(sessionId) {
         if (!sessionId)
@@ -77,6 +83,35 @@ let AuthService = AuthService_1 = class AuthService {
             .prepare('SELECT u.* FROM login_sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ?')
             .get(sessionId, Date.now());
         return row ? toUser(row) : null;
+    }
+    throttle(key) {
+        const now = Date.now();
+        let a = this.attempts.get(key);
+        if (!a || a.resetAt <= now) {
+            a = { count: 0, resetAt: now + 60_000 };
+            this.attempts.set(key, a);
+        }
+        if (++a.count > this.config.loginAttemptsPerMinute)
+            throw new HttpException('too many login attempts; try again in a minute', 429);
+        if (this.attempts.size > 10_000)
+            for (const [k, v] of this.attempts)
+                if (v.resetAt <= now)
+                    this.attempts.delete(k);
+    }
+    async verify(hash, password) {
+        if (this.verifying >= VERIFY_CONCURRENCY)
+            await new Promise((r) => this.verifyQueue.push(r));
+        this.verifying++;
+        try {
+            return await argon2.verify(hash, password);
+        }
+        catch {
+            return false;
+        }
+        finally {
+            this.verifying--;
+            this.verifyQueue.shift()?.();
+        }
     }
 };
 AuthService = AuthService_1 = __decorate([

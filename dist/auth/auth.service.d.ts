@@ -1,4 +1,5 @@
 import { OnModuleInit } from '@nestjs/common';
+import { EventEmitter } from 'node:events';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 export interface User {
@@ -6,19 +7,26 @@ export interface User {
     name: string;
     createdAt: number;
 }
-export declare class AuthService implements OnModuleInit {
+export declare class AuthService extends EventEmitter<{
+    revoked: [sessionId: string];
+}> implements OnModuleInit {
     private readonly config;
     private readonly dbs;
     private readonly logger;
+    private readonly attempts;
+    private verifying;
+    private readonly verifyQueue;
+    private dummyHash;
     constructor(config: ManagerConfig, dbs: DbService);
     private get db();
-    private dummyHash;
     onModuleInit(): Promise<void>;
     createUser(name: string, password: string): Promise<User>;
-    login(name: string, password: string): Promise<{
+    login(name: string, password: string, clientKey?: string): Promise<{
         user: User;
         sessionId: string;
     }>;
     logout(sessionId: string): void;
     userForSession(sessionId: string | undefined): User | null;
+    private throttle;
+    private verify;
 }

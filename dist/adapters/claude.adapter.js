@@ -1,4 +1,6 @@
 export class ClaudeAdapter {
+    initialState = 'idle';
+    message = 0;
     streaming = null;
     turnOpen = false;
     startArgs({ resume }) {
@@ -21,13 +23,13 @@ export class ClaudeAdapter {
     }
     ingest(record) {
         if (record.s === 'err')
-            return { append: [{ kind: 'system', text: record.d }] };
+            return { ops: [append({ kind: 'system', text: record.d })] };
         let line;
         try {
             line = JSON.parse(record.d);
         }
         catch {
-            return { append: [{ kind: 'system', text: record.d }] };
+            return { ops: [append({ kind: 'system', text: record.d })] };
         }
         if (record.s === 'in')
             return this.ingestInput(line);
@@ -53,7 +55,7 @@ export class ClaudeAdapter {
                 return {
                     state: 'error',
                     error: message,
-                    append: [{ kind: 'error', message }],
+                    ops: [append({ kind: 'error', message })],
                 };
             }
             default:
@@ -73,32 +75,46 @@ export class ClaudeAdapter {
                     : '';
             this.turnOpen = true;
             this.streaming = null;
-            return { state: 'working', append: [{ kind: 'user', text }] };
+            return { state: 'working', ops: [append({ kind: 'user', text })] };
         }
         if (line?.type === 'control_request' &&
             line.request?.subtype === 'interrupt') {
-            return { append: [{ kind: 'system', text: 'interrupt requested' }] };
+            return { ops: [append({ kind: 'system', text: 'interrupt requested' })] };
         }
         return {};
     }
     ingestStreamEvent(ev) {
         switch (ev?.type) {
+            case 'message_start':
+                this.message++;
+                return {};
             case 'content_block_start': {
                 const block = ev.content_block;
+                const key = `m${this.message}b${ev.index}`;
                 if (block?.type === 'text') {
                     this.streaming = {
+                        key,
                         index: ev.index,
                         kind: 'text',
                         text: block.text ?? '',
                     };
                     return {
-                        append: [
-                            { kind: 'text', text: this.streaming.text, streaming: true },
+                        ops: [
+                            {
+                                op: 'append',
+                                key,
+                                item: {
+                                    kind: 'text',
+                                    text: this.streaming.text,
+                                    streaming: true,
+                                },
+                            },
                         ],
                     };
                 }
                 if (block?.type === 'thinking') {
                     this.streaming = {
+                        key,
                         index: ev.index,
                         kind: 'thinking',
                         text: block.thinking ?? '',
@@ -107,34 +123,51 @@ export class ClaudeAdapter {
                 return {};
             }
             case 'content_block_delta': {
-                if (!this.streaming || ev.index !== this.streaming.index)
+                const s = this.streaming;
+                if (!s || ev.index !== s.index)
                     return {};
-                if (this.streaming.kind === 'text' && ev.delta?.type === 'text_delta') {
-                    this.streaming.text += ev.delta.text;
+                if (s.kind === 'text' && ev.delta?.type === 'text_delta') {
+                    s.text += ev.delta.text;
                     return {
-                        updateLast: {
-                            kind: 'text',
-                            text: this.streaming.text,
-                            streaming: true,
-                        },
+                        ops: [
+                            {
+                                op: 'update',
+                                key: s.key,
+                                item: { kind: 'text', text: s.text, streaming: true },
+                            },
+                        ],
                     };
                 }
-                if (this.streaming.kind === 'thinking' &&
+                if (s.kind === 'thinking' &&
                     ev.delta?.type === 'thinking_delta' &&
                     ev.delta.thinking) {
-                    const first = this.streaming.text === '';
-                    this.streaming.text += ev.delta.thinking;
-                    const item = { kind: 'thinking', text: this.streaming.text };
-                    return first ? { append: [item] } : { updateLast: item };
+                    s.text += ev.delta.thinking;
+                    return {
+                        ops: [
+                            {
+                                op: 'update',
+                                key: s.key,
+                                item: { kind: 'thinking', text: s.text },
+                            },
+                        ],
+                    };
                 }
                 return {};
             }
             case 'content_block_stop': {
-                if (this.streaming && ev.index === this.streaming.index) {
-                    const { kind, text } = this.streaming;
+                const s = this.streaming;
+                if (s && ev.index === s.index) {
                     this.streaming = null;
-                    if (kind === 'text')
-                        return { updateLast: { kind: 'text', text, streaming: false } };
+                    if (s.kind === 'text')
+                        return {
+                            ops: [
+                                {
+                                    op: 'update',
+                                    key: s.key,
+                                    item: { kind: 'text', text: s.text, streaming: false },
+                                },
+                            ],
+                        };
                 }
                 return {};
             }
@@ -143,42 +176,53 @@ export class ClaudeAdapter {
         }
     }
     ingestAssistant(message) {
-        const items = [];
-        let replace;
+        const ops = [];
+        const s = this.streaming;
         for (const block of message?.content ?? []) {
             switch (block.type) {
                 case 'text':
-                    if (block.text)
-                        replace = { kind: 'text', text: block.text, streaming: false };
+                    if (!block.text)
+                        break;
+                    if (s?.kind === 'text')
+                        ops.push({
+                            op: 'update',
+                            key: s.key,
+                            item: { kind: 'text', text: block.text, streaming: false },
+                        });
+                    else
+                        ops.push(append({ kind: 'text', text: block.text, streaming: false }));
                     break;
                 case 'thinking':
-                    if (block.thinking) {
-                        const item = { kind: 'thinking', text: block.thinking };
-                        if (this.streaming?.kind === 'thinking' && this.streaming.text)
-                            replace = item;
-                        else
-                            items.push(item);
-                    }
+                    if (!block.thinking)
+                        break;
+                    if (s?.kind === 'thinking' && s.text)
+                        ops.push({
+                            op: 'update',
+                            key: s.key,
+                            item: { kind: 'thinking', text: block.thinking },
+                        });
+                    else
+                        ops.push(append({ kind: 'thinking', text: block.thinking }));
                     break;
                 case 'tool_use':
-                    items.push({
+                    ops.push(append({
                         kind: 'tool_use',
                         id: block.id,
                         name: block.name,
                         input: block.input,
-                    });
+                    }));
                     break;
                 default:
                     break;
             }
         }
         this.streaming = null;
-        return { updateLast: replace, append: items };
+        return { ops };
     }
     ingestToolResults(line) {
         if (line.isReplay)
             return {};
-        const items = [];
+        const ops = [];
         for (const block of Array.isArray(line.message?.content)
             ? line.message.content
             : []) {
@@ -191,14 +235,14 @@ export class ClaudeAdapter {
                         .map((c) => c.type === 'text' ? c.text : JSON.stringify(c))
                         .join('\n')
                     : '';
-            items.push({
+            ops.push(append({
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
                 output,
                 isError: Boolean(block.is_error),
-            });
+            }));
         }
-        return { append: items };
+        return { ops };
     }
     ingestResult(line) {
         this.turnOpen = false;
@@ -210,19 +254,26 @@ export class ClaudeAdapter {
             durationMs: line.duration_ms,
         };
         if (line.is_error) {
-            const message = typeof line.result === 'string'
-                ? line.result
-                : (line.subtype ?? 'error');
+            const message = Array.isArray(line.errors) && line.errors.length
+                ? line.errors.map(String).join('\n')
+                : typeof line.result === 'string' && line.result
+                    ? line.result
+                    : String(line.subtype ?? 'error');
             return {
                 state: 'error',
                 error: message,
-                append: [{ kind: 'error', message }, end],
+                ops: [append({ kind: 'error', message }), append(end)],
                 conversationId: line.session_id,
             };
         }
-        return { state: 'idle', append: [end], conversationId: line.session_id };
+        return {
+            state: 'idle',
+            ops: [append(end)],
+            conversationId: line.session_id,
+        };
     }
 }
+const append = (item) => ({ op: 'append', item });
 export const claudeAdapterFactory = {
     profile: 'claude',
     create: () => new ClaudeAdapter(),

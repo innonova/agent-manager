@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
 export function loadConfig(env = process.env) {
     const listen = env.AGENT_MANAGER_LISTEN ?? '0.0.0.0:4268';
@@ -17,10 +18,16 @@ export function loadConfig(env = process.env) {
         port,
         daemonUrl: env.AGENT_MANAGER_DAEMON_URL ?? 'ws://127.0.0.1:4267/',
         dataDir: env.AGENT_MANAGER_DATA_DIR ?? path.join(xdgState, 'agent-manager'),
-        uiDir: env.AGENT_MANAGER_UI_DIR ?? null,
+        uiDir: env.AGENT_MANAGER_UI_DIR === ''
+            ? null
+            : (env.AGENT_MANAGER_UI_DIR ??
+                path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui')),
+        publicOrigin: env.AGENT_MANAGER_PUBLIC_ORIGIN?.replace(/\/$/, '') || null,
         adminPassword: env.AGENT_MANAGER_ADMIN_PASSWORD || null,
-        secureCookie: env.AGENT_MANAGER_SECURE_COOKIE === '1',
+        secureCookie: env.AGENT_MANAGER_SECURE_COOKIE === '1' ||
+            (env.AGENT_MANAGER_PUBLIC_ORIGIN ?? '').startsWith('https://'),
         sessionTtlMs: Number(env.AGENT_MANAGER_SESSION_TTL_MS ?? 30 * 24 * 3600 * 1000),
+        loginAttemptsPerMinute: Number(env.AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE ?? 10),
     };
 }
 //# sourceMappingURL=config.js.map

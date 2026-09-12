@@ -40,9 +40,6 @@ interface DaemonEvents {
     connected: [];
     disconnected: [];
     output: [id: string, record: LogRecord];
-    exit: [session: DaemonSession & {
-        exitedAt: number;
-    }];
     changed: [session: DaemonSession];
 }
 type Frame = Record<string, unknown> & {
@@ -63,6 +60,7 @@ export declare class DaemonClient extends EventEmitter<DaemonEvents> implements 
     onModuleInit(): void;
     onModuleDestroy(): void;
     private connect;
+    private safeEmit;
     private onFrame;
     request<T extends Frame = Frame>(frame: Omit<Frame, 'ref'>): Promise<T>;
     listSessions(): Promise<DaemonSession[]>;
@@ -74,7 +72,6 @@ export declare class DaemonClient extends EventEmitter<DaemonEvents> implements 
         cwd?: string;
         env?: Record<string, string>;
         label?: string;
-        attach?: boolean;
     }): Promise<DaemonSession>;
     attach(id: string, fromSeq: number): Promise<number>;
     input(id: string, data: unknown): Promise<void>;

@@ -29,7 +29,8 @@ export interface AgentStatus {
 export interface StoredItem {
     index: number;
     sessionId: string;
-    seq: number;
+    seqFrom: number;
+    seqTo: number;
     item: Item;
 }
 export type AgentCounts = Record<AgentState, number>;
@@ -49,6 +50,8 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     private readonly logger;
     private readonly live;
     private readonly sessionOwner;
+    private resyncChain;
+    private resyncGeneration;
     constructor(dbs: DbService, daemon: DaemonClient, adapters: AdaptersService, projects: ProjectsService);
     private get db();
     onModuleInit(): void;
@@ -73,14 +76,23 @@ export declare class AgentsService extends EventEmitter<AgentEvents> implements 
     interrupt(id: string): Promise<void>;
     stop(id: string): Promise<void>;
     archive(id: string): Promise<void>;
+    removeProject(projectId: string): Promise<void>;
+    private stopLocked;
     private startSession;
+    private trackSession;
+    private attachSession;
+    private reconcileCurrent;
     private onOutput;
     private apply;
+    private applyOp;
     private onSessionChanged;
+    private applyExit;
+    private scheduleResync;
     private resync;
-    private replay;
-    private onDaemonLost;
+    private adoptSessions;
     private ensureLive;
+    private withLock;
+    private awaitStarting;
     private appendItem;
     private setState;
 }

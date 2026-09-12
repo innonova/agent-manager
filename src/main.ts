@@ -61,7 +61,6 @@ export async function createApp(
     // The built UI: static files, and index.html for any non-API path so
     // the router can take over on a deep link or a reload.
     app.useStaticAssets(config.uiDir, { index: 'index.html' });
-    const index = path.join(config.uiDir, 'index.html');
     app.use(
       (
         req: express.Request,
@@ -73,7 +72,7 @@ export async function createApp(
           !req.path.startsWith('/api/') &&
           (req.headers.accept ?? '').includes('text/html')
         )
-          return res.sendFile(index);
+          return res.sendFile('index.html', { root: config.uiDir! }); // root: a dot segment in the install path must not count as a hidden file
         next();
       },
     );

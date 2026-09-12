@@ -8,7 +8,7 @@ export declare class AuthController {
     login(body: {
         name?: unknown;
         password?: unknown;
-    }, res: Response): Promise<{
+    }, req: Request, res: Response): Promise<{
         user: User;
     }>;
     logout(req: Request & {

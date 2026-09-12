@@ -32,14 +32,23 @@ export type Item = {
     costUsd?: number;
     durationMs?: number;
 };
+export type ItemOp = {
+    op: 'append';
+    item: Item;
+    key?: string;
+} | {
+    op: 'update';
+    key: string;
+    item: Item;
+};
 export interface Ingest {
     state?: AgentState;
     error?: string;
-    append?: Item[];
-    updateLast?: Item;
+    ops?: ItemOp[];
     conversationId?: string;
 }
 export interface AgentAdapter {
+    readonly initialState?: AgentState;
     startArgs(opts: {
         resume?: string | null;
     }): string[];

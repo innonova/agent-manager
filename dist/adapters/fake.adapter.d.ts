@@ -2,6 +2,8 @@ import type { LogRecord } from '../daemon/daemon-client.js';
 import type { AgentAdapter, AdapterFactory, Ingest } from './adapter.js';
 export declare class FakeAdapter implements AgentAdapter {
     private streamingText;
+    private textKey;
+    private texts;
     startArgs({ resume }: {
         resume?: string | null;
     }): string[];
