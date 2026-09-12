@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AppModule } from './app.module.js';
 import { MANAGER_CONFIG, ManagerConfig } from './config/config.js';
+import { originAllowed } from './origin.js';
 
 export async function createApp(
   overrides: Partial<ManagerConfig> = {},
@@ -19,6 +20,43 @@ export async function createApp(
   app.useWebSocketAdapter(new WsAdapter(app));
   app.use(express.json({ limit: '1mb' }));
   const config = app.get<ManagerConfig>(MANAGER_CONFIG);
+  // Cross-site protection for cookie-authenticated mutations: an Origin
+  // that is not ours is refused, and bodies must be JSON objects.
+  app.use(
+    '/api',
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+      if (
+        mutating &&
+        !originAllowed(
+          req.headers.origin,
+          req.headers.host,
+          config.publicOrigin,
+        )
+      ) {
+        return res
+          .status(403)
+          .json({ statusCode: 403, message: 'origin not allowed' });
+      }
+      if (
+        mutating &&
+        req.body !== undefined &&
+        (typeof req.body !== 'object' ||
+          req.body === null ||
+          Array.isArray(req.body))
+      ) {
+        return res
+          .status(400)
+          .json({ statusCode: 400, message: 'body must be a JSON object' });
+      }
+      if (mutating && req.body === undefined) req.body = {};
+      next();
+    },
+  );
   if (config.uiDir && fs.existsSync(path.join(config.uiDir, 'index.html'))) {
     // The built UI: static files, and index.html for any non-API path so
     // the router can take over on a deep link or a reload.

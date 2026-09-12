@@ -1,7 +1,6 @@
 # agent-manager design
 
-Status: draft, 2026-09-12, written before implementation. Kept in step
-with the code once it exists.
+Status: milestone one implemented 2026-09-12; kept in step with the code.
 
 ## The system
 
@@ -57,7 +56,9 @@ Copilot's ACP.
 | Permissions bypassed by default | The VM is isolated for exactly this purpose, and humans approving tool calls one by one is the weaker control anyway. Interactive permissions are a later, opt-in feature; the state model reserves a state for it. |
 | Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
 | SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
-| Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. |
+| Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. The cookie carries an opaque 256-bit server-side token rather than a signed value; revocation is a row delete. |
+| One turn at a time per agent | Neither vendor lets a queued turn be represented faithfully in the transcript, so a second turn while one runs is refused with 409 `agent-busy`; the UI offers interrupt instead. |
+| Archived agents keep their history | Archival hides an agent from lists and refuses commands; its transcript is still rebuilt and readable. |
 | Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
 | A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
 | Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
@@ -90,7 +91,11 @@ Feature   { projectId, slug, title, status, priority, profile?, dependsOn[] }   
 
 Agents and their sessions are stored so the manager knows which daemon
 sessions belong to which agent after a restart. Everything about what
-happened inside a session is rebuilt from the daemon.
+happened inside a session is rebuilt from the daemon. A relative agent
+`cwd` is resolved against the project path, never against the daemon's
+working directory. Deleting a project stops its agents (stdin close, then
+SIGTERM, then SIGKILL, bounded) and forgets them; the repository is not
+touched.
 
 The daemon session `label` also carries `agent-manager:<agentId>` so that a
 session can be attributed even if the manager's database is lost.
@@ -101,7 +106,7 @@ One model for all vendors, derived by the adapter from the line stream:
 
 | State | Meaning |
 |---|---|
-| `starting` | session started, vendor init not yet seen |
+| `starting` | session started, vendor has not reported ready. Claude is ready as soon as it runs (it says nothing until the first turn), so its adapter starts in `idle`; the fake agent stays `starting` until its init line. A turn arriving during `starting` waits up to 5 s for readiness. |
 | `idle` | ready for a turn |
 | `working` | a turn is in progress |
 | `waiting-input` | the agent asked the user a question and stopped (vendor-specific; e.g. ACP `end_turn` after a question is still `idle`, so this is mostly reserved) |
@@ -110,23 +115,33 @@ One model for all vendors, derived by the adapter from the line stream:
 | `exited` | no live session; resumable |
 
 Transitions are events, broadcast to the UI and aggregated per project as
-counts by state. `error` carries the vendor message verbatim.
+counts by state. `error` carries the vendor message verbatim (for Claude,
+the `errors` array of an error result, then `result`, then the subtype).
+Daemon connectivity is reported separately (`daemon` frames and the health
+endpoint) and never overwrites a vendor-derived state.
 
 ## Adapters
 
 ```ts
 interface AgentAdapter {
-  readonly profile: string;
+  /** state right after the process starts; default 'starting' */
+  readonly initialState?: AgentState;
   /** args to add to the profile for a new conversation, or to resume one */
-  startArgs(opts: { resume?: string; cwd: string }): string[];
+  startArgs(opts: { resume?: string | null }): string[];
   /** the stdin line(s) for a user turn */
   turn(text: string): unknown[];
   /** the stdin line(s) to interrupt the current turn, if the vendor supports it */
   interrupt?(): unknown[];
-  /** feed one daemon log record; returns state changes and transcript items */
-  ingest(record: LogRecord): { state?: AgentState; items: Item[]; conversationId?: string };
+  /** feed one daemon log record; returns state changes and transcript operations */
+  ingest(record: LogRecord): { state?: AgentState; error?: string; ops?: ItemOp[]; conversationId?: string };
 }
+type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
 ```
+
+Streaming works through keys: an adapter appends a text item under a key
+(for Claude, message and block index) and later updates the same key as
+deltas arrive, so an interleaved stderr line or a second block never
+confuses which item grows. One adapter instance exists per daemon session.
 
 - **claude**: native stream-json. Init event gives `session_id`
   (the vendor conversation id, used for `--resume`). `assistant` events
@@ -162,20 +177,32 @@ type Item =
   | { kind: 'turn_end'; usage?: {...}; costUsd?: number; durationMs?: number };
 ```
 
-Each item records the daemon session id and the `seq` range it was built
-from, so a client can always go back to the raw lines.
+Each stored item carries its `index`, the daemon session id and the `seq`
+range (`seqFrom`, `seqTo`) it was built from, so a client can always go
+back to the raw lines. Synthetic boundary items (session started, resumed,
+ended, history unavailable) have `seqFrom` 0.
 
 ## Daemon integration
 
-- One websocket to the daemon, reconnecting with backoff. On (re)connect:
-  `sessions.list`, attach with replay to every session that belongs to a
-  known agent, rebuild items and state. Sessions the manager does not know
-  but whose label says `agent-manager:<id>` are adopted.
+- One websocket to the daemon, reconnecting with backoff. On (re)connect a
+  resync runs, one agent at a time under that agent's lock so commands
+  wait for it: `sessions.list`, adopt sessions labelled
+  `agent-manager:<id>` that the database does not know (a running one
+  becomes current if the agent has none), then replay every session from
+  its own cursor (from the start after a manager restart) through its own
+  adapter. Sessions whose replay failed are retried on the next resync; a
+  newer resync supersedes one in progress.
+- A new session is started unattached, recorded, and only then attached
+  with replay from the start, so nothing the process said before the
+  manager owned it is lost, and an early exit is reconciled from the
+  daemon's record.
 - Turns go through `session.input`; the `ok` reply is awaited so the
-  manager is flow-controlled by the agent.
-- A session exit moves the agent to `exited`. The next turn starts a new
-  session with the adapter's resume args, records it under the agent, and
-  sends the turn.
+  manager is flow-controlled by the agent. Commands on one agent
+  (turn, interrupt, stop, archive) are serialised.
+- A session exit moves the agent to `exited`; an exit that arrives while
+  that session is still being replayed is applied after the replay. The
+  next turn starts a new session with the adapter's resume args, records
+  it under the agent, and sends the turn.
 - The manager never sends `session.remove`; logs are kept until a later
   retention feature.
 
@@ -194,16 +221,17 @@ GET    /api/projects/:id
 PATCH  /api/projects/:id
 DELETE /api/projects/:id            (does not touch the repository)
 
-GET    /api/projects/:id/agents                                 -> [{ agent, state }]
+GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }
 POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session
-GET    /api/agents/:id                                          -> { agent, state, sessions }
-GET    /api/agents/:id/items?from=<n>                           -> transcript items
-POST   /api/agents/:id/turn         { text }                    -> 202
+GET    /api/agents/:id                                          -> { agent, status, sessions }
+GET    /api/agents/:id/items?from=<n>                           -> { items: StoredItem[] }, n a non-negative integer index
+POST   /api/agents/:id/turn         { text }                    -> 202, or 409 { code: 'agent-busy' } while a turn runs
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/archive
 
-GET    /api/profiles                                            -> daemon profiles
+GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
+GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean }
 
 GET    /api/projects/:id/files?path=<dir>                       -> tree entries        (milestone 2)
 GET    /api/projects/:id/file?path=<file>                       -> content, size-capped (milestone 2)
@@ -213,6 +241,13 @@ POST   /api/projects/:id/features/:slug/queue                                   
 
 Paths for files are resolved inside the project root only; `..` is
 rejected. That is a correctness rule, not a security one, on this VM.
+`path.resolve` alone is not containment (symlinks escape without `..`);
+the file endpoints need a real-path check before milestone two ships.
+
+Every mutating request must be a JSON object (400 otherwise) and, when the
+browser sends an `Origin` header, that origin must be the manager's own
+host or `AGENT_MANAGER_PUBLIC_ORIGIN` (403 otherwise). Requests without an
+`Origin` header, such as curl, pass.
 
 ### Websocket `/api/events`
 
@@ -220,20 +255,31 @@ Authenticated on upgrade with the same cookie. Server to client only in
 milestone one; every frame has a `type`:
 
 ```
+hello            { user, daemon: { connected } }   // first frame after the upgrade
+daemon           { connected }                     // the manager's link to the daemon changed
 project.counts   { projectId, counts }
-agent.state      { agentId, state, error? }
-agent.item       { agentId, item, index }          // new or updated (streaming text) item
+agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt }
+agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
 ```
 
 Clients subscribe to nothing; they receive everything for the projects
-they can see, which in milestone one is all of them.
+they can see, which in milestone one is all of them. The websocket is
+authenticated with the login cookie on upgrade (closed with 4401
+otherwise) and must come from the manager's own origin (4403 otherwise).
+Logging out closes that login session's sockets; expired sessions are
+swept once a minute.
 
 ## Auth
 
 - Users in SQLite, passwords hashed with argon2id.
-- Cookie session (signed, HttpOnly, SameSite=Lax, Secure when behind TLS),
-  server-side session table so logout is real.
+- Cookie session: an opaque 256-bit random token, HttpOnly, SameSite=Lax,
+  Secure when `AGENT_MANAGER_PUBLIC_ORIGIN` is https or
+  `AGENT_MANAGER_SECURE_COOKIE=1`; server-side session table so logout is
+  real and open sockets are closed with it.
+- Login attempts are limited per client address (default 10 per minute,
+  then 429) and Argon2 verification runs with a small concurrency bound;
+  unknown users cost the same as known ones.
 - First admin: `AGENT_MANAGER_ADMIN_PASSWORD` on first start creates
   `admin`, or `npm run user:add -- <name>`.
 - No roles in milestone one; every user sees every project.
@@ -245,8 +291,15 @@ they can see, which in milestone one is all of them.
 | `AGENT_MANAGER_LISTEN` | `0.0.0.0:4268` | bind address; behind haproxy for TLS |
 | `AGENT_MANAGER_DAEMON_URL` | `ws://127.0.0.1:4267/` | the daemon |
 | `AGENT_MANAGER_DATA_DIR` | `~/.local/state/agent-manager` | SQLite database, session secret |
-| `AGENT_MANAGER_UI_DIR` | `<install>/ui` | built UI to serve at `/` |
+| `AGENT_MANAGER_UI_DIR` | `<install>/ui` (next to `dist/`) | built UI to serve at `/`; empty string disables |
+| `AGENT_MANAGER_PUBLIC_ORIGIN` | unset | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies |
+| `AGENT_MANAGER_SECURE_COOKIE` | `0` | force Secure cookies |
+| `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
+
+The built UI's static assets and the SPA fallback are served without
+authentication: the login page must load. Everything under `/api` except
+login and health requires the cookie.
 
 ## Testing
 

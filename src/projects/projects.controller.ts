@@ -50,8 +50,11 @@ export class ProjectsController {
     return { project: this.projects.update(id, body) };
   }
 
+  /** Stops the project's agents, forgets them, then deletes the project. The repository is untouched. */
   @Delete(':id')
-  remove(@Param('id') id: string): { ok: true } {
+  async remove(@Param('id') id: string): Promise<{ ok: true }> {
+    this.projects.get(id);
+    await this.agents.removeProject(id);
     this.projects.remove(id);
     return { ok: true };
   }

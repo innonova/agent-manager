@@ -39,7 +39,9 @@ sed -e "s#@NODE@#$NODE#g" -e "s#@INSTALL_DIR@#$INSTALL_DIR#g" -e "s#@PATH@#$PATH
   "$ROOT/systemd/agent-manager.service" > "$UNIT_DIR/agent-manager.service"
 if [ -n "${AGENT_MANAGER_ADMIN_PASSWORD:-}" ]; then
   mkdir -p "$UNIT_DIR/agent-manager.service.d"
-  printf '[Service]\nEnvironment=AGENT_MANAGER_ADMIN_PASSWORD=%s\n' "$AGENT_MANAGER_ADMIN_PASSWORD" > "$UNIT_DIR/agent-manager.service.d/admin.conf"
+  # systemd Environment= quoting: backslash and double quote are escaped, % is doubled (specifier syntax).
+  ESCAPED="$(printf '%s' "$AGENT_MANAGER_ADMIN_PASSWORD" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"
+  printf '[Service]\nEnvironment="AGENT_MANAGER_ADMIN_PASSWORD=%s"\n' "$ESCAPED" > "$UNIT_DIR/agent-manager.service.d/admin.conf"
   chmod 600 "$UNIT_DIR/agent-manager.service.d/admin.conf"
 fi
 echo "installed unit $UNIT_DIR/agent-manager.service"

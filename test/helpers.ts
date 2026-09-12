@@ -18,17 +18,22 @@ export const ADMIN_PASSWORD = 'test-password';
 export interface TestDaemon {
   proc: ChildProcess;
   url: string;
+  port: number;
+  root: string;
   stateDir: string;
-  stop(): Promise<void>;
+  stop(signal?: NodeJS.Signals): Promise<void>;
 }
 
 /** A real agent-daemon on an ephemeral port with only the fake profile. */
-export async function startDaemon(): Promise<TestDaemon> {
+export async function startDaemon(
+  opts: { root?: string; port?: number } = {},
+): Promise<TestDaemon> {
   if (!fs.existsSync(DAEMON_MAIN))
     throw new Error(
       `agent-daemon build not found at ${DAEMON_MAIN}; build it or set AGENT_DAEMON_MAIN`,
     );
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'am-daemon-'));
+  const root =
+    opts.root ?? fs.mkdtempSync(path.join(os.tmpdir(), 'am-daemon-'));
   const configDir = path.join(root, 'config');
   const stateDir = path.join(root, 'state');
   fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
@@ -38,7 +43,7 @@ export async function startDaemon(): Promise<TestDaemon> {
   );
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    AGENT_DAEMON_LISTEN: '127.0.0.1:0',
+    AGENT_DAEMON_LISTEN: `127.0.0.1:${opts.port ?? 0}`,
     AGENT_DAEMON_CONFIG_DIR: configDir,
     AGENT_DAEMON_STATE_DIR: stateDir,
   };
@@ -64,12 +69,14 @@ export async function startDaemon(): Promise<TestDaemon> {
   return {
     proc,
     url: `ws://127.0.0.1:${port}/`,
+    port,
+    root,
     stateDir,
-    stop: () =>
+    stop: (signal: NodeJS.Signals = 'SIGTERM') =>
       new Promise<void>((resolve) => {
         if (proc.exitCode !== null) return resolve();
         proc.once('exit', () => resolve());
-        proc.kill('SIGTERM');
+        proc.kill(signal);
         setTimeout(() => proc.kill('SIGKILL'), 5000).unref();
       }),
   };
@@ -85,6 +92,7 @@ export interface TestManager {
 export async function startManager(
   daemonUrl: string,
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-data-')),
+  overrides: Record<string, unknown> = {},
 ): Promise<TestManager> {
   const app = await createApp(
     {
@@ -94,6 +102,8 @@ export async function startManager(
       dataDir,
       adminPassword: ADMIN_PASSWORD,
       uiDir: null,
+      loginAttemptsPerMinute: 1000,
+      ...overrides,
     },
     { quiet: !process.env.TEST_VERBOSE },
   );
@@ -171,8 +181,17 @@ export class Events {
     });
   }
 
-  waitFor(test: (f: any) => boolean, timeoutMs = 10000): Promise<any> {
-    const found = this.frames.find(test);
+  /** Frames received so far; pass to waitFor to only match newer ones. */
+  mark(): number {
+    return this.frames.length;
+  }
+
+  waitFor(
+    test: (f: any) => boolean,
+    timeoutMs = 10000,
+    from = 0,
+  ): Promise<any> {
+    const found = this.frames.slice(from).find(test);
     if (found) return Promise.resolve(found);
     return new Promise((resolve, reject) => {
       const t = setTimeout(

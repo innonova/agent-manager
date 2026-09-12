@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import WebSocket from 'ws';
+import { DbService } from '../src/db/db.service.js';
 import {
   Api,
   Events,
@@ -77,8 +79,72 @@ describe('auth', () => {
     expect(ok.body.user.name).toBe('admin');
     expect(anon.cookie).toMatch(/^am_session=/);
     expect((await anon.get('/api/auth/me')).body.user.name).toBe('admin');
+    const cookie = anon.cookie;
+    const sock = await Events.connect(m.url, cookie);
+    const closed = new Promise<number>((resolve) =>
+      sock.ws.once('close', (code) => resolve(code)),
+    );
     expect((await anon.post('/api/auth/logout')).status).toBe(201);
+    expect(await closed).toBe(4401); // the socket of that login session is closed
+    anon.cookie = cookie; // the old token itself is dead, not just the browser's copy
     expect((await anon.get('/api/auth/me')).status).toBe(401);
+  });
+
+  it('throttles repeated login attempts', async () => {
+    const strict = await startManager(daemon.url, undefined, {
+      loginAttemptsPerMinute: 3,
+    });
+    try {
+      const anon = new Api(strict.url);
+      const codes: number[] = [];
+      for (let i = 0; i < 5; i++)
+        codes.push((await anon.login('admin', 'wrong')).status);
+      expect(codes).toEqual([401, 401, 401, 429, 429]);
+    } finally {
+      await strict.stop();
+    }
+  });
+
+  it('refuses cross-origin mutations and sockets, accepts same-origin', async () => {
+    const res = await fetch(`${m.url}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'http://evil.example',
+      },
+      body: JSON.stringify({ name: 'admin', password: 'x' }),
+    });
+    expect(res.status).toBe(403);
+    const same = await fetch(`${m.url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: m.url },
+      body: JSON.stringify({ name: 'admin', password: 'x' }),
+    });
+    expect(same.status).toBe(401);
+    const code = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(m.url.replace('http', 'ws') + '/api/events', {
+        headers: { cookie: api.cookie, origin: 'http://evil.example' },
+      });
+      ws.once('close', (c) => resolve(c));
+      ws.once('error', () => resolve(-1));
+    });
+    expect(code).toBe(4403);
+  });
+
+  it('rejects non-object bodies and bad cursors without crashing', async () => {
+    const raw = await fetch(`${m.url}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: api.cookie },
+      body: '[1]',
+    });
+    expect(raw.status).toBe(400);
+    const none = await fetch(`${m.url}/api/projects`, {
+      method: 'POST',
+      headers: { cookie: api.cookie },
+    });
+    expect(none.status).toBe(400);
+    expect((await api.get('/api/agents/x/items?from=wat')).status).toBe(400);
+    expect((await api.get('/api/agents/x/items?from=-1')).status).toBe(400);
   });
 
   it('closes an unauthenticated events socket with 4401', async () => {
@@ -115,6 +181,28 @@ describe('projects', () => {
     expect((await api.get(`/api/projects/${p.id}`)).status).toBe(404);
   });
 
+  it('deleting a project stops its agents and forgets them', async () => {
+    const p = await createProject('doomed');
+    const { agent } = await createAgent(p.id);
+    expect((await api.delete(`/api/projects/${p.id}`)).status).toBe(200);
+    expect((await api.get(`/api/agents/${agent.id}`)).status).toBe(404);
+    const rec = await new Promise<any>((resolve, reject) => {
+      const ws = new WebSocket(daemon.url);
+      ws.on('open', () =>
+        ws.send(
+          JSON.stringify({
+            type: 'session.get',
+            ref: 1,
+            id: agent.currentSessionId,
+          }),
+        ),
+      );
+      ws.on('message', (d) => (ws.close(), resolve(JSON.parse(String(d)))));
+      ws.on('error', reject);
+    });
+    expect(rec.session.state).toBe('exited');
+  });
+
   it('lists daemon profiles with adapter support', async () => {
     const r = await api.get('/api/profiles');
     expect(r.body.profiles).toEqual([
@@ -128,7 +216,7 @@ describe('agents', () => {
     const p = await createProject();
     events.clear();
     const { agent, status } = await createAgent(p.id, 'worker');
-    expect(status.state).toBe('idle');
+    expect(['starting', 'idle']).toContain(status.state); // idle once the fake agent has said init
     expect(agent.currentSessionId).toBeTruthy();
     await events.waitFor(
       (f) =>
@@ -238,15 +326,22 @@ describe('agents', () => {
       (await api.get(`/api/projects/${p.id}`)).body.agentCounts.error,
     ).toBe(1);
 
-    // a new turn clears the error state
+    // a new turn clears the error state; interrupting it cuts the answer short
+    const mark = events.mark();
     await api.post(`/api/agents/${agent.id}/turn`, { text: 'slow please' });
     await events.waitFor(
       (f) =>
         f.type === 'agent.state' &&
         f.agentId === agent.id &&
         f.status.state === 'working',
+      10000,
+      mark,
     );
-    await sleep(100);
+    // a second turn while working is refused
+    expect(
+      await api.post(`/api/agents/${agent.id}/turn`, { text: 'queued?' }),
+    ).toMatchObject({ status: 409, body: { code: 'agent-busy' } });
+    await sleep(200);
     expect((await api.post(`/api/agents/${agent.id}/interrupt`)).status).toBe(
       201,
     );
@@ -256,11 +351,26 @@ describe('agents', () => {
         f.agentId === agent.id &&
         f.status.state === 'idle',
       15000,
+      mark,
     );
-    kinds = (await api.get(`/api/agents/${agent.id}/items`)).body.items.map(
-      (i: any) => i.item.kind,
-    );
+    const all = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as any[];
+    kinds = all.map((i) => i.item.kind);
     expect(kinds.filter((k: string) => k === 'error')).toHaveLength(1);
+    const cut = [...all].reverse().find((i) => i.item.kind === 'text')!.item;
+    expect(cut.kind).toBe('text');
+    expect(cut.streaming).toBe(false);
+    expect(cut.text.length).toBeLessThan(
+      'This is a deliberately slow answer that streams word by word so the user interface can be seen updating. '.repeat(
+        3,
+      ).length,
+    );
+    expect(
+      all.some(
+        (i) =>
+          i.item.kind === 'system' && i.item.text === 'interrupt requested',
+      ),
+    ).toBe(true);
   });
 
   it('survives a session exit and resumes on the next turn', async () => {
@@ -374,6 +484,133 @@ describe('agents', () => {
 });
 
 describe('manager restart', () => {
+  it('keeps exited and archived agents right, and adopts a session the database lost', async () => {
+    const p = await createProject();
+    const { agent: exitedAgent } = await createAgent(p.id, 'exited');
+    await api.post(`/api/agents/${exitedAgent.id}/turn`, { text: 'one' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === exitedAgent.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    await api.post(`/api/agents/${exitedAgent.id}/stop`);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === exitedAgent.id &&
+        f.status.state === 'exited',
+    );
+
+    const { agent: archived } = await createAgent(p.id, 'archived');
+    await api.post(`/api/agents/${archived.id}/turn`, { text: 'kept' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === archived.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    await api.post(`/api/agents/${archived.id}/archive`);
+
+    const { agent: orphan } = await createAgent(p.id, 'orphan');
+    await api.post(`/api/agents/${orphan.id}/turn`, { text: 'before crash' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === orphan.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    // the manager "crashed" before it could record the session
+    const db = m.app.get(DbService).db;
+    db.prepare('DELETE FROM agent_sessions WHERE agent_id = ?').run(orphan.id);
+    db.prepare('UPDATE agents SET current_session_id = NULL WHERE id = ?').run(
+      orphan.id,
+    );
+
+    await events.close();
+    await m.stop();
+    m = await startManager(daemon.url, m.dataDir);
+    api = new Api(m.url);
+    await api.login();
+    events = await Events.connect(m.url, api.cookie);
+    await sleep(500);
+
+    const e = await api.get(`/api/agents/${exitedAgent.id}`);
+    expect(e.body.status.state).toBe('exited');
+    expect(e.body.agent.currentSessionId).toBeNull();
+    expect(
+      (await api.get(`/api/agents/${exitedAgent.id}/items`)).body.items.map(
+        (i: any) => i.item.kind,
+      ),
+    ).toEqual(['system', 'user', 'text', 'turn_end', 'system']);
+
+    const a = (await api.get(`/api/agents/${archived.id}/items`)).body
+      .items as any[];
+    expect(a.map((i) => i.item.kind)).toContain('turn_end'); // archived history is still rebuilt
+
+    const o = await api.get(`/api/agents/${orphan.id}`);
+    expect(o.body.agent.currentSessionId).toBe(orphan.currentSessionId); // adopted, not restarted
+    expect(o.body.status.state).toBe('idle');
+    expect(o.body.sessions).toHaveLength(1);
+    await api.post(`/api/agents/${orphan.id}/turn`, { text: 'after adoption' });
+    const end = await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === orphan.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    expect(end.item.sessionId).toBe(orphan.currentSessionId);
+  }, 30000);
+
+  it('survives a daemon restart: agents exit, and resume on the next turn', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'daemon-restart');
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'before' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    const mark = events.mark();
+    await daemon.stop('SIGKILL'); // a crash, not a clean stop: sessions are still 'running' on disk
+    await events.waitFor(
+      (f) => f.type === 'daemon' && f.connected === false,
+      10000,
+      mark,
+    );
+    daemon = await startDaemon({ root: daemon.root, port: daemon.port });
+    await events.waitFor(
+      (f) => f.type === 'daemon' && f.connected === true,
+      15000,
+      mark,
+    );
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'exited',
+      15000,
+      mark,
+    );
+    const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as any[];
+    expect(items[items.length - 1].item.text).toContain('daemon-restart');
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'after' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end' &&
+        f.item.sessionId !== agent.currentSessionId,
+      15000,
+      mark,
+    );
+    expect(
+      (await api.get(`/api/agents/${agent.id}`)).body.sessions,
+    ).toHaveLength(2);
+  }, 40000);
+
   it('rebuilds agents, transcripts and states from the daemon', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'survivor');

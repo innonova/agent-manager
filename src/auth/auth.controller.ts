@@ -26,11 +26,16 @@ export class AuthController {
   @Post('login')
   async login(
     @Body() body: { name?: unknown; password?: unknown },
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ user: User }> {
     if (typeof body?.name !== 'string' || typeof body?.password !== 'string')
       throw new UnauthorizedException('invalid credentials');
-    const { user, sessionId } = await this.auth.login(body.name, body.password);
+    const { user, sessionId } = await this.auth.login(
+      body.name,
+      body.password,
+      req.ip ?? req.socket.remoteAddress ?? 'unknown',
+    );
     res.setHeader(
       'Set-Cookie',
       stringifySetCookie({

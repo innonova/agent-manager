@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -52,7 +53,10 @@ export class AgentsController {
     @Param('id') id: string,
     @Query('from') from?: string,
   ): { items: StoredItem[] } {
-    return { items: this.agents.items(id, from ? Number(from) : 0) };
+    const cursor = from === undefined || from === '' ? 0 : Number(from);
+    if (!Number.isSafeInteger(cursor) || cursor < 0)
+      throw new BadRequestException('"from" must be a non-negative integer');
+    return { items: this.agents.items(id, cursor) };
   }
 
   @Post('agents/:id/turn')

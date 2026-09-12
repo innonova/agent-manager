@@ -10,22 +10,24 @@ const FIXTURES = path.resolve(
   '../../test/fixtures/claude',
 );
 
-/** The same reduction AgentsService applies: append, or replace the last item of the same kind. */
+/** The same reduction AgentsService applies: append, or replace the item under the op's key. */
 function run(adapter: ClaudeAdapter, records: LogRecord[]) {
   const items: Item[] = [];
+  const keys = new Map<string, number>();
   const states: AgentState[] = [];
   let conversationId: string | undefined;
   let error: string | undefined;
   for (const r of records) {
     const ing = adapter.ingest(r);
     if (ing.conversationId) conversationId = ing.conversationId;
-    if (ing.updateLast) {
-      const last = items[items.length - 1];
-      if (last && last.kind === ing.updateLast.kind)
-        items[items.length - 1] = ing.updateLast;
-      else items.push(ing.updateLast);
+    for (const op of ing.ops ?? []) {
+      if (op.op === 'update' && keys.has(op.key)) {
+        items[keys.get(op.key)!] = op.item;
+        continue;
+      }
+      items.push(op.item);
+      if (op.key) keys.set(op.key, items.length - 1);
     }
-    items.push(...(ing.append ?? []));
     if (ing.state) states.push(ing.state);
     if (ing.error) error = ing.error;
   }
@@ -111,8 +113,9 @@ describe('ClaudeAdapter', () => {
     expect(last.text.length).toBeGreaterThan(0);
   });
 
-  it('streams thinking text when a model exposes it', () => {
+  it('streams thinking text when a model exposes it, under a stable key', () => {
     const a = new ClaudeAdapter();
+    a.ingest(rec('out', ev({ type: 'message_start' }), 0));
     expect(
       a.ingest(
         rec(
@@ -139,7 +142,13 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      append: [{ kind: 'thinking', text: 'Let me ' }],
+      ops: [
+        {
+          op: 'update',
+          key: 'm1b0',
+          item: { kind: 'thinking', text: 'Let me ' },
+        },
+      ],
     });
     expect(
       a.ingest(
@@ -154,7 +163,13 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      updateLast: { kind: 'thinking', text: 'Let me see.' },
+      ops: [
+        {
+          op: 'update',
+          key: 'm1b0',
+          item: { kind: 'thinking', text: 'Let me see.' },
+        },
+      ],
     });
     expect(
       a.ingest(
@@ -172,12 +187,93 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      updateLast: { kind: 'thinking', text: 'Let me see.' },
-      append: [],
+      ops: [
+        {
+          op: 'update',
+          key: 'm1b0',
+          item: { kind: 'thinking', text: 'Let me see.' },
+        },
+      ],
     });
   });
 
-  it('reports error results and error lines as the error state', () => {
+  it('appends consecutive text blocks in order when nothing was streamed', () => {
+    const a = new ClaudeAdapter();
+    const one = a.ingest(
+      rec(
+        'out',
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'one' }] },
+        },
+        1,
+      ),
+    );
+    const two = a.ingest(
+      rec(
+        'out',
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'two' }] },
+        },
+        2,
+      ),
+    );
+    expect(one.ops).toEqual([
+      { op: 'append', item: { kind: 'text', text: 'one', streaming: false } },
+    ]);
+    expect(two.ops).toEqual([
+      { op: 'append', item: { kind: 'text', text: 'two', streaming: false } },
+    ]);
+  });
+
+  it('keeps a streamed text item addressable across an interleaved stderr line', () => {
+    const { items } = run(new ClaudeAdapter(), [
+      rec('out', ev({ type: 'message_start' }), 1),
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+        2,
+      ),
+      rec(
+        'out',
+        ev({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'hel' },
+        }),
+        3,
+      ),
+      { seq: 4, t: 0, s: 'err', d: 'warning from claude' },
+      rec(
+        'out',
+        ev({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'lo' },
+        }),
+        5,
+      ),
+      rec(
+        'out',
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'hello' }] },
+        },
+        6,
+      ),
+    ]);
+    expect(items).toEqual([
+      { kind: 'text', text: 'hello', streaming: false },
+      { kind: 'system', text: 'warning from claude' },
+    ]);
+  });
+
+  it('reports error results and error lines as the error state, preferring the documented errors array', () => {
     const a = new ClaudeAdapter();
     a.ingest(
       rec('in', { type: 'user', message: { role: 'user', content: 'hi' } }, 1),
@@ -200,13 +296,31 @@ describe('ClaudeAdapter', () => {
       error: 'usage limit reached',
       conversationId: 's1',
     });
-    expect(r.append?.map((i) => i.kind)).toEqual(['error', 'turn_end']);
-    const e = a.ingest(rec('out', { type: 'error', message: 'boom' }, 3));
+    expect(r.ops?.map((o) => o.item.kind)).toEqual(['error', 'turn_end']);
+    const documented = a.ingest(
+      rec(
+        'out',
+        {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          errors: ['specific failure'],
+          session_id: 's1',
+        },
+        3,
+      ),
+    );
+    expect(documented).toMatchObject({
+      state: 'error',
+      error: 'specific failure',
+    });
+    const e = a.ingest(rec('out', { type: 'error', message: 'boom' }, 4));
     expect(e).toMatchObject({ state: 'error', error: 'boom' });
   });
 
-  it('builds start, turn and interrupt lines', () => {
+  it('builds start, turn and interrupt lines and is ready as soon as it runs', () => {
     const a = new ClaudeAdapter();
+    expect(a.initialState).toBe('idle');
     expect(a.startArgs({ resume: null })).toEqual([
       '--dangerously-skip-permissions',
     ]);

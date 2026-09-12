@@ -58,7 +58,6 @@ interface DaemonEvents {
   connected: [];
   disconnected: [];
   output: [id: string, record: LogRecord];
-  exit: [session: DaemonSession & { exitedAt: number }];
   changed: [session: DaemonSession];
 }
 
@@ -67,7 +66,8 @@ type Frame = Record<string, unknown> & { type: string; ref?: string };
 /**
  * The manager's single connection to agent-daemon: request/reply with
  * refs, live events, automatic reconnect. Attachments are the caller's to
- * redo after `connected`.
+ * redo after `connected`. Listener errors are logged and never allowed to
+ * break the socket handling.
  */
 @Injectable()
 export class DaemonClient
@@ -111,9 +111,18 @@ export class DaemonClient
       this.logger.log(`connected to daemon at ${this.config.daemonUrl}`);
       this.backoff = 500;
       this.connected = true;
-      this.emit('connected');
+      this.safeEmit('connected');
     });
-    ws.on('message', (data) => this.onFrame(JSON.parse(String(data)) as Frame));
+    ws.on('message', (data) => {
+      let frame: Frame;
+      try {
+        frame = JSON.parse(String(data)) as Frame;
+      } catch {
+        this.logger.warn('daemon sent a frame that is not JSON');
+        return;
+      }
+      this.onFrame(frame);
+    });
     ws.on('error', (err) =>
       this.logger.warn(`daemon socket error: ${err.message}`),
     );
@@ -124,12 +133,27 @@ export class DaemonClient
       for (const p of this.pending.values())
         p.reject(new DaemonError('disconnected', 'daemon connection lost'));
       this.pending.clear();
-      if (was) this.emit('disconnected');
+      // Reconnect is scheduled before subscribers run, so a subscriber
+      // that throws cannot leave the manager disconnected for good.
       if (!this.closing) {
         this.reconnectTimer = setTimeout(() => this.connect(), this.backoff);
         this.backoff = Math.min(this.backoff * 2, 10_000);
       }
+      if (was) this.safeEmit('disconnected');
     });
+  }
+
+  private safeEmit<K extends keyof DaemonEvents>(
+    event: K,
+    ...args: DaemonEvents[K]
+  ): void {
+    try {
+      (this.emit as (e: string, ...a: unknown[]) => boolean)(event, ...args);
+    } catch (err) {
+      this.logger.error(
+        `listener for ${String(event)} failed: ${(err as Error).stack ?? err}`,
+      );
+    }
   }
 
   private onFrame(f: Frame): void {
@@ -144,26 +168,19 @@ export class DaemonClient
     switch (f.type) {
       case 'session.output': {
         const { id, seq, t, s, d } = f as unknown as { id: string } & LogRecord;
-        this.emit('output', id, { seq, t, s, d });
+        this.safeEmit('output', id, { seq, t, s, d });
         return;
       }
-      case 'session.exit':
-        // 'changed' follows with the full record; exit is the cheap signal
+      case 'session.changed':
+        this.safeEmit('changed', f.session as DaemonSession);
         return;
-      case 'session.changed': {
-        const session = f.session as DaemonSession;
-        this.emit('changed', session);
-        if (session.state === 'exited')
-          this.emit('exit', session as DaemonSession & { exitedAt: number });
-        return;
-      }
       case 'error':
         this.logger.warn(
           `daemon error without ref: ${String(f.code)} ${String(f.message)}`,
         );
         return;
       default:
-        return;
+        return; // session.exit is followed by session.changed with the full record
     }
   }
 
@@ -199,31 +216,18 @@ export class DaemonClient
     }).then((r) => r.profiles);
   }
 
+  /** Starts a session without attaching; the caller attaches with replay once it owns the id. */
   start(req: {
     profile: string;
     args?: string[];
     cwd?: string;
     env?: Record<string, string>;
     label?: string;
-    attach?: boolean;
   }): Promise<DaemonSession> {
-    return this.request<
-      Frame & {
-        session: DaemonSession;
-        attached?: boolean;
-        attachError?: { code: string; message: string };
-      }
-    >({
+    return this.request<Frame & { session: DaemonSession }>({
       type: 'session.start',
       ...req,
-    }).then((r) => {
-      if (req.attach && r.attached === false)
-        throw new DaemonError(
-          r.attachError?.code ?? 'attach-failed',
-          r.attachError?.message ?? 'attach failed',
-        );
-      return r.session;
-    });
+    }).then((r) => r.session);
   }
 
   /** Attaches with replay from `fromSeq`; replayed records arrive as `output` events before this resolves. */

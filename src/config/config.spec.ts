@@ -7,9 +7,17 @@ describe('loadConfig', () => {
       host: '0.0.0.0',
       port: 4268,
       daemonUrl: 'ws://127.0.0.1:4267/',
-      uiDir: null,
       adminPassword: null,
       secureCookie: false,
+      publicOrigin: null,
+    });
+    expect(c.uiDir).toMatch(/\/ui$/);
+    expect(loadConfig({ AGENT_MANAGER_UI_DIR: '' }).uiDir).toBeNull();
+    expect(
+      loadConfig({ AGENT_MANAGER_PUBLIC_ORIGIN: 'https://agents.example/' }),
+    ).toMatchObject({
+      secureCookie: true,
+      publicOrigin: 'https://agents.example',
     });
     expect(c.dataDir.endsWith('/.local/state/agent-manager')).toBe(true);
   });

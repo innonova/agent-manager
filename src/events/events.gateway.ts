@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger, OnModuleDestroy } from '@nestjs/common';
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -10,24 +10,32 @@ import type { WebSocket } from 'ws';
 import { AgentsService } from '../agents/agents.service.js';
 import { sessionIdFromCookieHeader } from '../auth/auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
+import { MANAGER_CONFIG } from '../config/config.js';
+import type { ManagerConfig } from '../config/config.js';
 import { DaemonClient } from '../daemon/daemon-client.js';
+import { originAllowed } from '../origin.js';
 
 /**
  * `/api/events`: server-to-client stream of everything that changes.
- * Authenticated with the login cookie on upgrade; unauthenticated sockets
- * are closed with 4401 before receiving anything.
+ * Authenticated with the login cookie on upgrade (4401 otherwise), same
+ * origin only (4403 otherwise). Logout closes the session's sockets and
+ * expired sessions are swept once a minute.
  */
 @WebSocketGateway({ path: '/api/events' })
 export class EventsGateway
   implements
     OnGatewayInit,
     OnGatewayConnection<WebSocket>,
-    OnGatewayDisconnect<WebSocket>
+    OnGatewayDisconnect<WebSocket>,
+    OnModuleDestroy
 {
   private readonly logger = new Logger(EventsGateway.name);
-  private readonly clients = new Set<WebSocket>();
+  /** socket -> the login session it was authenticated with */
+  private readonly clients = new Map<WebSocket, string>();
+  private sweep: NodeJS.Timeout | null = null;
 
   constructor(
+    @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly auth: AuthService,
     private readonly agents: AgentsService,
     private readonly daemon: DaemonClient,
@@ -52,17 +60,39 @@ export class EventsGateway
     this.daemon.on('disconnected', () =>
       this.broadcast({ type: 'daemon', connected: false }),
     );
+    this.auth.on('revoked', (sessionId) => {
+      for (const [c, sid] of this.clients)
+        if (sid === sessionId) c.close(4401, 'logged out');
+    });
+    this.sweep = setInterval(() => {
+      for (const [c, sid] of this.clients)
+        if (!this.auth.userForSession(sid)) c.close(4401, 'session expired');
+    }, 60_000);
+    this.sweep.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.sweep) clearInterval(this.sweep);
   }
 
   handleConnection(client: WebSocket, req: IncomingMessage): void {
-    const user = this.auth.userForSession(
-      sessionIdFromCookieHeader(req.headers.cookie),
-    );
-    if (!user) {
+    if (
+      !originAllowed(
+        req.headers.origin,
+        req.headers.host,
+        this.config.publicOrigin,
+      )
+    ) {
+      client.close(4403, 'origin not allowed');
+      return;
+    }
+    const sessionId = sessionIdFromCookieHeader(req.headers.cookie);
+    const user = this.auth.userForSession(sessionId);
+    if (!user || !sessionId) {
       client.close(4401, 'unauthorized');
       return;
     }
-    this.clients.add(client);
+    this.clients.set(client, sessionId);
     client.send(
       JSON.stringify({
         type: 'hello',
@@ -78,7 +108,7 @@ export class EventsGateway
 
   private broadcast(frame: Record<string, unknown>): void {
     const data = JSON.stringify(frame);
-    for (const c of this.clients) {
+    for (const c of this.clients.keys()) {
       if (c.readyState !== c.OPEN) continue;
       if (c.bufferedAmount > 16 * 1024 * 1024) {
         this.logger.warn('dropping slow event client');
