@@ -56,6 +56,16 @@ const itemsOf = (agentId: string) =>
     .filter((f) => f.type === 'agent.item' && f.agentId === agentId)
     .map((f) => f.item);
 
+describe('health', () => {
+  it('is public and reports the daemon link', async () => {
+    const r = await new Api(m.url).get('/api/health');
+    expect(r).toMatchObject({
+      status: 200,
+      body: { status: 'ok', daemon: true },
+    });
+  });
+});
+
 describe('auth', () => {
   it('rejects anonymous requests and bad logins, accepts the admin', async () => {
     const anon = new Api(m.url);
