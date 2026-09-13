@@ -17,8 +17,7 @@ READMEs and the UI's CLAUDE.md (Finishing work).
 next to the served directory and swaps it in with two renames; Express
 reads files per request, so the new build is live at once and the
 manager process is untouched. Open tabs offer a reload when they next
-check `build.json` (on reconnect, on becoming visible, or every ten
-minutes). `install:service` remains the deploy for manager changes and
+check `build.json` (on reconnect, on focus, and every minute). `install:service` remains the deploy for manager changes and
 still carries the UI along. Documented in both READMEs and both
 CLAUDE.md files; the UI's finishing-work rule now names `install:ui`.
 Verified live: the manager's pid was the same before and after the
