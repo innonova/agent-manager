@@ -532,7 +532,9 @@ export class AgentsService
   /** Ends the current session politely; the agent stays resumable. */
   async stop(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
-    await this.withLockOrForce(live, id, () => this.stopLocked(this.get(id)));
+    await this.withLockOrForce(live, id, () =>
+      this.stopLocked(this.get(id), true),
+    );
   }
 
   async archive(id: string): Promise<void> {
@@ -789,6 +791,10 @@ export class AgentsService
     // adapter from the whole log, once, now.
     void boundary;
     sl.pendingSends.splice(0);
+    // Every turn that reached the log has now been matched to its author;
+    // an author still pending belongs to a turn that never got there.
+    if (sl.replayed && sl.id === agent.currentSessionId)
+      live.pendingAuthors.length = 0;
     if (
       sl.replayed &&
       sl.adapter.afterReplay &&

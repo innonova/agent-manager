@@ -196,8 +196,29 @@ export async function modifyFeature(
 ): Promise<FeatureFile | null> {
   const p = path.join(repo.path, FEATURES_DIR, `${slug}.md`);
   for (let attempt = 0; attempt < 5; attempt++) {
-    const current = await readFeature(repo, slug);
-    if (!current) return null;
+    // Content and mtime from one open descriptor: a replacement renamed
+    // in between leaves the descriptor on the old inode, so the two agree.
+    let text: string;
+    let mtime: number;
+    try {
+      const fh = await fs.open(p, 'r');
+      try {
+        text = await fh.readFile('utf8');
+        mtime = (await fh.stat()).mtimeMs;
+      } finally {
+        await fh.close();
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+    const current = parseFeature(
+      slug,
+      repo.name,
+      path.posix.join(repo.name, FEATURES_DIR, `${slug}.md`),
+      text,
+      mtime,
+    );
     const next = await fn(current);
     const tmp = `${p}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`;
     await fs.writeFile(tmp, serializeFeature(next));

@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { constants as fsc } from 'node:fs';
 import path from 'node:path';
 import { ProjectsService } from '../projects/projects.service.js';
 
@@ -346,7 +347,8 @@ export async function readRegular(
 ): Promise<{ buf: Buffer; truncated: boolean } | null> {
   let fh: import('node:fs/promises').FileHandle;
   try {
-    fh = await fs.open(abs, 'r');
+    // O_NONBLOCK: opening a FIFO that appeared here must not block a worker
+    fh = await fs.open(abs, fsc.O_RDONLY | fsc.O_NONBLOCK);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
@@ -354,11 +356,21 @@ export async function readRegular(
   try {
     const st = await fh.stat();
     if (!st.isFile()) throw new BadRequestException('not a regular file');
-    const buf = Buffer.alloc(Math.min(st.size, max) + 1);
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    // Read to EOF or one byte past the cap; the size reported by stat is
+    // only a hint (procfs says 0, a file may grow under us).
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total <= max) {
+      const chunk = Buffer.alloc(Math.min(65536, max + 1 - total));
+      const { bytesRead } = await fh.read(chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    const all = Buffer.concat(chunks);
     return {
-      buf: buf.subarray(0, Math.min(bytesRead, max)),
-      truncated: bytesRead > max,
+      buf: all.subarray(0, Math.min(all.length, max)),
+      truncated: all.length > max,
     };
   } finally {
     await fh.close();

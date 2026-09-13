@@ -194,7 +194,8 @@ export class FeaturesService
       base_commit: string;
       end_commit: string | null;
     }[];
-    const out: Record<string, { base: string; end: string | null }> = {};
+    const out: Record<string, { base: string; end: string | null }> =
+      Object.create(null);
     for (const r of rows)
       out[r.repo] = { base: r.base_commit, end: r.end_commit };
     return out;
@@ -203,6 +204,26 @@ export class FeaturesService
   private decorate(projectId: string, f: FeatureFile): Feature {
     const range = this.range(projectId, f.slug);
     return { ...strip(f), range: Object.keys(range).length ? range : null };
+  }
+
+  /** At first sight only: a range for each repository that has none; existing rows are never touched. */
+  private async backfillRange(
+    projectId: string,
+    slug: string,
+    status: 'in-progress' | 'done',
+  ): Promise<void> {
+    const project = this.projects.get(projectId);
+    const have = this.range(projectId, slug);
+    for (const repo of project.repos) {
+      if (Object.hasOwn(have, repo.name)) continue;
+      const h = await head(repo.path);
+      if (!h) continue;
+      this.db
+        .prepare(
+          'INSERT OR IGNORE INTO feature_ranges (project_id, slug, repo, base_commit, end_commit) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(projectId, slug, repo.name, h, status === 'done' ? h : null);
+    }
   }
 
   /**
@@ -269,11 +290,8 @@ export class FeaturesService
             // base recorded gets one now, and one already done gets an
             // empty range; HEAD now is the best evidence there is, the
             // true start was before the manager was watching.
-            if (f.status === 'in-progress' || f.status === 'done') {
-              const have = this.range(project.id, f.slug);
-              if (project.repos.some((r) => !have[r.name]))
-                await this.recordRange(project.id, f.slug, f.status);
-            }
+            if (f.status === 'in-progress' || f.status === 'done')
+              await this.backfillRange(project.id, f.slug, f.status);
           } else if (known.get(f.slug) !== f.mtime) {
             const was = this.lastStatus.get(key);
             if (was !== f.status)
