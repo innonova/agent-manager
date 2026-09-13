@@ -215,6 +215,30 @@ export class FakeAdapter implements AgentAdapter {
           ],
         };
       }
+      case 'usage':
+        return {
+          usage: {
+            windows: [
+              {
+                name: '5h',
+                usedPercent: Number(line.fiveHour ?? 0),
+                resetsAt: null,
+              },
+              {
+                name: '7d',
+                usedPercent: Number(line.sevenDay ?? 0),
+                resetsAt: null,
+              },
+            ],
+            status:
+              Number(line.fiveHour ?? 0) >= 100
+                ? 'rejected'
+                : Number(line.fiveHour ?? 0) >= 80
+                  ? 'warning'
+                  : 'ok',
+            at: record.t,
+          },
+        };
       case 'background':
         return { background: Number(line.count) || 0 };
       case 'thinking':

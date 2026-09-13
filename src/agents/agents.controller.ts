@@ -4,11 +4,15 @@ import {
   Controller,
   Get,
   HttpCode,
+  Inject,
   Param,
   Post,
   Query,
   Req,
 } from '@nestjs/common';
+import { MANAGER_CONFIG } from '../config/config.js';
+import type { ManagerConfig } from '../config/config.js';
+import { HubService } from '../hub/hub.service.js';
 import type { Request } from 'express';
 import type { User } from '../auth/auth.service.js';
 import {
@@ -21,7 +25,11 @@ import {
 
 @Controller('api')
 export class AgentsController {
-  constructor(private readonly agents: AgentsService) {}
+  constructor(
+    @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
+    private readonly agents: AgentsService,
+    private readonly hub: HubService,
+  ) {}
 
   @Get('projects/:projectId/agents')
   list(
@@ -44,6 +52,19 @@ export class AgentsController {
     @Param('projectId') projectId: string,
   ): Promise<{ restarted: string[]; skipped: { id: string; why: string }[] }> {
     return this.agents.restartIdle(projectId);
+  }
+
+  /** Usage of the vendor accounts, per host (as a hub, the spokes' too), as last reported by an agent. */
+  @Get('usage')
+  async usage(
+    @Req() req: Request & { user?: User },
+  ): Promise<{ hosts: { host: string; accounts: unknown[] }[] }> {
+    const hosts: { host: string; accounts: unknown[] }[] = [
+      { host: this.config.hostName, accounts: this.agents.usage() },
+    ];
+    if (this.hub.enabled)
+      hosts.push(...(await this.hub.listRemoteUsage(req.user?.name ?? 'hub')));
+    return { hosts };
   }
 
   @Get('agents/:id')

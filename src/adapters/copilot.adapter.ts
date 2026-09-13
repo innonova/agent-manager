@@ -413,6 +413,16 @@ export class CopilotAdapter implements AgentAdapter {
 
   private ingestUpdate(u: any): Ingest {
     switch (u?.sessionUpdate) {
+      case 'usage_update':
+        return typeof u.used === 'number' && typeof u.size === 'number'
+          ? {
+              usage: {
+                windows: [],
+                context: { used: u.used, size: u.size },
+                at: Date.now(),
+              },
+            }
+          : {};
       case 'agent_message_chunk': {
         const chunk = u.content?.type === 'text' ? String(u.content.text) : '';
         if (!this.textKey) {

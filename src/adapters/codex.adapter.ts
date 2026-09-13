@@ -241,6 +241,36 @@ export class CodexAdapter implements AgentAdapter {
     )
       return this.ingestApproval(line);
     switch (line?.method) {
+      case 'account/rateLimits/updated': {
+        const rl = line.params?.rateLimits ?? {};
+        const win = (w: any, name: string) =>
+          w && typeof w.usedPercent === 'number'
+            ? [
+                {
+                  name: w.windowDurationMins
+                    ? w.windowDurationMins >= 1440
+                      ? `${Math.round(w.windowDurationMins / 1440)}d`
+                      : `${Math.round(w.windowDurationMins / 60)}h`
+                    : name,
+                  usedPercent: w.usedPercent,
+                  resetsAt: w.resetsAt ? Number(w.resetsAt) * 1000 : null,
+                },
+              ]
+            : [];
+        const windows = [
+          ...win(rl.primary, 'primary'),
+          ...win(rl.secondary, 'secondary'),
+        ];
+        if (!windows.length) return {};
+        return {
+          usage: {
+            windows,
+            status: rl.rateLimitReachedType ? 'rejected' : 'ok',
+            ...(rl.planType ? { plan: String(rl.planType) } : {}),
+            at: record.t,
+          },
+        };
+      }
       case 'thread/started': {
         const model = line.params?.thread?.model;
         return typeof model === 'string' ? { model } : {};

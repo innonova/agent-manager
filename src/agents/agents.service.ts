@@ -12,6 +12,7 @@ import {
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type {
+  AccountUsage,
   AgentAdapter,
   AgentState,
   Ingest,
@@ -73,6 +74,8 @@ export interface AgentStatus {
   model: string | null;
   /** Messages held for the next turn because the vendor could not take one mid-turn. */
   queued: number;
+  /** The vendor account's limits as last reported through this agent, if it has said. */
+  usage: AccountUsage | null;
 }
 
 export interface StoredItem {
@@ -283,6 +286,11 @@ export class AgentsService
   private watchdog: NodeJS.Timeout | null = null;
   private resyncGeneration = 0;
   private readonly cache: TranscriptCache;
+  /** Per vendor profile, the usage last reported through any agent: the account on this machine. */
+  private readonly latestUsage = new Map<
+    string,
+    { profile: string; agentId: string; usage: AccountUsage }
+  >();
 
   constructor(
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
@@ -468,6 +476,13 @@ export class AgentsService
       // the daemon reconnects (scheduleResync), not on every request.
       live.loaded = true;
     });
+  }
+
+  /** The vendor accounts' usage on this machine, one entry per profile that has reported. */
+  usage(): { profile: string; agentId: string; usage: AccountUsage }[] {
+    return [...this.latestUsage.values()].sort((a, b) =>
+      a.profile.localeCompare(b.profile),
+    );
   }
 
   counts(projectId: string): AgentCounts {
@@ -1298,6 +1313,16 @@ export class AgentsService
     // state from a replay in flight is applied but announced only at its end.
     if (ingest.background !== undefined && sl.id === agent.currentSessionId)
       this.setBackground(agent, live, ingest.background, sl.attaching);
+    if (ingest.usage && sl.id === agent.currentSessionId) {
+      live.status = { ...live.status, usage: ingest.usage };
+      this.latestUsage.set(agent.profile, {
+        profile: agent.profile,
+        agentId: agent.id,
+        usage: ingest.usage,
+      });
+      if (sl.attaching) live.stateHeld = true;
+      else this.emit('state', agent.id, agent.projectId, live.status);
+    }
     if (
       ingest.model !== undefined &&
       sl.id === agent.currentSessionId &&
@@ -1892,6 +1917,7 @@ export class AgentsService
           background: 0,
           model: null,
           queued: 0,
+          usage: null,
         },
         items: [],
         itemBase: 0,
@@ -2018,6 +2044,7 @@ export class AgentsService
       background: state === 'exited' ? 0 : live.status.background,
       model: state === 'exited' ? null : live.status.model,
       queued: live.status.queued,
+      usage: live.status.usage,
     };
     // A message held for the next turn goes as soon as the agent can take
     // one; a transition replayed from history is not that moment.

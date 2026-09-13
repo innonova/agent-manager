@@ -1,6 +1,6 @@
 ---
 title: images with a turn
-status: review
+status: done
 priority: 60
 ---
 

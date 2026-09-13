@@ -311,6 +311,35 @@ export class HubService
     return out;
   }
 
+  /** The spokes' account usage, each under its host; a spoke that does not answer contributes nothing. */
+  async listRemoteUsage(
+    actingUser: string,
+  ): Promise<{ host: string; accounts: unknown[] }[]> {
+    const out: { host: string; accounts: unknown[] }[] = [];
+    await Promise.all(
+      [...this.spokes.values()].map(async (spoke) => {
+        try {
+          const r = await this.call<{ hosts?: { accounts?: unknown[] }[] }>(
+            spoke,
+            'GET',
+            '/api/usage',
+            actingUser,
+            undefined,
+            LIST_TIMEOUT_MS,
+          );
+          if (r.status === 200 && Array.isArray(r.body?.hosts))
+            out.push({
+              host: spoke.name,
+              accounts: r.body.hosts[0]?.accounts ?? [],
+            });
+        } catch {
+          // its host status says why
+        }
+      }),
+    );
+    return out;
+  }
+
   private connect(spoke: Spoke): void {
     if (this.closed) return;
     const link = this.links.get(spoke.name)!;

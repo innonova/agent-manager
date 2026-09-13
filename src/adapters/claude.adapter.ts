@@ -160,6 +160,8 @@ export class ClaudeAdapter implements AgentAdapter {
     }
     if (record.s === 'in') return this.ingestInput(line);
     switch (line?.type) {
+      case 'rate_limit_event':
+        return this.ingestRateLimit(line);
       case 'system':
         return this.ingestSystem(line);
       case 'control_request':
@@ -269,6 +271,30 @@ export class ClaudeAdapter implements AgentAdapter {
         },
       ],
     };
+  }
+
+  /** `rate_limit_event`: the account's rolling windows and the vendor's verdict. */
+  private ingestRateLimit(line: any): Ingest {
+    const info = line.rate_limit_info ?? {};
+    const windows = Object.entries(
+      (info.unifiedWindows ?? {}) as Record<
+        string,
+        { utilization?: number; resetsAt?: number }
+      >,
+    )
+      .filter(([k]) => k === 'five_hour' || k === 'seven_day')
+      .map(([k, w]) => ({
+        name: k === 'five_hour' ? '5h' : '7d',
+        usedPercent: Math.round(Number(w.utilization ?? 0) * 100),
+        resetsAt: w.resetsAt ? Number(w.resetsAt) * 1000 : null,
+      }));
+    const status =
+      info.status === 'rejected'
+        ? ('rejected' as const)
+        : info.status === 'allowed_warning'
+          ? ('warning' as const)
+          : ('ok' as const);
+    return windows.length ? { usage: { windows, status, at: Date.now() } } : {};
   }
 
   private ingestInput(line: any): Ingest {

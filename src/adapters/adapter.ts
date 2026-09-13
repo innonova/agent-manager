@@ -68,8 +68,27 @@ export type ItemOp =
   | { op: 'update'; key: string; item: Item };
 
 /** What one daemon log record did to the transcript and the state. */
+/**
+ * What the vendor says about the account's limits, as each reports it:
+ * Claude its rolling windows in `rate_limit_event`, Codex its
+ * `account/rateLimits/updated`, Copilot only the session's context use.
+ */
+export interface AccountUsage {
+  /** Rolling windows, e.g. "5h" and "7d", with how much is used and when each resets (unix ms). */
+  windows: { name: string; usedPercent: number; resetsAt: number | null }[];
+  /** The vendor's verdict, when it gives one. */
+  status?: 'ok' | 'warning' | 'rejected';
+  plan?: string;
+  /** The session's context window: tokens used of the size. */
+  context?: { used: number; size: number };
+  /** When it was reported, unix ms. */
+  at: number;
+}
+
 export interface Ingest {
   state?: AgentState;
+  /** The account's usage, when the vendor reports it. */
+  usage?: AccountUsage;
   /** The model the vendor reports as active, once known. */
   model?: string;
   /** The vendor's error message when state is 'error'. */

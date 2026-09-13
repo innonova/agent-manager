@@ -95,6 +95,11 @@ async function turn(text) {
     out({ type: 'result', durationMs: Date.now() - t0 });
     return;
   }
+  if (text.includes('usage')) {
+    // "usage 42": the account's rolling windows, as Claude and Codex report theirs
+    const n = Number(/usage\s+(\d+)/.exec(text)?.[1] ?? 42);
+    out({ type: 'usage', fiveHour: n, sevenDay: Math.round(n / 2) });
+  }
   if (text.includes('background')) {
     // a job left running: reported as pending, and reported done when asked
     if (text.includes('pending') || text.includes('check')) {

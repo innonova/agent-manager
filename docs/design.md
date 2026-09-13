@@ -138,6 +138,17 @@ session exits. An agent is created with an optional `model` and
 and `-c model_reasoning_effort=`); the manager does not know which
 values are valid, the vendor rejects a bad one at start.
 
+The status also carries `usage`, what the vendor last said about its
+account's limits through this agent: rolling windows (Claude's 5-hour
+and 7-day from `rate_limit_event`; Codex's primary and secondary from
+`account/rateLimits/updated`, named by their length) with used percent
+and reset time, a verdict when the vendor gives one, the plan, and for
+Copilot only the session's context use, since ACP exposes no account
+quota. The manager keeps the latest report per profile, the account on
+this machine, and `GET /api/usage` lists them per host (a hub merges its
+spokes'). Nothing polls the vendors: usage is what agents report while
+they work.
+
 The status also carries `queued`, the number of messages held for the
 next turn because they arrived with `steer` while the vendor could not
 take one mid-turn; the oldest is sent as a turn each time the agent
@@ -661,6 +672,7 @@ POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/archive
 
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
+GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository

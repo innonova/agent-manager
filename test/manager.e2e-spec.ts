@@ -437,6 +437,34 @@ describe('agents', () => {
     ).toEqual([]);
   }, 30000);
 
+  it('an agent reporting its account usage shows it on its status and in the usage listing', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'quota');
+    const mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'usage 85' });
+    const st = await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' && f.agentId === agent.id && f.status.usage,
+      10000,
+      mark,
+    );
+    expect(st.status.usage).toMatchObject({
+      windows: [
+        { name: '5h', usedPercent: 85 },
+        { name: '7d', usedPercent: 43 },
+      ],
+      status: 'warning',
+    });
+    const u = (await api.get('/api/usage')).body;
+    expect(u.hosts).toHaveLength(1);
+    expect(
+      u.hosts[0].accounts.find((a: any) => a.profile === 'fake'),
+    ).toMatchObject({
+      agentId: agent.id,
+      usage: { status: 'warning' },
+    });
+  }, 30000);
+
   it('a turn may carry images, within limits; they show on the user item and reach the agent', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'looker');

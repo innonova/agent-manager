@@ -1,7 +1,32 @@
 ---
 title: view usage for an agent
-status: planned
+status: review
 priority: 100
 ---
 
 ability to view current usage data for each agent account
+
+## Report (2026-09-13)
+
+Done and deployed. What each vendor tells us, normalised into
+`status.usage` on the agent and collected per machine and profile:
+
+- Claude Code reports its rolling windows in `rate_limit_event` frames
+  during a turn: the 5-hour and 7-day utilisation, each with its reset
+  time, and a verdict (ok, warning, rejected).
+- Codex reports `account/rateLimits/updated` with its primary and
+  secondary windows (used percent, window length, reset time) and the
+  plan.
+- Copilot exposes no account quota over ACP; it reports the session's
+  context use (`usage_update`), shown as "ctx N%".
+
+Where it shows: a chip in the agent header ("5h 33% · 7d 41%", amber
+from 80%, red when rejected, tooltip with reset times and the plan), an
+"Account usage" block on the projects page per machine and vendor
+(`GET /api/usage`, which a hub merges from its spokes), the TUI's
+header line and `am agents`. Refreshed whenever an agent reports new
+usage. Unit tests for the three adapters' frames and the fake agent's
+`usage N` turn; an e2e test checks the status and the endpoint.
+
+Not done: no history or graph, only the latest report; nothing polls
+the vendors, so a machine whose agents have not run shows nothing.
