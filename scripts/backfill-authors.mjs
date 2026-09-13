@@ -21,6 +21,9 @@ const dataDir =
 const daemonState =
   process.env.AGENT_DAEMON_STATE_DIR ?? path.join(xdgState, 'agent-daemon');
 const db = new Database(path.join(dataDir, 'manager.db'));
+db.exec(
+  'CREATE TABLE IF NOT EXISTS turn_authors (daemon_session_id TEXT NOT NULL, seq INTEGER NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (daemon_session_id, seq))',
+);
 const user = db.prepare('SELECT id FROM users WHERE name = ?').get(name);
 if (!user) {
   console.error(`no user named ${name}`);
