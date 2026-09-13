@@ -452,9 +452,9 @@ export class AgentsService
           `agent ${id}: could not load archived transcript: ${(err as Error).message}`,
         );
       }
-      // A session whose replay failed is tried again on the next request.
-      for (const sl of live.sessions.values())
-        if (!sl.complete) live.loaded = false;
+      // Loaded now, complete or not: a failed replay is tried again once
+      // the daemon reconnects (scheduleResync), not on every request.
+      live.loaded = true;
     });
   }
 
@@ -1235,12 +1235,21 @@ export class AgentsService
       bytes: h.bytes,
       offsets: h.offsets,
     };
-    const tail = await this.cache.read(
-      agent.id,
-      state,
-      Math.max(0, h.count - this.config.residentItems),
-      h.count,
-    );
+    let tail: StoredItem[] = [];
+    try {
+      tail = await this.cache.read(
+        agent.id,
+        state,
+        Math.max(0, h.count - this.config.residentItems),
+        h.count,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `agent ${agent.id}: transcript cache unreadable (${(err as Error).message}); rebuilding`,
+      );
+      await this.cache.clear(agent.id).catch(() => undefined);
+      return;
+    }
     const base = h.count - tail.length;
     if (
       tail.length !== Math.min(h.count, this.config.residentItems) ||
@@ -1439,6 +1448,15 @@ export class AgentsService
       const agent = this.find(id);
       if (agent) this.gate(this.ensureLive(agent));
     }
+    // Archived agents are loaded on request; a new connection is a reason
+    // to consult the daemon again for those loaded with a failed replay.
+    for (const { id } of this.db
+      .prepare('SELECT id FROM agents WHERE archived_at IS NOT NULL')
+      .all() as { id: string }[]) {
+      const live = this.live.get(id);
+      if (live && [...live.sessions.values()].some((sl) => !sl.complete))
+        live.loaded = false;
+    }
     this.resyncChain = this.resyncChain
       .then(() => this.resync(generation))
       .catch((err: Error) => this.logger.error(`resync failed: ${err.message}`))
@@ -1505,7 +1523,18 @@ export class AgentsService
       const stale = this.find(id);
       if (!stale) continue;
       const live = this.ensureLive(stale);
-      await this.withLock(live, () => this.resyncAgent(id, generation, live));
+      try {
+        await this.withLock(live, () => this.resyncAgent(id, generation, live));
+      } catch (err) {
+        // The daemon link going away mid-resync ends it for everyone (a
+        // new one follows the reconnect); anything else is this agent's.
+        if (!this.daemon.connected) throw err;
+        this.logger.warn(
+          `agent ${id}: resync failed: ${(err as Error).message}`,
+        );
+        live.markSynced();
+        continue;
+      }
       done++;
     }
     this.logger.log(`resynced ${done} agent(s)`);
@@ -1548,11 +1577,14 @@ export class AgentsService
         const s = byId.get(ref.daemonSessionId);
         const sl = live.sessions.get(ref.daemonSessionId);
         const last = i === refs.length - 1;
+        // A session the daemon no longer has goes now, as it would at the
+        // next start, whether its items came from the cache or the log.
+        if (!s) return sl !== undefined && sl.lastSeq > 0;
         if (!sl?.fromCache)
           return refs
             .slice(i + 1)
             .some((r) => live.sessions.get(r.daemonSessionId)?.fromCache);
-        if (!s || sl.lastSeq > s.lastSeq) return true;
+        if (sl.lastSeq > s.lastSeq) return true;
         if (last) return false;
         return sl.lastSeq !== s.lastSeq || !sl.endedBoundary;
       }) ||

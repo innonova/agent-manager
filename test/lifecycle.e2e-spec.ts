@@ -674,7 +674,7 @@ describe('transcript cache', () => {
     daemon.removeAllListeners('input');
   }, 40000);
 
-  it('an archived agent whose replay failed is tried again on the next request', async () => {
+  it('an archived agent whose replay failed is tried again once the daemon reconnects', async () => {
     scriptCodex(daemon);
     const id = await newAgent('c7');
     const sid = await sessionOf(id);
@@ -693,6 +693,9 @@ describe('transcript cache', () => {
       failed.items.some((i) => /history unavailable/.test(i.item.text ?? '')),
     ).toBe(true);
     daemon.onAttach = null;
+    expect(await itemsOf(id)).toEqual(failed); // same connection: served as is, no new attempt
+    daemon.cut();
+    await sleep(1500);
     const again = await itemsOf(id);
     // the "history unavailable" note stays as a marker; the history follows it
     const turns = (r: { items: any[] }) =>
@@ -706,6 +709,76 @@ describe('transcript cache', () => {
     ).toBeGreaterThanOrEqual(2);
     daemon.removeAllListeners('input');
   }, 30000);
+
+  it('an archived agent with a session that cannot be replayed is retried once per connection, not per request', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c8');
+    const s1 = await sessionOf(id);
+    await turn(id, 'one');
+    let mark = events.mark();
+    await api.post(`/api/agents/${id}/stop`);
+    await stateOf(id, 'exited', mark);
+    mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'two' });
+    await stateOf(id, 'idle', mark);
+    const s2 = await sessionOf(id);
+    expect((await api.post(`/api/agents/${id}/archive`)).status).toBe(201);
+    await sleep(300);
+    fs.rmSync(path.join(m.dataDir, 'transcripts'), {
+      recursive: true,
+      force: true,
+    });
+    daemon.onAttach = (sid) => (sid === s1 ? 'refuse' : 'ok');
+    await restartManager();
+    daemon.attaches.length = 0;
+    const mine = () =>
+      daemon.attaches
+        .map((a) => a.sessionId)
+        .filter((sid) => sid === s1 || sid === s2);
+    for (let i = 0; i < 4; i++) await itemsOf(id);
+    // one attempt: session one refused, session two replayed, then served as is
+    expect(mine()).toEqual([s1, s2]);
+    // the daemon comes back (a new connection): one more attempt, complete
+    daemon.onAttach = null;
+    daemon.attaches.length = 0;
+    daemon.cut();
+    await sleep(1500);
+    const { items } = await itemsOf(id);
+    expect(mine()).toEqual([s1, s2]);
+    expect(items.map((i) => i.sessionId)).toEqual([
+      ...Array(5).fill(s1),
+      ...Array(5).fill(s2),
+    ]);
+    daemon.removeAllListeners('input');
+  }, 40000);
+
+  it('a corrupt cache line rebuilds that agent and leaves the others alone', async () => {
+    scriptCodex(daemon);
+    const a = await newAgent('c9');
+    const b = await newAgent('c10');
+    await turn(a, 'one');
+    await turn(b, 'one');
+    await sleep(300);
+    const before = await itemsOf(a);
+    const file = path.join(m.dataDir, 'transcripts', `${a}.ndjson`);
+    const text = fs.readFileSync(file, 'utf8');
+    const lines = text.split('\n');
+    const bad = lines[lines.length - 2]!;
+    lines[lines.length - 2] = bad.slice(0, -6) + 'xxxxxx'; // same length: the header still matches
+    fs.writeFileSync(file, lines.join('\n'));
+    await restartManager();
+    await untilState(a, 'idle');
+    await untilState(b, 'idle');
+    // identical but for the boundary item's time, which is when it was written
+    const sansAt = (r: { items: any[] }) =>
+      r.items.map((i) => ({ ...i, at: 0 }));
+    expect(sansAt(await itemsOf(a))).toEqual(sansAt(before));
+    expect((await itemsOf(b)).items.map((i) => i.item.kind)).toContain(
+      'turn_end',
+    );
+    await turn(b, 'two'); // the agent after the corrupt one is fully usable
+    daemon.removeAllListeners('input');
+  }, 40000);
 
   it('a cache the log contradicts is rebuilt from the log', async () => {
     scriptCodex(daemon);

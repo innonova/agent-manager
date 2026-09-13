@@ -312,7 +312,13 @@ the history of every agent ever.
   earlier session cut short or missing from the cache while a later one
   is in it, a cached session the database does not know) is dropped and
   rebuilt the same way. A rebuild bumps a generation so writes and reads
-  started against the old file stand down. Archived agents are not touched at start;
+  started against the old file stand down. A session the daemon no
+  longer has is dropped at the next resync too, not only at the next
+  start, so the transcript does not depend on when the process last
+  started. An archived agent whose replay failed is served as it is and
+  tried again once the daemon reconnects, not on every request. One
+  agent's unreadable cache (or any other failure of its resync) does
+  not stop the resync of the others. Archived agents are not touched at start;
   requesting one loads it, from cache and log.
 - `GET /api/agents/:id/items` takes `tail=N` (the last N), `before=I&limit=N`
   (the N before index I) or the existing `from=I`, and always returns

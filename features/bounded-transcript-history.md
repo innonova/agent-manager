@@ -82,3 +82,12 @@ light pass on the UI. All findings fixed and covered:
   length first.
 - UI: items held during a load kept the old numbering across a reset;
   a reconnect refetch that came back shorter never truncated the list.
+
+Second review round (Codex, same day) verified the fixes and found
+two more, both fixed and covered by lifecycle tests: an archived agent
+with a session that cannot be replayed was rebuilt and reset on every
+request (now once per daemon connection); a corrupt line in one
+agent's cache tail escaped and aborted the resync of every agent after
+it (now that agent rebuilds and the others proceed). A session the
+daemon no longer has is now dropped at the next resync, as it would be
+at the next start.
