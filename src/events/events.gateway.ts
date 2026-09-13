@@ -22,6 +22,9 @@ import { originAllowed } from '../origin.js';
  * origin only (4403 otherwise). Logout closes the session's sockets and
  * expired sessions are swept once a minute.
  */
+/** How long after the last typing report a user still counts as typing. */
+const TYPING_TTL_MS = 5000;
+
 @WebSocketGateway({ path: '/api/events' })
 export class EventsGateway
   implements
@@ -33,6 +36,13 @@ export class EventsGateway
   private readonly logger = new Logger(EventsGateway.name);
   /** socket -> the login session it was authenticated with */
   private readonly clients = new Map<WebSocket, string>();
+  /** socket -> where its user is and whether they are typing there. */
+  private readonly presence = new Map<
+    WebSocket,
+    { userId: string; name: string; agentId: string | null; typingAt: number }
+  >();
+  private presenceSweep: NodeJS.Timeout | null = null;
+  private lastPresence = '';
   /** Sockets that answered the last ping (or are new); the rest are dead. */
   private readonly alive = new Set<WebSocket>();
   private sweep: NodeJS.Timeout | null = null;
@@ -71,9 +81,14 @@ export class EventsGateway
     this.daemon.on('disconnected', () =>
       this.broadcast({ type: 'daemon', connected: false }),
     );
-    this.auth.on('users', (users) =>
-      this.broadcast({ type: 'users.changed', users }),
-    );
+    this.auth.on('users', (users) => {
+      for (const p of this.presence.values()) {
+        const u = users.find((x) => x.id === p.userId);
+        if (u) p.name = u.name;
+      }
+      this.broadcast({ type: 'users.changed', users });
+      this.broadcastPresence();
+    });
     this.auth.on('revoked', (sessionId) => {
       for (const [c, sid] of this.clients)
         if (sid === sessionId) c.close(4401, 'logged out');
@@ -105,6 +120,63 @@ export class EventsGateway
   onModuleDestroy(): void {
     if (this.sweep) clearInterval(this.sweep);
     if (this.pinger) clearInterval(this.pinger);
+    if (this.presenceSweep) clearInterval(this.presenceSweep);
+  }
+
+  // ---- presence ------------------------------------------------------------
+
+  /**
+   * The one client-to-server frame: `{ type: 'presence', agentId, typing }`,
+   * sent when a user opens an agent (or leaves, agentId null) and while
+   * they type. Typing expires after a few seconds without a repeat; a
+   * closed socket disappears at once. What is broadcast is per agent, per
+   * user (two tabs of one user count once): `{ type: 'presence', agents:
+   * { [agentId]: [{ userId, name, typing }] } }`.
+   */
+  private onClientMessage(client: WebSocket, raw: unknown): void {
+    let frame: { type?: unknown; agentId?: unknown; typing?: unknown };
+    try {
+      frame = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (frame?.type !== 'presence') return;
+    const p = this.presence.get(client);
+    if (!p) return;
+    p.agentId = typeof frame.agentId === 'string' ? frame.agentId : null;
+    p.typingAt = frame.typing === true && p.agentId ? Date.now() : 0;
+    this.broadcastPresence();
+  }
+
+  private presenceSnapshot(): Record<
+    string,
+    { userId: string; name: string; typing: boolean }[]
+  > {
+    const now = Date.now();
+    const agents: Record<
+      string,
+      Map<string, { userId: string; name: string; typing: boolean }>
+    > = {};
+    for (const p of this.presence.values()) {
+      if (!p.agentId) continue;
+      const typing = now - p.typingAt < TYPING_TTL_MS;
+      const users = (agents[p.agentId] ??= new Map());
+      const seen = users.get(p.userId);
+      if (seen) seen.typing = seen.typing || typing;
+      else users.set(p.userId, { userId: p.userId, name: p.name, typing });
+    }
+    return Object.fromEntries(
+      Object.entries(agents).map(([id, users]) => [id, [...users.values()]]),
+    );
+  }
+
+  /** Sends the snapshot to everyone when it differs from the last one sent. */
+  private broadcastPresence(): void {
+    const agents = this.presenceSnapshot();
+    const key = JSON.stringify(agents);
+    if (key === this.lastPresence) return;
+    this.lastPresence = key;
+    this.broadcast({ type: 'presence', agents });
   }
 
   handleConnection(client: WebSocket, req: IncomingMessage): void {
@@ -127,11 +199,24 @@ export class EventsGateway
     this.clients.set(client, sessionId);
     this.alive.add(client);
     client.on('pong', () => this.alive.add(client));
+    this.presence.set(client, {
+      userId: user.id,
+      name: user.name,
+      agentId: null,
+      typingAt: 0,
+    });
+    client.on('message', (raw) => this.onClientMessage(client, raw));
+    if (!this.presenceSweep) {
+      // typing expires by time, not by a message, so sweep for it
+      this.presenceSweep = setInterval(() => this.broadcastPresence(), 2000);
+      this.presenceSweep.unref();
+    }
     client.send(
       JSON.stringify({
         type: 'hello',
         user: user.name,
         daemon: { connected: this.daemon.connected },
+        presence: this.presenceSnapshot(),
       }),
     );
   }
@@ -139,6 +224,7 @@ export class EventsGateway
   handleDisconnect(client: WebSocket): void {
     this.clients.delete(client);
     this.alive.delete(client);
+    if (this.presence.delete(client)) this.broadcastPresence();
   }
 
   private broadcast(frame: Record<string, unknown>): void {

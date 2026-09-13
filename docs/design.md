@@ -465,8 +465,20 @@ host or `AGENT_MANAGER_PUBLIC_ORIGIN` (403 otherwise). Requests without an
 Authenticated on upgrade with the same cookie. The manager pings every
 client on an interval (`AGENT_MANAGER_EVENTS_PING_MS`, 25 s) so an idle
 socket carries traffic and reverse proxies keep it open; a client that
-has not answered by the next ping is terminated. Server to client only
-in milestone one; every frame has a `type`:
+has not answered by the next ping is terminated.
+
+One frame goes the other way, client to server, because it is ephemeral
+and belongs to the connection: `{ type: 'presence', agentId, typing }`,
+sent when the user opens an agent (agentId null when they leave) and
+repeatedly while they type. The manager keeps presence in memory per
+socket, counts a user once per agent however many tabs they have, lets
+typing expire five seconds after the last report, drops a socket's
+presence when it closes, and broadcasts `{ type: 'presence', agents: {
+[agentId]: [{ userId, name, typing }] } }` whenever the picture changes;
+`hello` carries the current picture. This is what lets a squad see who
+is looking at an agent and who is mid-sentence before they send a turn
+of their own. Everything else is server to client; every frame has a
+`type`:
 
 ```
 hello            { user, daemon: { connected } }   // first frame after the upgrade
