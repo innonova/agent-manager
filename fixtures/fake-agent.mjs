@@ -123,7 +123,10 @@ async function turn(text) {
       : `You said: ${text}. Turn ${turns} done.`,
     text.includes('slow') ? 60 : 15,
   );
-  if (steers.length) await stream(`Also noted: ${steers.join(' / ')}.`, 15);
+  while (steers.length) {
+    const batch = steers.splice(0); // more may arrive while this streams
+    await stream(`Also noted: ${batch.join(' / ')}.`, 15);
+  }
   out({ type: 'result', durationMs: Date.now() - t0 });
   if (text.includes('exit')) {
     // answer first, then leave: "please exit" is quick, "slow then exit" streams first

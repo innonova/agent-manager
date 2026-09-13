@@ -51,6 +51,52 @@ const rec = (s: 'in' | 'out', d: unknown, seq: number): LogRecord => ({
 const ev = (event: unknown) => ({ type: 'stream_event', event });
 
 describe('ClaudeAdapter', () => {
+  it('a message steered mid-turn leaves the stream and a pending permission alone', () => {
+    const records = load('tool-and-text.ndjson');
+    const rec = (seq: number, d: unknown) => ({
+      seq,
+      t: 0,
+      s: 'in' as const,
+      d: JSON.stringify(d),
+    });
+    const steer = (seq: number) =>
+      rec(seq, {
+        type: 'user',
+        message: { role: 'user', content: 'also this' },
+      });
+    // between two deltas of the first streamed text
+    const deltas = records
+      .map((r, k) => ({ r, k }))
+      .filter(
+        ({ r }) => /content_block_delta/.test(r.d) && /text_delta/.test(r.d),
+      )
+      .map(({ k }) => k);
+    expect(deltas.length).toBeGreaterThan(1);
+    const spliced = [...records];
+    spliced.splice(deltas[0]! + 1, 0, steer(records[deltas[0]!]!.seq + 0.5));
+    const plain = run(new ClaudeAdapter(), records);
+    const steered = run(new ClaudeAdapter(), spliced);
+    expect(steered.items.filter((i) => i.kind === 'user')).toHaveLength(
+      plain.items.filter((i) => i.kind === 'user').length + 1,
+    );
+    // the texts are identical: the stream was not cut, nothing left marked streaming
+    expect(steered.items.filter((i) => i.kind === 'text')).toEqual(
+      plain.items.filter((i) => i.kind === 'text'),
+    );
+    expect(steered.items.some((i) => i.kind === 'text' && i.streaming)).toBe(
+      false,
+    );
+    // with a permission pending, the steer's input does not report working
+    const a = new ClaudeAdapter();
+    run(
+      a,
+      load('permission.ndjson').filter((r) => r.seq <= 20),
+    );
+    if (a.pendingPermissions().length) {
+      expect(a.ingest(steer(999)).state).toBe('waiting-permission');
+    }
+  });
+
   it('turns a recorded two-turn session with a tool call into items', () => {
     const { items, states, conversationId, error } = run(
       new ClaudeAdapter(),

@@ -464,6 +464,109 @@ describe('steering', () => {
     void startedFor;
     daemon.removeAllListeners('input');
   }, 30000);
+
+  it('a stop drops held messages and never resumes the agent with them; a restart forgets them too', async () => {
+    // turns start but never report turn/started, so every steer is queued
+    daemon.on('input', (sid, line: any) => {
+      if (line?.method === 'initialize')
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { userAgent: 'scripted' },
+        });
+      if (line?.method === 'thread/start' || line?.method === 'thread/resume') {
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { thread: { id: 'thread-1' } },
+        });
+        daemon.out(sid, {
+          method: 'thread/started',
+          params: { thread: { id: 'thread-1', model: 'scripted-1' } },
+        });
+      }
+      if (line?.method === 'turn/start')
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { turn: { id: 'turn-1' } },
+        });
+    });
+    const id = await newAgent('s2');
+    const sid = await sessionOf(id);
+    let mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'one' });
+    await stateOf(id, 'working', mark);
+    expect(
+      (await api.post(`/api/agents/${id}/turn`, { text: 'held', steer: true }))
+        .body.mode,
+    ).toBe('queued');
+    expect((await api.get(`/api/agents/${id}`)).body.status.queued).toBe(1);
+    // a restart while the turn runs: the held message is gone, and the count with it
+    await restartManager();
+    await untilState(id, 'working');
+    expect((await api.get(`/api/agents/${id}`)).body.status.queued).toBe(0);
+    expect(
+      (
+        await api.post(`/api/agents/${id}/turn`, {
+          text: 'held again',
+          steer: true,
+        })
+      ).body.mode,
+    ).toBe('queued');
+    // stop: the turn ends with the session; nothing held goes out, the agent stays exited
+    mark = events.mark();
+    await api.post(`/api/agents/${id}/stop`);
+    await stateOf(id, 'exited', mark);
+    await sleep(500);
+    expect((await api.get(`/api/agents/${id}`)).body.status).toMatchObject({
+      state: 'exited',
+      queued: 0,
+    });
+    expect(
+      (await api.get(`/api/agents/${id}`)).body.agent.currentSessionId,
+    ).toBeNull();
+    expect(methods(sid).filter((m) => m === 'turn/start')).toHaveLength(1);
+    daemon.removeAllListeners('input');
+  }, 40000);
+
+  it('two people steering are each credited with their own message', async () => {
+    scriptCodex(daemon, { holdTurn: true });
+    const id = await newAgent('s3');
+    const sid = await sessionOf(id);
+    const bobPw = (await api.post('/api/users', { name: 'bob-s' })).body
+      .password;
+    const bob = new Api(m.url);
+    await bob.login('bob-s', bobPw);
+    const mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'one' });
+    await stateOf(id, 'working', mark);
+    await sleep(100); // turn/started
+    expect(
+      (
+        await bob.post(`/api/agents/${id}/turn`, {
+          text: 'from bob',
+          steer: true,
+        })
+      ).body.mode,
+    ).toBe('steered');
+    expect(
+      (
+        await api.post(`/api/agents/${id}/turn`, {
+          text: 'from admin',
+          steer: true,
+        })
+      ).body.mode,
+    ).toBe('steered');
+    await sleep(200);
+    const users = (await api.get(`/api/agents/${id}/items`)).body.items
+      .map((i: any) => i.item)
+      .filter((i: any) => i.kind === 'user')
+      .map((i: any) => `${i.by}:${i.text}`);
+    expect(users).toEqual(['admin:one', 'bob-s:from bob', 'admin:from admin']);
+    finishTurn(daemon, sid);
+    daemon.removeAllListeners('input');
+  }, 30000);
 });
 
 describe('interrupts and attribution', () => {

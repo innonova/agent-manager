@@ -295,6 +295,14 @@ export class ClaudeAdapter implements AgentAdapter {
                 .map((b: any) => b.text)
                 .join('')
             : '';
+      if (this.turnOpen) {
+        // A message steered into the running turn: the stream under way
+        // and any pending permission are untouched by it.
+        return {
+          state: this.permissions.size ? 'waiting-permission' : 'working',
+          ops: [append({ kind: 'user', text })],
+        };
+      }
       this.turnOpen = true;
       this.streaming = null;
       return { state: 'working', ops: [append({ kind: 'user', text })] };

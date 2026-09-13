@@ -94,7 +94,8 @@ export class AgentsController {
     const mode = await this.agents.turn(id, body?.text, req.user?.id, {
       steer: body?.steer === true,
     });
-    return { ok: true, mode };
+    // 'dropped' only happens for a message the manager itself replays from its queue
+    return { ok: true, mode: mode === 'dropped' ? 'queued' : mode };
   }
 
   @Post('agents/:id/permission')

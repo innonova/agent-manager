@@ -168,6 +168,8 @@ interface Live {
   pendingAuthors: string[];
   /** Messages sent while a turn ran that the vendor could not take then; sent as turns when idle. In memory only. */
   queued: { text: string; userId?: string }[];
+  /** A queued message is being sent; no second flush until it is done. */
+  flushing: boolean;
   /** When the watchdog last asked about background jobs. */
   lastPokeAt: number;
   /**
@@ -593,8 +595,8 @@ export class AgentsService
     id: string,
     text: unknown,
     userId?: string,
-    opts: { steer?: boolean } = {},
-  ): Promise<'sent' | 'steered' | 'queued'> {
+    opts: { steer?: boolean; fromQueue?: boolean } = {},
+  ): Promise<'sent' | 'steered' | 'queued' | 'dropped'> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
     const live = this.ensureLive(this.get(id));
@@ -605,6 +607,9 @@ export class AgentsService
       if (this.deleting.has(agent.projectId))
         throw new ConflictException('project is being deleted');
       if (!agent.currentSessionId) {
+        // A held message belongs to the session it was held for; it never
+        // resumes an agent that was stopped or exited meanwhile.
+        if (opts.fromQueue) return 'dropped';
         await this.startSession(agent, live);
         agent = this.get(id);
       }
@@ -686,28 +691,56 @@ export class AgentsService
     });
   }
 
-  /** Sends the oldest queued message as a turn; a refusal keeps it for the next idle. */
+  /**
+   * Sends the oldest queued message as a turn; one at a time, and only
+   * while the session it was held for is still there. A busy refusal
+   * keeps it for the next idle.
+   */
   private async flushQueued(id: string): Promise<void> {
     const live = this.live.get(id);
     const agent = this.find(id);
-    if (!live || !agent || !live.queued.length) return;
+    if (!live || !agent || !live.queued.length || live.flushing) return;
+    if (!agent.currentSessionId) return this.dropQueued(agent, live);
+    live.flushing = true;
     const next = live.queued.shift()!;
     live.status = { ...live.status, queued: live.queued.length };
     this.emit('state', agent.id, agent.projectId, live.status);
     try {
-      await this.turn(id, next.text, next.userId);
+      const mode = await this.turn(id, next.text, next.userId, {
+        fromQueue: true,
+      });
+      if (mode === 'dropped') this.dropQueued(agent, live);
     } catch (err) {
       const e = err as HttpException;
-      if (e instanceof HttpException && e.getStatus() === 409) {
+      if (
+        e instanceof HttpException &&
+        e.getStatus() === 409 &&
+        this.find(id)?.currentSessionId
+      ) {
         live.queued.unshift(next);
         live.status = { ...live.status, queued: live.queued.length };
         this.emit('state', agent.id, agent.projectId, live.status);
-        return;
-      }
-      this.logger.warn(
-        `agent ${id}: a queued message could not be sent and was dropped: ${(err as Error).message}`,
-      );
+      } else
+        this.logger.warn(
+          `agent ${id}: a queued message could not be sent and was dropped: ${(err as Error).message}`,
+        );
+    } finally {
+      live.flushing = false;
     }
+    if (live.queued.length && live.status.state === 'idle')
+      setImmediate(() => void this.flushQueued(id));
+  }
+
+  /** Forgets held messages (the session they were for is gone) and says so in the status. */
+  private dropQueued(agent: Agent, live: Live): void {
+    if (!live.queued.length && !live.status.queued) return;
+    if (live.queued.length)
+      this.logger.log(
+        `agent ${agent.id}: ${live.queued.length} held message(s) dropped with the session`,
+      );
+    live.queued.length = 0;
+    live.status = { ...live.status, queued: 0 };
+    this.emit('state', agent.id, agent.projectId, live.status);
   }
 
   /**
@@ -779,11 +812,11 @@ export class AgentsService
   /** Ends the current session politely; the agent stays resumable. */
   async stop(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
-    live.queued.length = 0; // a stop is the human's say: nothing held goes out after it
-    live.status = { ...live.status, queued: 0 };
-    await this.withLockOrForce(live, id, () =>
-      this.stopLocked(this.get(id), true),
-    );
+    await this.withLockOrForce(live, id, async () => {
+      const agent = this.get(id);
+      this.dropQueued(agent, live); // a stop is the human's say: nothing held goes out after it
+      await this.stopLocked(agent, true);
+    });
   }
 
   /**
@@ -1530,6 +1563,8 @@ export class AgentsService
         this.adapters.create(agent.profile),
       );
     this.endBoundary(agent, live, sl, session);
+    live.queued.length = 0; // held for a session that is gone
+    live.status = { ...live.status, queued: 0 };
     this.setState(agent, live, 'exited', null);
     this.emit('session', agent.id, {
       daemonSessionId: session.id,
@@ -1724,7 +1759,7 @@ export class AgentsService
         const cached = sl.fromCache ? sl.settled?.status : null;
         if (cached) {
           this.setState(agent, live, cached.state, cached.error, true);
-          live.status = { ...cached };
+          live.status = { ...cached, queued: 0 }; // nothing survives a restart
           live.stateHeld = true;
         } else
           this.setState(
@@ -1838,6 +1873,7 @@ export class AgentsService
         stateHeld: false,
         pendingAuthors: [],
         queued: [],
+        flushing: false,
         lastPokeAt: 0,
       };
       this.live.set(agent.id, live);
@@ -1943,8 +1979,9 @@ export class AgentsService
       model: state === 'exited' ? null : live.status.model,
       queued: live.status.queued,
     };
-    // A message held for the next turn goes as soon as the agent can take one.
-    if (state === 'idle' && live.queued.length)
+    // A message held for the next turn goes as soon as the agent can take
+    // one; a transition replayed from history is not that moment.
+    if (state === 'idle' && live.queued.length && !quiet)
       setImmediate(() => void this.flushQueued(agent.id));
     if (quiet) {
       live.stateHeld = true;
@@ -1978,5 +2015,7 @@ export class AgentsService
     live.stateHeld = false;
     this.emit('state', agent.id, agent.projectId, live.status);
     this.emit('counts', agent.projectId, this.counts(agent.projectId));
+    if (live.status.state === 'idle' && live.queued.length)
+      setImmediate(() => void this.flushQueued(agent.id));
   }
 }
