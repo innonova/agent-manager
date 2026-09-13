@@ -30,11 +30,14 @@ export class FeaturesController {
 
   @Patch(':slug')
   async patch(
+    @Req() req: Request & { user?: User },
     @Param('id') id: string,
     @Param('slug') slug: string,
     @Body() body: Record<string, unknown>,
   ): Promise<{ feature: Feature }> {
-    return { feature: await this.features.update(id, slug, body ?? {}) };
+    return {
+      feature: await this.features.update(id, slug, body ?? {}, req.user?.id),
+    };
   }
 
   @Post(':slug/respond')
@@ -50,6 +53,7 @@ export class FeaturesController {
         slug,
         body ?? {},
         req.user?.name,
+        req.user?.id,
       ),
     };
   }

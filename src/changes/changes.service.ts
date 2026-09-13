@@ -11,6 +11,7 @@ import { FeaturesService } from '../features/features.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { isSlug } from '../features/feature-file.js';
 import { changedFiles, head, resolveCommit, showAt } from './git.js';
+import { ReadCursorsService } from './read-cursors.service.js';
 import type { ChangedFile } from './git.js';
 
 export interface RepoChanges {
@@ -47,6 +48,7 @@ export class ChangesService {
     private readonly dbs: DbService,
     private readonly projects: ProjectsService,
     private readonly features: FeaturesService,
+    private readonly cursors: ReadCursorsService,
   ) {}
 
   private get db() {
@@ -67,19 +69,14 @@ export class ChangesService {
     const h = await head(repo.path);
     if (!h) return { base: null, head: null, note: 'not a git repository' };
     if (spec === 'read') {
-      const row = this.db
-        .prepare(
-          'SELECT commit_hash FROM read_cursors WHERE user_id = ? AND project_id = ? AND repo = ?',
-        )
-        .get(userId, projectId, repo.name) as
-        { commit_hash: string } | undefined;
-      if (!row)
+      const cursor = this.cursors.get(userId, projectId, repo.name);
+      if (!cursor)
         return {
           base: h,
           head: h,
           note: 'nothing marked read yet; showing uncommitted changes',
         };
-      const ok = await resolveCommit(repo.path, row.commit_hash);
+      const ok = await resolveCommit(repo.path, cursor);
       return ok
         ? { base: ok, head: h, note: null }
         : {
@@ -199,22 +196,8 @@ export class ChangesService {
     const project = this.projects.get(projectId);
     if (repoName !== undefined && typeof repoName !== 'string')
       throw new BadRequestException('"repo" must be a string');
-    const targets = repoName
-      ? project.repos.filter((r) => r.name === repoName)
-      : project.repos;
-    if (repoName && targets.length === 0)
+    if (repoName && !project.repos.some((r) => r.name === repoName))
       throw new NotFoundException(`no such repository: ${repoName}`);
-    const out: { repo: string; commit: string }[] = [];
-    for (const repo of targets) {
-      const h = await head(repo.path);
-      if (!h) continue;
-      this.db
-        .prepare(
-          'INSERT INTO read_cursors (user_id, project_id, repo, commit_hash, read_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, project_id, repo) DO UPDATE SET commit_hash = excluded.commit_hash, read_at = excluded.read_at',
-        )
-        .run(userId, projectId, repo.name, h, Date.now());
-      out.push({ repo: repo.name, commit: h });
-    }
-    return { repos: out };
+    return { repos: await this.cursors.markRead(userId, projectId, repoName) };
   }
 }

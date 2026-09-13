@@ -37,6 +37,11 @@ changes alike:
    (a reload, not a restart: running sessions are untouched);
 5. rewrites the unit file and restarts the manager service.
 
+For a change to the UI only, skip all that: `npm run build` in
+`../agent-manager-ui`, then `npm run install:ui` here. It swaps the served
+directory in place and does not restart the manager; open tabs offer a
+reload when they next check for a new build.
+
 It leaves the database and the drop-ins under
 `~/.config/systemd/user/agent-manager.service.d/` alone;
 `AGENT_MANAGER_ADMIN_PASSWORD` is only needed on first install or to

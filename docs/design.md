@@ -314,7 +314,9 @@ records HEAD as the base when it first sees the feature in progress
 (the agent sets that; the poller notices within seconds, before any
 commit of the work) and HEAD as the end when it is marked done. Later
 rounds keep the first base. The range is exposed on the feature and is
-one of the bases the changes view accepts (`feature:<slug>`).
+one of the bases the changes view accepts (`feature:<slug>`). Marking a
+feature done also moves the caller's read cursor to HEAD in every
+repository of the project: done means the human has looked.
 
 Ownership of `status`: `in-progress` is the agent's; `planned`, `review`,
 `blocked` and `done` are set by either side, the human through the API.

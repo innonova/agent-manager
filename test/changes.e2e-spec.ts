@@ -173,6 +173,9 @@ describe('changes', () => {
       'repo/src/d.ts',
     );
     expect(r.body.repos[0].note).toMatch(/feature ended at/);
+    // done moved the caller's read cursor: nothing committed is unread now
+    const read = await api.get(`/api/projects/${projectId}/changes`);
+    expect(read.body.repos[0].base).toBe(endHead);
     const none = await api.get(
       `/api/projects/${projectId}/changes?base=feature:nothing`,
     );

@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { head } from '../changes/git.js';
+import { ReadCursorsService } from '../changes/read-cursors.service.js';
 import {
   FEATURE_STATUSES,
   FeatureFile,
@@ -68,6 +69,7 @@ export class FeaturesService
   constructor(
     private readonly dbs: DbService,
     private readonly projects: ProjectsService,
+    private readonly cursors: ReadCursorsService,
   ) {
     super();
   }
@@ -246,8 +248,13 @@ export class FeaturesService
     slug: string,
     before: FeatureStatus,
     after: FeatureStatus,
+    userId?: string,
   ): Promise<Feature> {
     if (before !== after) await this.recordRange(projectId, slug, after);
+    // Done means the human has looked at the work: their "since I last
+    // looked" cursor moves to now in every repository of the project.
+    if (before !== after && after === 'done' && userId)
+      await this.cursors.markRead(userId, projectId);
     const feature = await this.get(projectId, slug);
     this.announce(projectId, feature);
     return feature;
@@ -332,6 +339,7 @@ export class FeaturesService
       priority?: unknown;
       dependsOn?: unknown;
     },
+    userId?: string,
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
     if (
@@ -377,7 +385,7 @@ export class FeaturesService
     if (input.dependsOn !== undefined)
       f.dependsOn = input.dependsOn as string[];
     await writeFeature(found.repoPath, f);
-    return this.finish(projectId, slug, before, f.status);
+    return this.finish(projectId, slug, before, f.status, userId);
   }
 
   /**
@@ -391,6 +399,7 @@ export class FeaturesService
     slug: string,
     input: { text?: unknown; status?: unknown },
     by?: string,
+    userId?: string,
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
     if (typeof input.text !== 'string' || !input.text.trim())
@@ -408,7 +417,7 @@ export class FeaturesService
     f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${heading})\n\n${input.text.trim()}\n`;
     f.status = status as FeatureStatus;
     await writeFeature(found.repoPath, f);
-    return this.finish(projectId, slug, before, f.status);
+    return this.finish(projectId, slug, before, f.status, userId);
   }
 }
 

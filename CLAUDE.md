@@ -57,7 +57,8 @@ change, `README.md` for an operator-facing one). Then:
 - push;
 - deploy with `npm run install:service` here; it is safe at any time
   (`README.md`, Deploying). A change that also touched the UI needs
-  `npm run build` in `../agent-manager-ui` first.
+  `npm run build` in `../agent-manager-ui` first. A UI-only change is
+  `npm run install:ui` instead, which does not restart the manager.
 - say in the summary what was committed, pushed and deployed.
 
 Still ask first for force-pushes, history rewrites, deleting branches,
