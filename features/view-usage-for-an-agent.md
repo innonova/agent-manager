@@ -38,3 +38,13 @@ today, and any new key shows up by its name without a change here).
 The session's spend (tokens, turns, dollars) and the provider are
 carried too, which is what shows on Bedrock or Vertex, where there are
 no account windows.
+
+Addendum: the vendors' spend counters (Claude's `total_cost_usd`,
+Codex's token totals) are per process, so a restarted agent looked as
+if its earlier spend had vanished. The manager now keeps each
+session's last reported spend in the transcript cache and adds the
+earlier sessions' final figures to the current one's as `total`; the
+header chip and the TUI show the total, and the tooltip gives both the
+total and the part since the last restart. The cache version bumped for
+the new per-session field, so every agent's transcript is rebuilt once
+from the daemon log on the next manager start.

@@ -465,6 +465,47 @@ describe('agents', () => {
     });
   }, 30000);
 
+  it('a restart starts the vendor spend over; the status carries the total across the sessions', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'spender');
+    let mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'usage 10' });
+    const first = await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' && f.agentId === agent.id && f.status.usage,
+      10000,
+      mark,
+    );
+    expect(first.status.usage.spend).toMatchObject({ turns: 1, costUsd: 0.1 });
+    expect(first.status.usage.total).toBeUndefined(); // one session: nothing to add
+    for (let i = 0; i < 100; i++) {
+      if (
+        (await api.get(`/api/agents/${agent.id}`)).body.status.state === 'idle'
+      )
+        break;
+      await sleep(20);
+    }
+    const r = await api.post(`/api/projects/${p.id}/agents/restart`, {});
+    expect(r.body.restarted).toEqual([agent.id]);
+    mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'usage 20' });
+    const second = await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.usage?.spend?.costUsd === 0.2,
+      10000,
+      mark,
+    );
+    expect(second.status.usage.spend).toMatchObject({ turns: 1, costUsd: 0.2 });
+    expect(second.status.usage.total).toMatchObject({
+      inputTokens: 30000,
+      outputTokens: 300,
+      turns: 2,
+    });
+    expect(second.status.usage.total.costUsd).toBeCloseTo(0.3);
+  }, 30000);
+
   it('a turn may carry images, within limits; they show on the user item and reach the agent', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'looker');

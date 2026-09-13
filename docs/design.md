@@ -149,8 +149,12 @@ vendor gives one, the plan; the session's `spend` (tokens in and out,
 turns, and dollars when the vendor prices them: Claude's `result`,
 whose cost is the session's running total, Codex's
 `thread/tokenUsage/updated`, one per model call, counted once per
-turn); each report carries its record's time, and the manager keeps the
-newest per profile, seeded from the cached status after a restart; the `provider` when Claude says
+turn), and, once the agent has been restarted, `total`: the vendor's
+counters start over with each session, so the manager adds the earlier
+sessions' final spend (kept per session in the transcript cache) to the
+current one's, which is what the UI shows; each report carries its
+record's time, and the manager keeps the newest per profile, seeded
+from the cached status after a restart; the `provider` when Claude says
 (firstParty, bedrock, vertex); and the context window's use (Codex,
 Copilot). On Bedrock or Vertex there are no account windows, so spend
 and provider are the usage there is. Copilot exposes no account quota

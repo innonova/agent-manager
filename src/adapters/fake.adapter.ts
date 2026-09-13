@@ -23,6 +23,8 @@ export class FakeAdapter implements AgentAdapter {
   private textKey = '';
   private texts = 0;
   private turnOpen = false;
+  /** The session's spend, as a vendor's running totals: "usage N" adds N thousand tokens in, N*10 out and N cents. */
+  private spend = { inputTokens: 0, outputTokens: 0, costUsd: 0, turns: 0 };
 
   private pending = new Map<
     string,
@@ -52,12 +54,16 @@ export class FakeAdapter implements AgentAdapter {
   }
 
   snapshot(): unknown {
-    return { texts: this.texts };
+    return { texts: this.texts, spend: { ...this.spend } };
   }
 
   restore(state: unknown): void {
-    const st = (state ?? {}) as { texts?: number };
+    const st = (state ?? {}) as {
+      texts?: number;
+      spend?: FakeAdapter['spend'];
+    };
     this.texts = st.texts ?? this.texts;
+    if (st.spend) this.spend = { ...st.spend };
     this.turnOpen = false;
     this.pending.clear();
   }
@@ -215,7 +221,14 @@ export class FakeAdapter implements AgentAdapter {
           ],
         };
       }
-      case 'usage':
+      case 'usage': {
+        const n = Number(line.fiveHour ?? 0);
+        this.spend = {
+          inputTokens: this.spend.inputTokens + n * 1000,
+          outputTokens: this.spend.outputTokens + n * 10,
+          costUsd: Math.round(this.spend.costUsd * 100 + n) / 100,
+          turns: this.spend.turns + 1,
+        };
         return {
           usage: {
             windows: [
@@ -236,9 +249,11 @@ export class FakeAdapter implements AgentAdapter {
                 : Number(line.fiveHour ?? 0) >= 80
                   ? 'warning'
                   : 'ok',
+            spend: { ...this.spend },
             at: record.t,
           },
         };
+      }
       case 'background':
         return { background: Number(line.count) || 0 };
       case 'thinking':

@@ -73,6 +73,13 @@ export type ItemOp =
  * Claude its rolling windows in `rate_limit_event`, Codex its
  * `account/rateLimits/updated`, Copilot only the session's context use.
  */
+export interface Spend {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+  turns: number;
+}
+
 export interface AccountUsage {
   /** Rolling windows, e.g. "5h" and "7d", with how much is used and when each resets (unix ms). */
   windows: { name: string; usedPercent: number; resetsAt: number | null }[];
@@ -82,12 +89,13 @@ export interface AccountUsage {
   /** The session's context window: tokens used of the size. */
   context?: { used: number; size: number };
   /** What this session has consumed so far: tokens (input includes cache reads and writes) and, when the vendor prices it, dollars. */
-  spend?: {
-    inputTokens: number;
-    outputTokens: number;
-    costUsd?: number;
-    turns: number;
-  };
+  spend?: Spend;
+  /**
+   * The agent's spend across all its sessions: every restart starts the
+   * vendor's counters from zero, so the manager adds the earlier sessions'
+   * final spend to this one's. Set by the manager, not the adapter.
+   */
+  total?: Spend;
   /** Who serves the model, when the vendor says (Claude: firstParty, bedrock, vertex). */
   provider?: string;
   /** When it was reported, unix ms. */

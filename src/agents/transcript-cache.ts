@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { AccountUsage } from '../adapters/adapter.js';
 import type { AgentStatus, StoredItem } from './agents.service.js';
 
 /** Bump when any adapter's normalised output changes; a mismatch rebuilds every agent from the log. */
-export const TRANSCRIPT_CACHE_VERSION = 1;
+export const TRANSCRIPT_CACHE_VERSION = 2;
 /** One byte offset is kept per this many items, so a range read starts near its first item. */
 const STRIDE = 256;
 
@@ -28,6 +29,8 @@ export interface CachedSession {
   adapter: unknown;
   /** The agent's status at that point, for the session that was current. */
   status: AgentStatus | null;
+  /** The usage this session last reported, as the vendor gave it: its share of the agent's total. */
+  usage: AccountUsage | null;
 }
 
 export interface CacheHeader extends CacheState {

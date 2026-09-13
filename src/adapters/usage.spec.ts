@@ -220,5 +220,11 @@ describe('account usage from the vendors', () => {
     ).usage!;
     expect(u.windows.map((w) => w.usedPercent)).toEqual([85, 42]);
     expect(u.status).toBe('warning');
+    expect(u.spend).toEqual({
+      inputTokens: 85000,
+      outputTokens: 850,
+      costUsd: 0.85,
+      turns: 1,
+    });
   });
 });

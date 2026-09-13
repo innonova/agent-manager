@@ -132,6 +132,8 @@ interface SessionLive {
   settled: CachedSession | null;
   /** Tracked from the cache header, not from the daemon; checked against the daemon on resync. */
   fromCache: boolean;
+  /** The usage this session last reported, as the vendor gave it (no total). */
+  usage: AccountUsage | null;
 }
 
 /** Everything about an agent that is rebuilt from the daemon, never stored. */
@@ -476,6 +478,36 @@ export class AgentsService
       // the daemon reconnects (scheduleResync), not on every request.
       live.loaded = true;
     });
+  }
+
+  /**
+   * The report with the agent's total spend added: every restart starts the
+   * vendor's counters from zero, so the earlier sessions' final spend is
+   * added to this session's. Sessions the daemon no longer has are gone
+   * from the sum too.
+   */
+  private withTotal(
+    live: Live,
+    sl: SessionLive,
+    usage: AccountUsage,
+  ): AccountUsage {
+    if (!usage.spend) return usage;
+    const total = { ...usage.spend };
+    let priced = usage.spend.costUsd !== undefined;
+    let others = 0;
+    for (const other of live.sessions.values()) {
+      if (other.id === sl.id || !other.usage?.spend) continue;
+      others++;
+      total.inputTokens += other.usage.spend.inputTokens;
+      total.outputTokens += other.usage.spend.outputTokens;
+      total.turns += other.usage.spend.turns;
+      if (other.usage.spend.costUsd !== undefined) {
+        total.costUsd = (total.costUsd ?? 0) + other.usage.spend.costUsd;
+        priced = true;
+      }
+    }
+    if (!priced) delete total.costUsd;
+    return others ? { ...usage, total } : usage;
   }
 
   /** The account's latest report wins, by the report's own time: an older one replayed later does not. */
@@ -1141,6 +1173,7 @@ export class AgentsService
         pendingSends: [],
         settled: null,
         fromCache: false,
+        usage: null,
       };
       live.sessions.set(sessionId, sl);
     }
@@ -1324,9 +1357,11 @@ export class AgentsService
     // state from a replay in flight is applied but announced only at its end.
     if (ingest.background !== undefined && sl.id === agent.currentSessionId)
       this.setBackground(agent, live, ingest.background, sl.attaching);
+    if (ingest.usage) sl.usage = ingest.usage;
     if (ingest.usage && sl.id === agent.currentSessionId) {
-      live.status = { ...live.status, usage: ingest.usage };
-      this.noteUsage(agent, ingest.usage);
+      const usage = this.withTotal(live, sl, ingest.usage);
+      live.status = { ...live.status, usage };
+      this.noteUsage(agent, usage);
       if (sl.attaching) live.stateHeld = true;
       else this.emit('state', agent.id, agent.projectId, live.status);
     }
@@ -1366,6 +1401,7 @@ export class AgentsService
       endedBoundary: sl.endedBoundary,
       adapter: sl.adapter.snapshot?.() ?? null,
       status: current ? { ...live.status } : null,
+      usage: sl.usage,
     };
     if (!sl.attaching) this.writeCache(agent, live);
   }
@@ -1482,6 +1518,7 @@ export class AgentsService
       sl.endedBoundary = cs.endedBoundary;
       sl.settled = cs;
       sl.fromCache = true;
+      sl.usage = cs.usage ?? null;
       live.cacheHeaders.set(sid, cs);
     }
     this.logger.log(
