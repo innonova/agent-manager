@@ -298,8 +298,9 @@ export class ClaudeAdapter implements AgentAdapter {
   /**
    * `rate_limit_event`: the account's rolling windows and the vendor's
    * verdict. Every window the event carries is kept, named for people:
-   * the 5-hour and 7-day ones, the 7-day including overage, and any
-   * per-model window Claude adds (a Sonnet, Opus or other family limit).
+   * the 5-hour and 7-day ones, the "overage included" one that Claude
+   * Desktop shows as the Fable limit, and any per-model window Claude
+   * adds (a Sonnet, Opus or other family limit).
    */
   private ingestRateLimit(line: any): Ingest {
     const info = line.rate_limit_info ?? {};
@@ -636,7 +637,7 @@ export const claudeAdapterFactory: AdapterFactory = {
 function windowName(key: string): string {
   if (key === 'five_hour') return '5h';
   if (key === 'seven_day') return '7d';
-  if (key === 'seven_day_overage_included') return '7d+overage';
+  if (key === 'seven_day_overage_included') return '7d fable'; // Claude Desktop shows this window as the Fable one
   const m = /^(five_hour|seven_day)_(.+)$/.exec(key);
   if (m)
     return `${m[1] === 'five_hour' ? '5h' : '7d'} ${m[2]!.replace(/_/g, ' ')}`;

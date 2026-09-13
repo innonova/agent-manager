@@ -141,7 +141,8 @@ values are valid, the vendor rejects a bad one at start.
 The status also carries `usage`, what the vendor last said about its
 account's limits through this agent: rolling windows (every window
 Claude's `rate_limit_event` carries: the 5-hour and 7-day ones, the
-7-day including overage, and any per-model family window it adds;
+"overage included" one shown as `7d fable` since that is the figure
+Claude Desktop labels Fable, and any per-model family window it adds;
 Codex's primary and secondary from `account/rateLimits/updated`, named
 by their length) with used percent and reset time, a verdict when the
 vendor gives one, the plan; the session's `spend` (tokens in and out,

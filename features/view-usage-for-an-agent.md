@@ -32,7 +32,7 @@ Not done: no history or graph, only the latest report; nothing polls
 the vendors, so a machine whose agents have not run shows nothing.
 
 Addendum: every window Claude reports is now shown, named by family
-(5h, 7d, 7d+overage, and per-model ones such as "7d opus" or a Fable
+(5h, 7d, the overage-included one labelled `7d fable` since it is the figure Claude Desktop shows as Fable, and per-model ones such as "7d opus" or a Fable
 one when Claude sends it; the binary knows Sonnet and Opus windows
 today, and any new key shows up by its name without a change here).
 The session's spend (tokens, turns, dollars) and the provider are
