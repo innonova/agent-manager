@@ -7,7 +7,10 @@ import {
   Param,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import type { User } from '../auth/auth.service.js';
 import {
   Agent,
   AgentSessionRef,
@@ -62,10 +65,11 @@ export class AgentsController {
   @Post('agents/:id/turn')
   @HttpCode(202)
   async turn(
+    @Req() req: Request & { user?: User },
     @Param('id') id: string,
     @Body() body: { text?: unknown },
   ): Promise<{ ok: true }> {
-    await this.agents.turn(id, body?.text);
+    await this.agents.turn(id, body?.text, req.user?.id);
     return { ok: true };
   }
 

@@ -25,7 +25,7 @@ export interface PermissionRequest {
 }
 
 export type Item =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; text: string; /** Who sent it, when known. */ by?: string }
   | {
       kind: 'permission';
       requestId: string;

@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 CREATE INDEX IF NOT EXISTS agent_sessions_agent ON agent_sessions(agent_id);
 DROP TABLE IF EXISTS feature_queue;
 DROP TABLE IF EXISTS feature_runs;
+CREATE TABLE IF NOT EXISTS turn_authors (
+  daemon_session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  PRIMARY KEY (daemon_session_id, seq)
+);
 CREATE TABLE IF NOT EXISTS read_cursors (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

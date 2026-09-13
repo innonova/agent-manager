@@ -117,6 +117,8 @@ interface Live {
   syncPending: boolean;
   /** Sessions may exist that the database does not know; cleared only after an adoption pass succeeds. */
   adoptionNeeded: boolean;
+  /** User ids of turns sent and not yet seen back as input records, in order. */
+  pendingAuthors: string[];
   /**
    * The status changed while a replay was in flight and has not been
    * announced: states derived from history are applied silently and only
@@ -393,7 +395,7 @@ export class AgentsService
    * not attached (`agent-unavailable`). Starts or resumes a session first
    * if none is live.
    */
-  async turn(id: string, text: unknown): Promise<void> {
+  async turn(id: string, text: unknown, userId?: string): Promise<void> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
     const live = this.ensureLive(this.get(id));
@@ -435,10 +437,15 @@ export class AgentsService
       // confirms it and a fast result may already move on to idle.
       const before = live.status;
       this.setState(agent, live, 'working', null);
+      // The author is matched to the input record when it comes back from
+      // the daemon (turns are sent one at a time, so order suffices) and
+      // stored by session and seq, which is what a rebuild has.
+      if (userId) live.pendingAuthors.push(userId);
       try {
         for (const line of sl.adapter.turn(text))
           await this.daemon.input(agent.currentSessionId!, line);
       } catch (err) {
+        if (userId) live.pendingAuthors.pop();
         // A request lost in flight may still have been delivered; the resync
         // reconciles that from the log. Only a certain refusal reverts.
         const uncertain =
@@ -900,8 +907,39 @@ export class AgentsService
         return;
       }
     }
+    if (op.item.kind === 'user') this.attribute(live, sl, seq, op.item);
     const stored = this.appendItem(agentId, live, sl.id, seq, op.item);
     if (op.key) sl.keys.set(op.key, stored.index);
+  }
+
+  /**
+   * Names the sender of a user turn. A recorded author (session, seq) wins;
+   * otherwise a live turn takes the next pending author and records it.
+   * Replayed history with no record stays unattributed.
+   */
+  private attribute(
+    live: Live,
+    sl: SessionLive,
+    seq: number,
+    item: Extract<Item, { kind: 'user' }>,
+  ): void {
+    let row = this.db
+      .prepare(
+        'SELECT u.name FROM turn_authors a JOIN users u ON u.id = a.user_id WHERE a.daemon_session_id = ? AND a.seq = ?',
+      )
+      .get(sl.id, seq) as { name: string } | undefined;
+    if (!row && !sl.attaching && live.pendingAuthors.length) {
+      const userId = live.pendingAuthors.shift()!;
+      this.db
+        .prepare(
+          'INSERT OR IGNORE INTO turn_authors (daemon_session_id, seq, user_id) VALUES (?, ?, ?)',
+        )
+        .run(sl.id, seq, userId);
+      row = this.db
+        .prepare('SELECT name FROM users WHERE id = ?')
+        .get(userId) as { name: string } | undefined;
+    }
+    if (row) item.by = row.name;
   }
 
   private onSessionChanged(session: DaemonSession): void {
@@ -1180,6 +1218,7 @@ export class AgentsService
         syncPending: false,
         adoptionNeeded: true,
         stateHeld: false,
+        pendingAuthors: [],
       };
       this.live.set(agent.id, live);
     }

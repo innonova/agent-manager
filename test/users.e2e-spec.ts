@@ -23,6 +23,54 @@ afterAll(async () => {
   await daemon?.stop();
 });
 
+describe('turn attribution', () => {
+  it("user turns carry the sender's name, from either user, and survive a rebuild", async () => {
+    const created = await api.post('/api/users', { name: 'zed' });
+    const zed = new Api(m.url);
+    await zed.login('zed', created.body.password);
+    const project = (
+      await api.post('/api/projects', { name: 'attr', path: process.cwd() })
+    ).body.project;
+    const agent = (
+      await api.post(`/api/projects/${project.id}/agents`, {
+        name: 'a',
+        profile: 'fake',
+      })
+    ).body.agent;
+    const events = await Events.connect(m.url, api.cookie);
+    const turnEnd = (from: number) =>
+      events.waitFor(
+        (f) =>
+          f.type === 'agent.item' &&
+          f.agentId === agent.id &&
+          f.item.item.kind === 'turn_end',
+        10000,
+        from,
+      );
+    let mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'from admin' });
+    await turnEnd(mark);
+    mark = events.mark();
+    await zed.post(`/api/agents/${agent.id}/turn`, { text: 'from zed' });
+    await turnEnd(mark);
+    const by = async (client: Api) =>
+      (await client.get(`/api/agents/${agent.id}/items`)).body.items
+        .map((i: any) => i.item)
+        .filter((i: any) => i.kind === 'user')
+        .map((i: any) => `${i.by}:${i.text}`);
+    expect(await by(api)).toEqual(['admin:from admin', 'zed:from zed']);
+    await events.close();
+
+    await m.stop();
+    m = await startManager(daemon.url, m.dataDir);
+    api = new Api(m.url);
+    await api.login();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await by(api)).toEqual(['admin:from admin', 'zed:from zed']);
+    await api.delete(`/api/users/${created.body.user.id}`);
+  }, 30000);
+});
+
 describe('users', () => {
   it('lists users; the initial admin has logged in', async () => {
     const r = await api.get('/api/users');

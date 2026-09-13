@@ -390,6 +390,7 @@ export class FeaturesService
     projectId: string,
     slug: string,
     input: { text?: unknown; status?: unknown },
+    by?: string,
   ): Promise<Feature> {
     const project = this.projects.get(projectId);
     if (typeof input.text !== 'string' || !input.text.trim())
@@ -403,7 +404,8 @@ export class FeaturesService
     if (!found) throw new NotFoundException(`no feature ${slug}`);
     const f = found.file;
     const before = f.status;
-    f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${today()})\n\n${input.text.trim()}\n`;
+    const heading = by ? `${today()}, ${by}` : today();
+    f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${heading})\n\n${input.text.trim()}\n`;
     f.status = status as FeatureStatus;
     await writeFeature(found.repoPath, f);
     return this.finish(projectId, slug, before, f.status);

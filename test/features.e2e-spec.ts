@@ -267,7 +267,7 @@ describe('features', () => {
     expect(r.body.feature.status).toBe('planned');
     const text = read('login');
     expect(text).toMatch(
-      /Done, with a form\.\n\n## Response \(\d{4}-\d{2}-\d{2}\)\n\nAlso add a "forgot password" link\.\n$/,
+      /Done, with a form\.\n\n## Response \(\d{4}-\d{2}-\d{2}, admin\)\n\nAlso add a "forgot password" link\.\n$/,
     );
     expect(status('login')).toBe('planned');
     const closing = await api.post(

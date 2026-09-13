@@ -236,6 +236,15 @@ item decided when our answer appears as an input record.
 
 ## Transcript items
 
+A `user` item carries `by`, the name of the user who sent the turn, when
+known. Turns are only sent through the manager, so it records the author
+against the daemon record (session id and seq) when the input comes back
+from the daemon, which is exactly the key a rebuild from the daemon has.
+Turns from before this existed stay unattributed unless
+`scripts/backfill-authors.mjs` is run once to assign them to one user
+(right when there only ever was one). Feature responses carry the name
+in their heading (`## Response (date, name)`).
+
 ```ts
 type Item =
   | { kind: 'user'; text: string }

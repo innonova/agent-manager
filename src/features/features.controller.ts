@@ -1,4 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
+import type { Request } from 'express';
+import type { User } from '../auth/auth.service.js';
 import { Feature, FeaturesService } from './features.service.js';
 
 @Controller('api/projects/:id/features')
@@ -37,10 +39,18 @@ export class FeaturesController {
 
   @Post(':slug/respond')
   async respond(
+    @Req() req: Request & { user?: User },
     @Param('id') id: string,
     @Param('slug') slug: string,
     @Body() body: { text?: unknown; status?: unknown },
   ): Promise<{ feature: Feature }> {
-    return { feature: await this.features.respond(id, slug, body ?? {}) };
+    return {
+      feature: await this.features.respond(
+        id,
+        slug,
+        body ?? {},
+        req.user?.name,
+      ),
+    };
   }
 }
