@@ -32,7 +32,7 @@ describe('account usage from the vendors', () => {
     expect(u.windows).toEqual([
       { name: '5h', usedPercent: 33, resetsAt: 1789318800000 },
       { name: '7d', usedPercent: 41, resetsAt: 1789840800000 },
-      { name: '7d fable', usedPercent: 66, resetsAt: 1789840800000 },
+      { name: 'fable', usedPercent: 66, resetsAt: 1789840800000 },
     ]);
     expect(u.status).toBe('warning');
   });

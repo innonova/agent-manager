@@ -637,7 +637,7 @@ export const claudeAdapterFactory: AdapterFactory = {
 function windowName(key: string): string {
   if (key === 'five_hour') return '5h';
   if (key === 'seven_day') return '7d';
-  if (key === 'seven_day_overage_included') return '7d fable'; // Claude Desktop shows this window as the Fable one
+  if (key === 'seven_day_overage_included') return 'fable'; // Claude Desktop shows this window as the Fable one; it is a 7-day window like the others
   const m = /^(five_hour|seven_day)_(.+)$/.exec(key);
   if (m)
     return `${m[1] === 'five_hour' ? '5h' : '7d'} ${m[2]!.replace(/_/g, ' ')}`;
