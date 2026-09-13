@@ -608,6 +608,17 @@ login and health requires the cookie.
 - Opt-in smoke (`npm run smoke:agents`): a throwaway daemon and manager
   on ephemeral ports, one real turn through each of Claude, Codex and
   Copilot; costs tokens; never touches the installed services.
+- `test/lifecycle.e2e-spec.ts` runs the manager against `test/scripted-daemon.ts`,
+  a daemon the test drives frame by frame (a ws server speaking the part
+  of the daemon protocol the manager uses, with a log per session that
+  survives a cut connection) and a tiny scripted Codex behind it. It cuts
+  the connection at each handshake point, refuses, loses and records
+  permission answers, rejects an interrupt, loses a turn's
+  acknowledgement, and restarts the manager while a permission waits. No
+  processes, no tokens. These are the cases the review rounds found by
+  hand; a change to replay, attribution or permissions should add its
+  case here.
+
 
 ## Running it
 

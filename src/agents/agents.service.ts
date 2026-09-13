@@ -401,7 +401,7 @@ export class AgentsService
       if (v === undefined || v === null || v === '') return null;
       if (
         typeof v !== 'string' ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,127}$/.test(v)
+        !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,127}$/.test(v)
       )
         throw new BadRequestException(`"${what}" must be a short vendor name`);
       return v;
