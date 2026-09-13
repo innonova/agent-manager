@@ -43,6 +43,10 @@ export interface Agent {
   archivedAt: number | null;
   /** Set at creation and applied when a session starts; `ask` makes gated tools wait for the human. */
   permissions: Permissions;
+  /** Vendor model name to start sessions with; null is the vendor's default. */
+  model: string | null;
+  /** Vendor effort level to start sessions with; null is the vendor's default. */
+  effort: string | null;
 }
 
 export interface AgentSessionRef {
@@ -58,6 +62,8 @@ export interface AgentStatus {
   lastActivityAt: number;
   /** Background jobs the agent left running; it starts a turn by itself when they finish. */
   background: number;
+  /** The model the vendor reports as active in the current session, once it has said. */
+  model: string | null;
 }
 
 export interface StoredItem {
@@ -81,6 +87,8 @@ interface AgentRow {
   cwd: string;
   vendor_conversation_id: string | null;
   permissions: string | null;
+  model: string | null;
+  effort: string | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -159,6 +167,8 @@ const toAgent = (r: AgentRow): Agent => ({
   cwd: r.cwd,
   vendorConversationId: r.vendor_conversation_id,
   permissions: r.permissions === 'ask' ? 'ask' : 'bypass',
+  model: r.model ?? null,
+  effort: r.effort ?? null,
   currentSessionId: r.current_session_id,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
@@ -363,6 +373,8 @@ export class AgentsService
       profile?: unknown;
       cwd?: unknown;
       permissions?: unknown;
+      model?: unknown;
+      effort?: unknown;
     },
   ): Promise<{ agent: Agent; status: AgentStatus }> {
     const project = this.projects.get(projectId);
@@ -385,6 +397,17 @@ export class AgentsService
         : (input.permissions as Permissions);
     if (permissions !== 'bypass' && permissions !== 'ask')
       throw new BadRequestException('"permissions" must be "bypass" or "ask"');
+    const setting = (v: unknown, what: string): string | null => {
+      if (v === undefined || v === null || v === '') return null;
+      if (
+        typeof v !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,127}$/.test(v)
+      )
+        throw new BadRequestException(`"${what}" must be a short vendor name`);
+      return v;
+    };
+    const model = setting(input.model, 'model');
+    const effort = setting(input.effort, 'effort');
     // cwd is one of the project's repos, by name or absolute path; default the primary.
     const cwd = input.cwd
       ? this.projects.repoOf(project, input.cwd as string)?.path
@@ -412,10 +435,12 @@ export class AgentsService
       createdAt: Date.now(),
       archivedAt: null,
       permissions,
+      model,
+      effort,
     };
     this.db
       .prepare(
-        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions, model, effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         agent.id,
@@ -425,6 +450,9 @@ export class AgentsService
         cwd,
         agent.createdAt,
         permissions,
+
+        model,
+        effort,
       );
     const live = this.ensureLive(agent);
     try {
@@ -718,6 +746,8 @@ export class AgentsService
           resume: agent.vendorConversationId,
           extraDirs: this.extraDirs(agent),
           permissions: agent.permissions,
+          model: agent.model,
+          effort: agent.effort,
         }),
         cwd: agent.cwd,
         label: `${LABEL_PREFIX}${agent.id}`,
@@ -983,6 +1013,15 @@ export class AgentsService
     // state from a replay in flight is applied but announced only at its end.
     if (ingest.background !== undefined && sl.id === agent.currentSessionId)
       this.setBackground(agent, live, ingest.background, sl.attaching);
+    if (
+      ingest.model !== undefined &&
+      sl.id === agent.currentSessionId &&
+      live.status.model !== ingest.model
+    ) {
+      live.status = { ...live.status, model: ingest.model };
+      if (sl.attaching) live.stateHeld = true;
+      else this.emit('state', agent.id, agent.projectId, live.status);
+    }
     if (ingest.state && sl.id === agent.currentSessionId)
       this.setState(
         agent,
@@ -1331,6 +1370,7 @@ export class AgentsService
           error: null,
           lastActivityAt: agent.createdAt,
           background: 0,
+          model: null,
         },
         items: [],
         lock: Promise.resolve(),
@@ -1442,6 +1482,7 @@ export class AgentsService
       lastActivityAt: Date.now(),
       // background jobs belong to the process; none survive its exit
       background: state === 'exited' ? 0 : live.status.background,
+      model: state === 'exited' ? null : live.status.model,
     };
     if (quiet) {
       live.stateHeld = true;

@@ -31,13 +31,17 @@ export class FakeAdapter implements AgentAdapter {
   startArgs({
     resume,
     permissions,
+    model,
   }: {
     resume?: string | null;
     permissions?: Permissions;
+    model?: string | null;
+    effort?: string | null;
   }): string[] {
     return [
       ...(resume ? ['--resume', resume] : []),
       ...(permissions === 'ask' ? ['--ask'] : []),
+      ...(model ? ['--model', model] : []),
     ];
   }
 
@@ -120,6 +124,7 @@ export class FakeAdapter implements AgentAdapter {
         return {
           conversationId: line.conversationId,
           state: this.turnOpen ? 'working' : 'idle',
+          model: typeof line.model === 'string' ? line.model : undefined,
         };
       case 'text_start':
         this.streamingText = '';

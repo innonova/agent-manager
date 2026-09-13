@@ -315,4 +315,14 @@ describe('CodexAdapter', () => {
       sandbox: 'workspace-write',
     });
   });
+
+  it('passes model and effort as config overrides and reports the model from thread/started', () => {
+    expect(
+      new CodexAdapter().startArgs({ model: 'gpt-6', effort: 'high' }),
+    ).toEqual(['-c', 'model="gpt-6"', '-c', 'model_reasoning_effort="high"']);
+    const started = loadFixture('codex', 'permission.ndjson').find((r) =>
+      r.d.includes('"method":"thread/started"'),
+    )!;
+    expect(new CodexAdapter().ingest(started).model).toBe('gpt-6-astra');
+  });
 });

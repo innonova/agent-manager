@@ -46,14 +46,20 @@ export class CopilotAdapter implements AgentAdapter {
   startArgs({
     extraDirs = [],
     permissions = 'bypass',
+    model,
+    effort,
   }: {
     resume?: string | null;
     extraDirs?: string[];
     permissions?: Permissions;
+    model?: string | null;
+    effort?: string | null;
   } = {}): string[] {
     // Without --allow-all, Copilot asks through session/request_permission.
     return [
       ...(permissions === 'ask' ? [] : ['--allow-all']),
+      ...(model ? ['--model', model] : []),
+      ...(effort ? ['--effort', effort] : []),
       ...extraDirs.flatMap((d) => ['--add-dir', d]),
     ];
   }
@@ -394,6 +400,14 @@ export class CopilotAdapter implements AgentAdapter {
             },
           ],
         };
+      }
+      case 'config_option_update': {
+        const opt = (u.configOptions ?? []).find((o: any) => o?.id === 'model');
+        const value = opt?.currentValue;
+        const name =
+          (opt?.options ?? []).find((o: any) => o?.value === value)?.name ??
+          value;
+        return typeof name === 'string' ? { model: name } : {};
       }
       case 'tool_call': {
         this.thoughtKey = null;

@@ -429,4 +429,25 @@ describe('ClaudeAdapter', () => {
     expect(fresh.decide('nope', 'allow')).toBeNull();
     expect(fresh.decide(pending!.requestId, 'maybe')).toBeNull();
   });
+
+  it('passes model and effort at start and reports the active model from init', () => {
+    const adapter = new ClaudeAdapter();
+    expect(
+      adapter.startArgs({ model: 'claude-opus-5', effort: 'high' }),
+    ).toEqual([
+      '--dangerously-skip-permissions',
+      '--model',
+      'claude-opus-5',
+      '--effort',
+      'high',
+    ]);
+    const { items } = run(adapter, load('permission.ndjson').slice(0, 3));
+    void items;
+    const init = load('permission.ndjson').find((r) =>
+      r.d.includes('"subtype":"init"'),
+    )!;
+    expect(new ClaudeAdapter().ingest(init).model).toBe(
+      'claude-haiku-4-5-20251001',
+    );
+  });
 });

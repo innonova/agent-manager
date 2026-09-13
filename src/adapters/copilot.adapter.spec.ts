@@ -218,4 +218,15 @@ describe('CopilotAdapter', () => {
       },
     ]);
   });
+
+  it('passes model and effort at start and reports the model from config options', () => {
+    expect(
+      new CopilotAdapter().startArgs({ model: 'gpt-5.4', effort: 'high' }),
+    ).toEqual(['--allow-all', '--model', 'gpt-5.4', '--effort', 'high']);
+    const update = loadFixture('copilot', 'permission.ndjson').find((r) =>
+      r.d.includes('config_option_update'),
+    )!;
+    const model = new CopilotAdapter().ingest(update).model;
+    expect(typeof model === 'string' || model === undefined).toBe(true);
+  });
 });

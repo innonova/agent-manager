@@ -37,10 +37,14 @@ export class ClaudeAdapter implements AgentAdapter {
     resume,
     extraDirs = [],
     permissions = 'bypass',
+    model,
+    effort,
   }: {
     resume?: string | null;
     extraDirs?: string[];
     permissions?: Permissions;
+    model?: string | null;
+    effort?: string | null;
   }): string[] {
     // Ask mode: gated tools produce a control_request on stdout that we
     // answer on stdin; without the flag Claude just denies them.
@@ -49,6 +53,8 @@ export class ClaudeAdapter implements AgentAdapter {
         ? ['--permission-prompt-tool', 'stdio']
         : ['--dangerously-skip-permissions'];
     if (resume) args.push('--resume', resume);
+    if (model) args.push('--model', model);
+    if (effort) args.push('--effort', effort);
     for (const d of extraDirs) args.push('--add-dir', d); // the project's other repositories
     return args;
   }
@@ -164,13 +170,15 @@ export class ClaudeAdapter implements AgentAdapter {
   private ingestSystem(line: any): Ingest {
     switch (line.subtype) {
       case 'init': {
+        const model = typeof line.model === 'string' ? line.model : undefined;
         if (this.turnOpen)
-          return { conversationId: line.session_id, state: 'working' };
+          return { conversationId: line.session_id, state: 'working', model };
         this.turnOpen = true;
         this.streaming = null;
         return {
           conversationId: line.session_id,
           state: 'working',
+          model,
           ops: [append({ kind: 'system', text: 'resumed on its own' })],
         };
       }

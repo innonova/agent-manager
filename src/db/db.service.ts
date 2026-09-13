@@ -102,6 +102,10 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     ).map((c) => c.name);
     if (!userCols.includes('last_login_at'))
       this.db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER');
+    if (!agentCols.includes('model'))
+      this.db.exec('ALTER TABLE agents ADD COLUMN model TEXT');
+    if (!agentCols.includes('effort'))
+      this.db.exec('ALTER TABLE agents ADD COLUMN effort TEXT');
     if (!agentCols.includes('permissions'))
       this.db.exec(
         "ALTER TABLE agents ADD COLUMN permissions TEXT NOT NULL DEFAULT 'bypass'",

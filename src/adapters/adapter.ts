@@ -63,6 +63,8 @@ export type ItemOp =
 /** What one daemon log record did to the transcript and the state. */
 export interface Ingest {
   state?: AgentState;
+  /** The model the vendor reports as active, once known. */
+  model?: string;
   /** The vendor's error message when state is 'error'. */
   error?: string;
   /**
@@ -96,6 +98,10 @@ export interface AgentAdapter {
     resume?: string | null;
     extraDirs?: string[];
     permissions?: Permissions;
+    /** Vendor model name; undefined leaves the vendor's default. */
+    model?: string | null;
+    /** Vendor effort level; undefined leaves the vendor's default. */
+    effort?: string | null;
   }): string[];
   /** stdin lines to send once the session is running and attached (protocol handshakes). */
   startLines?(opts: {

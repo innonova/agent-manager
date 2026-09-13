@@ -23,7 +23,9 @@ const ask = process.argv.includes('--ask');
 /** Resolvers for permission answers, by request id. */
 const awaiting = new Map();
 
-out({ type: 'init', conversationId, resumed: resumeIdx >= 0 });
+const modelIdx = process.argv.indexOf('--model');
+const model = modelIdx >= 0 ? process.argv[modelIdx + 1] : 'fake-1';
+out({ type: 'init', conversationId, resumed: resumeIdx >= 0, model });
 
 async function stream(text, delay = 15) {
   out({ type: 'text_start' });
@@ -68,6 +70,18 @@ async function handle(text) {
         ? 'Understood, not removing it.'
         : `Removed it (${decision}).`,
     );
+    out({ type: 'result', durationMs: Date.now() - t0 });
+    return;
+  }
+  if (text.includes('background')) {
+    // a job left running: reported as pending, and reported done when asked
+    if (text.includes('pending') || text.includes('check')) {
+      out({ type: 'background', count: 0 });
+      await stream('The background job had finished; picking up the result.');
+    } else {
+      out({ type: 'background', count: 1 });
+      await stream('Started a background job.');
+    }
     out({ type: 'result', durationMs: Date.now() - t0 });
     return;
   }

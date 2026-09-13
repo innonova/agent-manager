@@ -38,8 +38,16 @@ export class CodexAdapter implements AgentAdapter {
   private textKeys = new Map<string, string>();
   private texts = new Map<string, string>();
 
-  startArgs(): string[] {
-    return [];
+  startArgs({
+    model,
+    effort,
+  }: { model?: string | null; effort?: string | null } = {}): string[] {
+    // app-server takes config overrides on its command line
+    const args: string[] = [];
+    if (model) args.push('-c', `model=${JSON.stringify(model)}`);
+    if (effort)
+      args.push('-c', `model_reasoning_effort=${JSON.stringify(effort)}`);
+    return args;
   }
 
   /** Approval requests from the server not yet answered, with the decision value behind each option. */
@@ -178,6 +186,10 @@ export class CodexAdapter implements AgentAdapter {
     )
       return this.ingestApproval(line);
     switch (line?.method) {
+      case 'thread/started': {
+        const model = line.params?.thread?.model;
+        return typeof model === 'string' ? { model } : {};
+      }
       case 'turn/started':
         this.turnId = line.params?.turn?.id ?? null;
         this.turnOpen = true;

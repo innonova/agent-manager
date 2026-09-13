@@ -89,7 +89,7 @@ Copilot's ACP.
 ```
 User      { id, name, passwordHash, createdAt }
 Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }   // path = repos[0].path
-Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, vendorConversationId | null,
+Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
 Feature   { projectId, repo, slug, title, status, priority, profile?, dependsOn[] }   // derived from files, not stored
@@ -127,6 +127,15 @@ One model for all vendors, derived by the adapter from the line stream:
 | `waiting-permission` | the vendor asked whether it may use a gated tool and is blocked until the human answers (agents created with `permissions: ask`); the request is a `permission` transcript item with the vendor's options |
 | `error` | the vendor reported an error that ended the turn (usage limit, auth, API error); the process may still be alive |
 | `exited` | no live session; resumable |
+
+The status carries `model`, the model the vendor reports as active in
+the current session (Claude's `init`, Codex's `thread/started`,
+Copilot's `config_option_update`), null until it has said and after the
+session exits. An agent is created with an optional `model` and
+`effort`, vendor names passed verbatim at session start (Claude
+`--model`/`--effort`, Copilot `--model`/`--effort`, Codex `-c model=`
+and `-c model_reasoning_effort=`); the manager does not know which
+values are valid, the vendor rejects a bad one at start.
 
 The status also carries `background`, the number of jobs the agent has
 left running (Claude Code's background shell commands and scheduled
@@ -463,7 +472,7 @@ PATCH  /api/projects/:id            same fields; `repos` replaces the whole list
 DELETE /api/projects/:id            (does not touch the repository)
 
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }
-POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`
+POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=<n>                           -> { items: StoredItem[] }, n a non-negative integer index
 POST   /api/agents/:id/turn         { text }                    -> 202; 409 { code: 'agent-busy' } while a turn runs; 503 { code: 'agent-unavailable' } if the session's output cannot be attached

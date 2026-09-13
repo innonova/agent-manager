@@ -127,6 +127,39 @@ describe('background watchdog', () => {
 });
 
 describe('permissions', () => {
+  it('a model chosen at creation reaches the session and the status reports the active one', async () => {
+    const r = await api.post(`/api/projects/${projectId}/agents`, {
+      name: 'picky',
+      profile: 'fake',
+      model: 'fake-2',
+      effort: 'high',
+    });
+    expect(r.status).toBe(201);
+    expect(r.body.agent).toMatchObject({ model: 'fake-2', effort: 'high' });
+    const id = r.body.agent.id as string;
+    await stateOf(id, 'idle');
+    expect((await api.get(`/api/agents/${id}`)).body.status.model).toBe(
+      'fake-2',
+    );
+    const plain = await api.post(`/api/projects/${projectId}/agents`, {
+      name: 'plain',
+      profile: 'fake',
+    });
+    await stateOf(plain.body.agent.id, 'idle');
+    expect(
+      (await api.get(`/api/agents/${plain.body.agent.id}`)).body.status.model,
+    ).toBe('fake-1');
+    expect(
+      (
+        await api.post(`/api/projects/${projectId}/agents`, {
+          name: 'x',
+          profile: 'fake',
+          model: 'no spaces',
+        })
+      ).status,
+    ).toBe(400);
+  });
+
   it('defaults to bypass and validates the value', async () => {
     const r = await api.post(`/api/projects/${projectId}/agents`, {
       name: 'free',
