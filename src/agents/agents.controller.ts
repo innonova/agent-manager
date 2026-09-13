@@ -38,6 +38,14 @@ export class AgentsController {
     return this.agents.create(projectId, body);
   }
 
+  /** Stops and resumes the project's idle agents so they see changed settings; busy ones are skipped and listed. */
+  @Post('projects/:projectId/agents/restart')
+  restart(
+    @Param('projectId') projectId: string,
+  ): Promise<{ restarted: string[]; skipped: { id: string; why: string }[] }> {
+    return this.agents.restartIdle(projectId);
+  }
+
   @Get('agents/:id')
   get(@Param('id') id: string): {
     agent: Agent;

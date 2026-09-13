@@ -1,6 +1,6 @@
 ---
 title: timestamps
-status: review
+status: done
 priority: 100
 ---
 

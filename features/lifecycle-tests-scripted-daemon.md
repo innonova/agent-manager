@@ -1,6 +1,6 @@
 ---
 title: lifecycle tests with a scripted daemon transport
-status: review
+status: done
 priority: 10
 ---
 

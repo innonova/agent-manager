@@ -1,8 +1,9 @@
 ---
 title: bounded transcript history
-status: review
+status: done
 priority: 20
-dependsOn: [lifecycle-tests-scripted-daemon]
+dependsOn:
+  - lifecycle-tests-scripted-daemon
 ---
 
 Not yet: needs a design discussion first (blocked until then).

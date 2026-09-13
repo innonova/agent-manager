@@ -237,6 +237,66 @@ describe('projects', () => {
     expect((await api.get(`/api/projects/${p.id}`)).status).toBe(404);
   });
 
+  it('restarting a project resumes idle agents and skips busy ones', async () => {
+    const p = await createProject();
+    const { agent: idle } = await createAgent(p.id, 'idle-one');
+    const { agent: busy } = await createAgent(p.id, 'busy-one');
+    // the startup idle may still be on its way: wait for the turn itself
+    let mark = events.mark();
+    await api.post(`/api/agents/${idle.id}/turn`, { text: 'hello' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === idle.id &&
+        f.item.item.kind === 'turn_end',
+      10000,
+      mark,
+    );
+    for (let i = 0; i < 100; i++) {
+      if (
+        (await api.get(`/api/agents/${idle.id}`)).body.status.state === 'idle'
+      )
+        break;
+      await sleep(20);
+    }
+    const first = (await api.get(`/api/agents/${idle.id}`)).body.agent;
+    mark = events.mark();
+    await api.post(`/api/agents/${busy.id}/turn`, { text: 'slow please' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === busy.id &&
+        f.status.state === 'working',
+      10000,
+      mark,
+    );
+    const r = await api.post(`/api/projects/${p.id}/agents/restart`, {});
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({
+      restarted: [idle.id],
+      skipped: [{ id: busy.id, why: 'working' }],
+    });
+    const after = await api.get(`/api/agents/${idle.id}`);
+    expect(after.body.agent.currentSessionId).not.toBe(first.currentSessionId);
+    expect(after.body.agent.vendorConversationId).toBe(
+      first.vendorConversationId,
+    ); // resumed
+    expect(after.body.sessions).toHaveLength(2);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === idle.id &&
+        f.status.state === 'idle',
+      10000,
+      mark,
+    );
+    const kinds = (
+      await api.get(`/api/agents/${idle.id}/items`)
+    ).body.items.map((i: any) => i.item.kind);
+    expect(kinds.slice(-2)).toEqual(['system', 'system']); // session ended, session resumed
+    await api.post(`/api/agents/${busy.id}/interrupt`).catch(() => undefined);
+  }, 30000);
+
   it('deleting a project stops its agents and forgets them', async () => {
     const p = await createProject('doomed');
     const { agent } = await createAgent(p.id);

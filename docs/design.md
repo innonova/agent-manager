@@ -527,7 +527,8 @@ DELETE /api/users/:id                                           -> { ok }; not y
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile? }   (`path` alone is accepted as a one-repo shorthand)
 GET    /api/projects/:id
-PATCH  /api/projects/:id            same fields; `repos` replaces the whole list, order included
+PATCH  /api/projects/:id            same fields; `repos` replaces the whole list, order included. Running agents keep the directories they were started with; see the restart below.
+POST   /api/projects/:id/agents/restart -> { restarted: [agentId], skipped: [{ id, why }] }; stops and resumes every idle agent with a live session so it picks up the project's current repositories; agents working, waiting on a permission or with background jobs are skipped with the reason, exited ones need nothing
 DELETE /api/projects/:id            (does not touch the repository)
 
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }

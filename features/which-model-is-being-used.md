@@ -1,6 +1,6 @@
 ---
 title: which model is being used
-status: review
+status: done
 priority: 100
 ---
 

@@ -719,6 +719,40 @@ export class AgentsService
     );
   }
 
+  /**
+   * Stops and resumes every agent of a project that is idle with a live
+   * session, so it picks up changed project settings (a repository added,
+   * say). Agents mid-turn, waiting on a permission or with background
+   * jobs are left alone and reported; exited ones need nothing, their
+   * next turn starts afresh.
+   */
+  async restartIdle(
+    projectId: string,
+  ): Promise<{ restarted: string[]; skipped: { id: string; why: string }[] }> {
+    const restarted: string[] = [];
+    const skipped: { id: string; why: string }[] = [];
+    for (const { agent } of this.list(projectId)) {
+      const live = this.ensureLive(agent);
+      await this.awaitSynced(live);
+      await this.withLock(live, async () => {
+        const fresh = this.get(agent.id);
+        if (!fresh.currentSessionId) return;
+        if (live.status.state !== 'idle') {
+          skipped.push({ id: agent.id, why: live.status.state });
+          return;
+        }
+        if (live.status.background > 0) {
+          skipped.push({ id: agent.id, why: 'background jobs' });
+          return;
+        }
+        await this.stopLocked(fresh, true);
+        await this.startSession(this.get(agent.id), live);
+        restarted.push(agent.id);
+      });
+    }
+    return { restarted, skipped };
+  }
+
   async archive(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
     await this.withLockOrForce(live, id, async () => {
