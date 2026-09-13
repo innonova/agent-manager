@@ -163,6 +163,37 @@ describe('auth', () => {
   });
 });
 
+describe('ui build announcements', () => {
+  it('hello carries the served build id and a swapped build is announced on the ping tick', async () => {
+    const uiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-ui-'));
+    fs.writeFileSync(path.join(uiDir, 'index.html'), '<html></html>');
+    fs.writeFileSync(
+      path.join(uiDir, 'build.json'),
+      JSON.stringify({ id: 'one' }),
+    );
+    const m2 = await startManager(daemon.url, undefined, {
+      uiDir,
+      eventsPingMs: 150,
+    });
+    try {
+      const api2 = new Api(m2.url);
+      await api2.login();
+      const e = await Events.connect(m2.url, api2.cookie);
+      expect(e.frames[0]).toMatchObject({ type: 'hello', uiBuild: 'one' });
+      const mark = e.mark();
+      fs.writeFileSync(
+        path.join(uiDir, 'build.json'),
+        JSON.stringify({ id: 'two' }),
+      );
+      const f = await e.waitFor((x) => x.type === 'ui.build', 5000, mark);
+      expect(f.id).toBe('two');
+      await e.close();
+    } finally {
+      await m2.stop();
+    }
+  });
+});
+
 describe('events keepalive', () => {
   it('pings clients so idle sockets survive proxies', async () => {
     const m2 = await startManager(daemon.url, undefined, { eventsPingMs: 150 });

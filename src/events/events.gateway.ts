@@ -5,7 +5,9 @@ import {
   OnGatewayInit,
   WebSocketGateway,
 } from '@nestjs/websockets';
+import fs from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
+import path from 'node:path';
 import type { WebSocket } from 'ws';
 import { AgentsService } from '../agents/agents.service.js';
 import { sessionIdFromCookieHeader } from '../auth/auth.guard.js';
@@ -43,6 +45,8 @@ export class EventsGateway
   >();
   private presenceSweep: NodeJS.Timeout | null = null;
   private lastPresence = '';
+  /** Id of the UI build being served (from build.json next to it); null when no UI is served. */
+  private uiBuild: string | null = null;
   /** Sockets that answered the last ping (or are new); the rest are dead. */
   private readonly alive = new Set<WebSocket>();
   private sweep: NodeJS.Timeout | null = null;
@@ -102,7 +106,13 @@ export class EventsGateway
     // tunnels (haproxy after 50 s by default). Pinging keeps them open
     // wherever the manager is deployed; a client that does not answer by
     // the next ping is gone and is dropped rather than kept as a ghost.
+    void this.readUiBuild();
     this.pinger = setInterval(() => {
+      // The same tick notices a UI-only deploy (the served build swapped
+      // under us) and tells every tab, so the page needs no polling.
+      void this.readUiBuild().then((changed) => {
+        if (changed) this.broadcast({ type: 'ui.build', id: this.uiBuild });
+      });
       for (const c of this.clients.keys()) {
         if (c.readyState !== c.OPEN) continue;
         if (!this.alive.has(c)) {
@@ -115,6 +125,26 @@ export class EventsGateway
       }
     }, this.config.eventsPingMs);
     this.pinger.unref();
+  }
+
+  /** Re-reads build.json; true when the id differs from the last read. */
+  private async readUiBuild(): Promise<boolean> {
+    if (!this.config.uiDir) return false;
+    let id: string | null = null;
+    try {
+      const raw = await fs.readFile(
+        path.join(this.config.uiDir, 'build.json'),
+        'utf8',
+      );
+      const parsed = JSON.parse(raw) as { id?: unknown };
+      id = typeof parsed.id === 'string' ? parsed.id : null;
+    } catch {
+      id = null;
+    }
+    if (id === this.uiBuild) return false;
+    const changed = this.uiBuild !== null;
+    this.uiBuild = id;
+    return changed;
   }
 
   onModuleDestroy(): void {
@@ -217,6 +247,7 @@ export class EventsGateway
         user: user.name,
         daemon: { connected: this.daemon.connected },
         presence: this.presenceSnapshot(),
+        uiBuild: this.uiBuild,
       }),
     );
   }

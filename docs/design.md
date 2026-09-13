@@ -479,7 +479,11 @@ presence when it closes, and broadcasts `{ type: 'presence', agents: {
 [agentId]: [{ userId, name, typing }] } }` whenever the picture changes;
 `hello` carries the current picture. This is what lets a squad see who
 is looking at an agent and who is mid-sentence before they send a turn
-of their own. Everything else is server to client; every frame has a
+of their own. `hello` also carries `uiBuild`, the id in `build.json` of the UI
+directory being served, and the gateway re-reads that file on its ping
+tick and broadcasts `{ type: 'ui.build', id }` when it changes, so a
+UI-only deploy reaches every open tab without the page polling.
+Everything else is server to client; every frame has a
 `type`:
 
 ```
