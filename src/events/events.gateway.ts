@@ -10,12 +10,12 @@ import type { IncomingMessage } from 'node:http';
 import path from 'node:path';
 import type { WebSocket } from 'ws';
 import { AgentsService } from '../agents/agents.service.js';
-import { sessionIdFromCookieHeader } from '../auth/auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DaemonClient } from '../daemon/daemon-client.js';
 import { FeaturesService } from '../features/features.service.js';
+import { HubService } from '../hub/hub.service.js';
 import { originAllowed } from '../origin.js';
 
 /**
@@ -58,6 +58,7 @@ export class EventsGateway
     private readonly agents: AgentsService,
     private readonly daemon: DaemonClient,
     private readonly features: FeaturesService,
+    private readonly hub: HubService,
   ) {}
 
   afterInit(): void {
@@ -82,6 +83,19 @@ export class EventsGateway
     this.daemon.on('connected', () =>
       this.broadcast({ type: 'daemon', connected: true }),
     );
+    // A hub: the spokes' streams, ids prefixed, and their health as hosts
+    this.hub.on('frame', (frame) => this.broadcast(frame));
+    this.hub.on('hosts', (hosts) => this.broadcast({ type: 'hosts', hosts }));
+    this.daemon.on('connected', () => {
+      this.hub.localDaemon = true;
+      if (this.hub.enabled)
+        this.broadcast({ type: 'hosts', hosts: this.hub.hosts() });
+    });
+    this.daemon.on('disconnected', () => {
+      this.hub.localDaemon = false;
+      if (this.hub.enabled)
+        this.broadcast({ type: 'hosts', hosts: this.hub.hosts() });
+    });
     this.daemon.on('disconnected', () =>
       this.broadcast({ type: 'daemon', connected: false }),
     );
@@ -231,13 +245,13 @@ export class EventsGateway
       client.close(4403, 'origin not allowed');
       return;
     }
-    const sessionId = sessionIdFromCookieHeader(req.headers.cookie);
-    const user = this.auth.userForSession(sessionId);
-    if (!user || !sessionId) {
+    const { user, sessionId } = this.auth.userForHeaders(req.headers);
+    if (!user) {
       client.close(4401, 'unauthorized');
       return;
     }
-    this.clients.set(client, sessionId);
+    // a hub's socket has no login session to be revoked with
+    this.clients.set(client, sessionId ?? `hub:${user.name}`);
     this.alive.add(client);
     client.on('pong', () => this.alive.add(client));
     // A ping racing a client that just hung up raises an error on the
@@ -262,6 +276,7 @@ export class EventsGateway
         daemon: { connected: this.daemon.connected },
         presence: this.presenceSnapshot(),
         uiBuild: this.uiBuild,
+        hosts: this.hub.hosts(),
       }),
     );
   }

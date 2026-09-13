@@ -53,6 +53,24 @@ from the Users page, not by reinstalling. The unit `Wants=` the daemon's,
 so starting the manager starts the daemon if it is not running.
 Restarting the manager is a non-event for agents.
 
+## Several machines, one UI (hub and spokes)
+
+Every machine runs its own daemon and manager. To see and drive them all
+from one UI, make one manager the hub:
+
+1. On each other machine (a spoke), install the manager with a token:
+   `AGENT_MANAGER_HUB_TOKEN='<long random string>' npm run install:service`
+   (kept in the `hub.conf` drop-in, mode 600). Its port must be
+   reachable from the hub.
+2. On the hub, write `~/.local/state/agent-manager/spokes.json`:
+   `[{ "name": "vibe", "url": "http://192.168.1.20:4268", "token": "<the same string>" }]`
+   and restart the manager (`systemctl --user restart agent-manager`).
+
+The hub's project list then shows every machine's projects with the
+machine's name; agents are driven through the hub as the logged-in user,
+who is created on the spoke by name. `docs/design.md` (Hub and spokes)
+has the details and the limits.
+
 ## Development
 
 ```

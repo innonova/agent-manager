@@ -3,35 +3,81 @@ import {
   Controller,
   Delete,
   Get,
+  HttpException,
+  Inject,
   Param,
   Patch,
   Post,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { AgentsService, AgentCounts } from '../agents/agents.service.js';
+import type { User } from '../auth/auth.service.js';
+import { MANAGER_CONFIG } from '../config/config.js';
+import type { ManagerConfig } from '../config/config.js';
+import { HubService } from '../hub/hub.service.js';
 import { Project, ProjectsService } from './projects.service.js';
 
 @Controller('api/projects')
 export class ProjectsController {
   constructor(
+    @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly projects: ProjectsService,
     private readonly agents: AgentsService,
+    private readonly hub: HubService,
   ) {}
 
+  /** This machine's projects, each with `host`, and (as a hub) the spokes' projects with prefixed ids. */
   @Get()
-  list(): { project: Project; agentCounts: AgentCounts }[] {
-    return this.projects.list().map((project) => ({
-      project,
+  async list(
+    @Req() req: Request & { user?: User },
+  ): Promise<
+    { project: Project & { host: string }; agentCounts: AgentCounts }[]
+  > {
+    const local = this.projects.list().map((project) => ({
+      project: { ...project, host: this.config.hostName },
       agentCounts: this.agents.counts(project.id),
     }));
+    if (!this.hub.enabled) return local;
+    const remote = (await this.hub.listRemoteProjects(
+      req.user?.name ?? 'hub',
+    )) as {
+      project: Project & { host: string };
+      agentCounts: AgentCounts;
+    }[];
+    return [...local, ...remote];
   }
 
+  /** `host` names the machine the project is on; absent or this machine's name creates it here. */
   @Post()
-  create(@Body() body: Record<string, unknown>): {
-    project: Project;
+  async create(
+    @Req() req: Request & { user?: User },
+    @Body() body: Record<string, unknown>,
+  ): Promise<{
+    project: Project & { host: string };
     agentCounts: AgentCounts;
-  } {
-    const project = this.projects.create(body);
-    return { project, agentCounts: this.agents.counts(project.id) };
+  }> {
+    const { host, ...rest } = body;
+    if (typeof host === 'string' && host !== this.config.hostName) {
+      const spoke = this.hub.spokes.get(host);
+      if (!spoke)
+        throw new HttpException(
+          { statusCode: 404, message: `no host ${host}` },
+          404,
+        );
+      const r = await this.hub.call<{
+        project: Project & { host: string };
+        agentCounts: AgentCounts;
+      }>(spoke, 'POST', '/api/projects', req.user?.name ?? 'hub', rest);
+      if (r.status >= 400)
+        throw new HttpException(r.body as Record<string, unknown>, r.status);
+      return r.body;
+    }
+    const project = this.projects.create(rest);
+    return {
+      project: { ...project, host: this.config.hostName },
+      agentCounts: this.agents.counts(project.id),
+    };
   }
 
   @Get(':id')

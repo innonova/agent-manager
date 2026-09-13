@@ -11,7 +11,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import argon2 from 'argon2';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { sessionIdFromCookieHeader } from './cookie.js';
 import { EventEmitter } from 'node:events';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
@@ -273,6 +274,56 @@ export class AuthService
   }
 
   /** The user behind a login session cookie, or null. */
+  /**
+   * Who a request is from: the login cookie's session, or, for a hub
+   * fronting for this manager, its bearer token plus the name of the
+   * person acting through it (created here on first sight, without a
+   * password of their own).
+   */
+  userForHeaders(headers: {
+    cookie?: string;
+    authorization?: string;
+    'x-acting-user'?: string | string[];
+  }): { user: User | null; sessionId: string | null } {
+    const sessionId = sessionIdFromCookieHeader(headers.cookie);
+    const fromCookie = this.userForSession(sessionId);
+    if (fromCookie) return { user: fromCookie, sessionId: sessionId ?? null };
+    const auth = headers.authorization ?? '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (
+      !token ||
+      !this.config.hubToken ||
+      !timingSafeEqualStr(token, this.config.hubToken)
+    )
+      return { user: null, sessionId: null };
+    const acting = headers['x-acting-user'];
+    const name = typeof acting === 'string' ? acting.trim() : '';
+    if (!NAME_RE.test(name)) return { user: null, sessionId: null };
+    return { user: this.actingUser(name), sessionId: null };
+  }
+
+  /** The user of that name, created with an unusable password if new. */
+  private actingUser(name: string): User {
+    const row = this.db
+      .prepare('SELECT * FROM users WHERE name = ?')
+      .get(name) as UserRow | undefined;
+    if (row) return toUser(row);
+    const user: User = {
+      id: randomUUID(),
+      name,
+      createdAt: Date.now(),
+      lastLoginAt: null,
+    };
+    this.db
+      .prepare(
+        'INSERT INTO users (id, name, password_hash, created_at) VALUES (?, ?, ?, ?)',
+      )
+      .run(user.id, name, `hub:${randomUUID()}`, user.createdAt); // never a valid argon2 hash: cannot log in directly
+    this.logger.log(`user ${name} created for a hub`);
+    this.emit('users', this.listUsers());
+    return user;
+  }
+
   userForSession(sessionId: string | undefined): User | null {
     if (!sessionId) return null;
     const row = this.db
@@ -323,4 +374,10 @@ function toUser(row: UserRow): User {
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at ?? null,
   };
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }

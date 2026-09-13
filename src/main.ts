@@ -9,6 +9,9 @@ import { AppModule } from './app.module.js';
 import { MANAGER_CONFIG, ManagerConfig } from './config/config.js';
 import { DaemonErrorFilter } from './daemon/daemon-error.filter.js';
 import { originAllowed } from './origin.js';
+import { AuthService } from './auth/auth.service.js';
+import { HubService } from './hub/hub.service.js';
+import { hubProxy } from './hub/hub.middleware.js';
 
 export async function createApp(
   overrides: Partial<ManagerConfig> = {},
@@ -62,6 +65,8 @@ export async function createApp(
       next();
     },
   );
+  // A hub: requests about a spoke's projects and agents go to the spoke.
+  app.use('/api', hubProxy(app.get(HubService), app.get(AuthService)));
   if (config.uiDir && fs.existsSync(path.join(config.uiDir, 'index.html'))) {
     // The built UI: static files, and index.html for any non-API path so
     // the router can take over on a deep link or a reload.

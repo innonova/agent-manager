@@ -6,20 +6,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { parseCookie } from 'cookie';
 import type { Request } from 'express';
 import { AuthService, User } from './auth.service.js';
 
-export const COOKIE_NAME = 'am_session';
+export { COOKIE_NAME, sessionIdFromCookieHeader } from './cookie.js';
 export const IS_PUBLIC = 'isPublic';
 export const Public = () => SetMetadata(IS_PUBLIC, true);
-
-export function sessionIdFromCookieHeader(
-  header: string | undefined,
-): string | undefined {
-  if (!header) return undefined;
-  return parseCookie(header)[COOKIE_NAME];
-}
 
 /** Global guard: every route needs a valid login session unless marked @Public(). */
 @Injectable()
@@ -40,11 +32,10 @@ export class AuthGuard implements CanActivate {
     const req = ctx
       .switchToHttp()
       .getRequest<Request & { user?: User; sessionId?: string }>();
-    const sessionId = sessionIdFromCookieHeader(req.headers.cookie);
-    const user = this.auth.userForSession(sessionId);
+    const { user, sessionId } = this.auth.userForHeaders(req.headers);
     if (!user) throw new UnauthorizedException();
     req.user = user;
-    req.sessionId = sessionId;
+    req.sessionId = sessionId ?? undefined;
     return true;
   }
 }

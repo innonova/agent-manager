@@ -295,6 +295,46 @@ once, retire every pending request when the turn ends or errors, derive
 decided when our answer appears as an input record. A decision is sent
 under the agent's lock on a replayed session, like a turn.
 
+## Hub and spokes: several machines in one UI
+
+A manager can front for other managers, so one UI (and one login)
+covers several machines. Each machine keeps its own daemon and manager
+exactly as before, because a manager's files, changes and features read
+the repositories on its own disk; what is shared is the view.
+
+- **Spoke**: a manager with `AGENT_MANAGER_HUB_TOKEN` set accepts
+  requests and websocket upgrades carrying `Authorization: Bearer
+  <token>` plus `X-Acting-User: <name>`; they run as that user, created
+  on the spoke on first sight with a password that cannot be used (the
+  hub is their only way in). Turns are attributed and presence is shown
+  under that name, so the spoke's own UI sees the same names as the hub.
+- **Hub**: a manager with `<dataDir>/spokes.json` (`[{ name, url,
+  token }]`, `AGENT_MANAGER_SPOKES_FILE` overrides the path). It lists
+  the spokes' projects beside its own, each project carrying `host`, and
+  every id of a spoke's project or agent is seen as `<name>:<id>`. A
+  request about such an id (`/api/projects/<name>:<id>/...`,
+  `/api/agents/<name>:<id>/...`) is forwarded to the spoke as the user
+  making it, with the reply's ids prefixed back; `POST /api/projects`
+  with `host` creates on that spoke; `GET /api/projects/:id/profiles`
+  gives the profiles of the machine the project is on. The hub keeps
+  one socket to each spoke's `/api/events` and fans its frames into its
+  own stream with the ids prefixed (presence keys included); the spokes'
+  `users.changed` and `ui.build` are not forwarded. Nothing about a
+  spoke is stored on the hub; `spokes.json` is the whole configuration.
+- **Hosts**: `hello` and the `hosts` frame carry `[{ name, local,
+  connected, daemon }]`, the hub's link to each spoke and each host's
+  link to its daemon; `/api/health` has the same list. A spoke that does
+  not answer contributes no projects to the list and its requests fail
+  with 502 `spoke-unreachable`; the hub reconnects with backoff.
+- Every machine is named (`AGENT_MANAGER_HOST_NAME`, default the short
+  hostname); the local host's projects carry it too, so clients treat
+  all hosts alike.
+
+Not shared: user accounts (the hub's users are the ones that log in;
+spokes see them by name), presence sent by the hub's users about a
+spoke's agents (shown on the hub, not on the spoke), and the CLI, which
+runs on a machine and talks to that machine.
+
 ## Transcript cache
 
 The daemon log stays the only truth; the manager keeps a cache of what
@@ -536,7 +576,9 @@ at startup.
 
 ## API
 
-All under `/api`, JSON, cookie-authenticated except `POST /api/auth/login` and `GET /api/health`.
+All under `/api`, JSON, cookie-authenticated except `POST /api/auth/login` and `GET /api/health`;
+a spoke also accepts a hub's bearer token with an acting user (see Hub and
+spokes).
 
 ```
 POST   /api/auth/login              { name, password }         -> { user }
@@ -548,8 +590,9 @@ PATCH  /api/users/me         { name }                           -> { user }; onl
 POST   /api/users/:id/password                                  -> { password }; a new generated one; ends the user's other sessions
 DELETE /api/users/:id                                           -> { ok }; not yourself, not the last user
 
-GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]
-POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile? }   (`path` alone is accepted as a one-repo shorthand)
+GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.host names the machine; as a hub, the spokes' projects too, ids `<host>:<id>`
+POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, host? }   (`path` alone is accepted as a one-repo shorthand; `host` creates on that spoke)
+GET    /api/projects/:id/profiles                               -> { profiles } of the machine the project is on
 GET    /api/projects/:id
 PATCH  /api/projects/:id            same fields; `repos` replaces the whole list, order included. Running agents keep the directories they were started with; see the restart below.
 POST   /api/projects/:id/agents/restart -> { restarted: [agentId], skipped: [{ id, why }] }; stops and resumes every idle agent with a live session so it picks up the project's current repositories; agents working, waiting on a permission or with background jobs are skipped with the reason, exited ones need nothing
@@ -566,7 +609,7 @@ POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/archive
 
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
-GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean }
+GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
@@ -617,7 +660,8 @@ Everything else is server to client; every frame has a
 `type`:
 
 ```
-hello            { user, daemon: { connected }, presence, uiBuild }   // first frame after the upgrade
+hello            { user, daemon: { connected }, presence, uiBuild, hosts }   // first frame after the upgrade
+hosts            { hosts: [{ name, local, connected, daemon }] }   // a host's link changed (a hub's spokes, or this machine's daemon)
 daemon           { connected }                     // the manager's link to the daemon changed
 ui.build         { id }                            // the served UI build changed (a UI-only deploy)
 presence         { agents: { [agentId]: [{ userId, name, typing }] } }
@@ -680,6 +724,9 @@ swept once a minute.
 | `AGENT_MANAGER_RESIDENT_ITEMS` | `500` | transcript items kept in memory per agent beyond what the transcript cache holds |
 | `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
+| `AGENT_MANAGER_HOST_NAME` | the short hostname | how this machine is named in `project.host` and to a hub |
+| `AGENT_MANAGER_HUB_TOKEN` | unset | lets a hub act here with this bearer token (see Hub and spokes) |
+| `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
 
 The built UI's static assets and the SPA fallback are served without
 authentication: the login page must load. Everything under `/api` except

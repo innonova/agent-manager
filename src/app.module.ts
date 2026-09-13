@@ -11,6 +11,7 @@ import { EventsModule } from './events/events.module.js';
 import { FeaturesModule } from './features/features.module.js';
 import { FilesModule } from './files/files.module.js';
 import { HealthController } from './health.controller.js';
+import { HubModule } from './hub/hub.module.js';
 import { ProfilesController } from './profiles.controller.js';
 import { ProjectsModule } from './projects/projects.module.js';
 
@@ -23,6 +24,7 @@ export class AppModule {
         ConfigModule.forRoot(overrides),
         DbModule,
         AuthModule,
+        HubModule,
         DaemonModule,
         AdaptersModule,
         ProjectsModule,

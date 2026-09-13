@@ -25,6 +25,12 @@ export interface ManagerConfig {
   backgroundPokeMs: number;
   /** Transcript items kept in memory per agent beyond what the transcript cache holds. */
   residentItems: number;
+  /** How this machine is named to the UI, and by a hub that fronts for it. */
+  hostName: string;
+  /** Accepted as a bearer token by another manager acting as a hub; null means no hub may. */
+  hubToken: string | null;
+  /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
+  spokesFile: string;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -78,5 +84,14 @@ export function loadConfig(
       env.AGENT_MANAGER_BACKGROUND_POKE_MS ?? 30 * 60_000,
     ),
     residentItems: Number(env.AGENT_MANAGER_RESIDENT_ITEMS ?? 500),
+    hostName:
+      env.AGENT_MANAGER_HOST_NAME || os.hostname().split('.')[0] || 'local',
+    hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,
+    spokesFile:
+      env.AGENT_MANAGER_SPOKES_FILE ??
+      path.join(
+        env.AGENT_MANAGER_DATA_DIR ?? path.join(xdgState, 'agent-manager'),
+        'spokes.json',
+      ),
   };
 }

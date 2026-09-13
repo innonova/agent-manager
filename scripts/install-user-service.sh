@@ -44,6 +44,13 @@ if [ -n "${AGENT_MANAGER_ADMIN_PASSWORD:-}" ]; then
   printf '[Service]\nEnvironment="AGENT_MANAGER_ADMIN_PASSWORD=%s"\n' "$ESCAPED" > "$UNIT_DIR/agent-manager.service.d/admin.conf"
   chmod 600 "$UNIT_DIR/agent-manager.service.d/admin.conf"
 fi
+if [ -n "${AGENT_MANAGER_HUB_TOKEN:-}" ]; then
+  # Lets a hub (another manager) act here with this token; kept out of the unit file like the admin password.
+  mkdir -p "$UNIT_DIR/agent-manager.service.d"
+  ESCAPED="$(printf '%s' "$AGENT_MANAGER_HUB_TOKEN" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"
+  printf '[Service]\nEnvironment="AGENT_MANAGER_HUB_TOKEN=%s"\n' "$ESCAPED" > "$UNIT_DIR/agent-manager.service.d/hub.conf"
+  chmod 600 "$UNIT_DIR/agent-manager.service.d/hub.conf"
+fi
 echo "installed unit $UNIT_DIR/agent-manager.service"
 
 systemctl --user daemon-reload
