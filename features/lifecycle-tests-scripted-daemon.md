@@ -1,6 +1,6 @@
 ---
 title: lifecycle tests with a scripted daemon transport
-status: planned
+status: in-progress
 priority: 10
 ---
 
