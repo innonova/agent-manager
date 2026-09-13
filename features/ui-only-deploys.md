@@ -1,6 +1,6 @@
 ---
 title: UI-only deploys without restarting the manager
-status: review
+status: done
 priority: 100
 ---
 

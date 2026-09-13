@@ -1,6 +1,6 @@
 ---
 title: marking a feature done advances the read cursor
-status: review
+status: done
 priority: 100
 ---
 

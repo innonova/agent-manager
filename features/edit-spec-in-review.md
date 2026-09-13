@@ -1,6 +1,6 @@
 ---
 title: editing a feature's spec while in review
-status: review
+status: done
 priority: 100
 ---
 

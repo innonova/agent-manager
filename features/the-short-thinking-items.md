@@ -1,6 +1,6 @@
 ---
 title: the short thinking items
-status: review
+status: done
 priority: 100
 ---
 
