@@ -8,6 +8,8 @@ authenticated REST and websocket API and serves the built UI.
 - The daemon it drives: `../agent-daemon`
 - The UI it serves: `../agent-manager-ui`
 
+Installing the whole setup from scratch: `../agent-daemon/docs/install.md`.
+
 ## Quickstart
 
 ```
