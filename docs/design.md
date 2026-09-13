@@ -402,6 +402,11 @@ All under `/api`, JSON, cookie-authenticated except `POST /api/auth/login`.
 POST   /api/auth/login              { name, password }         -> { user }
 POST   /api/auth/logout
 GET    /api/auth/me
+GET    /api/users                                               -> { users: [{ id, name, createdAt, lastLoginAt }] }
+POST   /api/users            { name }                           -> 201 { user, password }; the password is shown once
+PATCH  /api/users/me         { name }                           -> { user }; only your own name
+POST   /api/users/:id/password                                  -> { password }; a new generated one; ends the user's other sessions
+DELETE /api/users/:id                                           -> { ok }; not yourself, not the last user
 
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile? }   (`path` alone is accepted as a one-repo shorthand)
@@ -484,7 +489,19 @@ swept once a minute.
   unknown users cost the same as known ones.
 - First admin: `AGENT_MANAGER_ADMIN_PASSWORD` on first start creates
   `admin`, or `npm run user:add -- <name>`.
-- No roles in milestone one; every user sees every project.
+- No roles: every user is a trusted admin and sees every project. There
+  is no other kind of account, because every user can drive agents that
+  run with permissions bypassed anyway; a squad on one box shares one
+  trust level. Accounts exist only because an admin created them: the
+  manager generates the password (four groups of four unambiguous
+  characters), shows it once and never stores it in the clear. Users
+  rename themselves; anyone can generate a new password for anyone
+  (behind a confirm in the UI, logged by the manager), which ends that
+  user's other login sessions so a forgotten password cannot linger as a
+  live session; anyone can remove anyone but themselves, never the last
+  user. A lost password is a reset, never a recovery.
+- `users.changed` is broadcast on every account change so headers and
+  user lists stay current.
 
 ## Configuration
 

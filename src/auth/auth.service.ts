@@ -1,8 +1,11 @@
 import {
+  BadRequestException,
+  ConflictException,
   HttpException,
   Inject,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
   UnauthorizedException,
@@ -18,6 +21,7 @@ export interface User {
   id: string;
   name: string;
   createdAt: number;
+  lastLoginAt: number | null;
 }
 
 interface UserRow {
@@ -25,6 +29,19 @@ interface UserRow {
   name: string;
   password_hash: string;
   created_at: number;
+  last_login_at: number | null;
+}
+
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** Unambiguous, typeable: no 0/O, 1/l/I. Four groups of four is ~79 bits. */
+const PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+
+export function generatePassword(): string {
+  const bytes = randomBytes(16);
+  const chars = [...bytes].map(
+    (b) => PASSWORD_ALPHABET[b % PASSWORD_ALPHABET.length],
+  );
+  return [0, 4, 8, 12].map((i) => chars.slice(i, i + 4).join('')).join('-');
 }
 
 const VERIFY_CONCURRENCY = 4;
@@ -36,7 +53,7 @@ const VERIFY_CONCURRENCY = 4;
  */
 @Injectable()
 export class AuthService
-  extends EventEmitter<{ revoked: [sessionId: string] }>
+  extends EventEmitter<{ revoked: [sessionId: string]; users: [users: User[]] }>
   implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(AuthService.name);
@@ -96,14 +113,113 @@ export class AuthService
   }
 
   async createUser(name: string, password: string): Promise<User> {
+    if (!NAME_RE.test(name))
+      throw new BadRequestException(
+        'name must be letters, digits, dot, dash or underscore, up to 64',
+      );
+    if (this.db.prepare('SELECT 1 FROM users WHERE name = ?').get(name))
+      throw new ConflictException(`a user named ${name} exists`);
     const hash = await argon2.hash(password, { type: argon2.argon2id });
-    const user = { id: randomUUID(), name, createdAt: Date.now() };
+    const user: User = {
+      id: randomUUID(),
+      name,
+      createdAt: Date.now(),
+      lastLoginAt: null,
+    };
     this.db
       .prepare(
         'INSERT INTO users (id, name, password_hash, created_at) VALUES (?, ?, ?, ?)',
       )
       .run(user.id, name, hash, user.createdAt);
+    this.emit('users', this.listUsers());
     return user;
+  }
+
+  // ---- accounts: every user is a trusted admin --------------------------------
+
+  listUsers(): User[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM users ORDER BY created_at')
+        .all() as UserRow[]
+    ).map(toUser);
+  }
+
+  getUser(id: string): User {
+    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as
+      UserRow | undefined;
+    if (!row) throw new NotFoundException('no such user');
+    return toUser(row);
+  }
+
+  /** Creates an account with a generated password, returned once and never stored in the clear. */
+  async createAccount(
+    name: unknown,
+  ): Promise<{ user: User; password: string }> {
+    if (typeof name !== 'string')
+      throw new BadRequestException('"name" is required');
+    const password = generatePassword();
+    const user = await this.createUser(name.trim(), password);
+    return { user, password };
+  }
+
+  renameUser(id: string, name: unknown): User {
+    if (typeof name !== 'string' || !NAME_RE.test(name.trim()))
+      throw new BadRequestException(
+        'name must be letters, digits, dot, dash or underscore, up to 64',
+      );
+    const clean = name.trim();
+    const clash = this.db
+      .prepare('SELECT id FROM users WHERE name = ? AND id != ?')
+      .get(clean, id);
+    if (clash) throw new ConflictException(`a user named ${clean} exists`);
+    const r = this.db
+      .prepare('UPDATE users SET name = ? WHERE id = ?')
+      .run(clean, id);
+    if (r.changes === 0) throw new NotFoundException('no such user');
+    this.emit('users', this.listUsers());
+    return this.getUser(id);
+  }
+
+  /**
+   * A new generated password for any user (everyone is an admin); their
+   * other login sessions end so a forgotten password cannot linger as a
+   * live session elsewhere. `keepSessionId` spares the caller's own
+   * session when resetting themselves.
+   */
+  async resetPassword(id: string, keepSessionId?: string): Promise<string> {
+    this.getUser(id);
+    const password = generatePassword();
+    const hash = await argon2.hash(password, { type: argon2.argon2id });
+    this.db
+      .prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+      .run(hash, id);
+    this.revokeSessions(id, keepSessionId);
+    return password;
+  }
+
+  deleteUser(id: string, callerId: string): void {
+    if (id === callerId)
+      throw new ConflictException('you cannot remove yourself');
+    this.getUser(id);
+    const n = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }
+    ).n;
+    if (n <= 1) throw new ConflictException('the last user cannot be removed');
+    this.revokeSessions(id);
+    this.db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    this.emit('users', this.listUsers());
+  }
+
+  private revokeSessions(userId: string, keepSessionId?: string): void {
+    const rows = this.db
+      .prepare('SELECT id FROM login_sessions WHERE user_id = ?')
+      .all(userId) as { id: string }[];
+    for (const { id } of rows) {
+      if (id === keepSessionId) continue;
+      this.db.prepare('DELETE FROM login_sessions WHERE id = ?').run(id);
+      this.emit('revoked', id);
+    }
   }
 
   /**
@@ -131,7 +247,10 @@ export class AuthService
         'INSERT INTO login_sessions (id, user_id, expires_at) VALUES (?, ?, ?)',
       )
       .run(sessionId, row.id, Date.now() + this.config.sessionTtlMs);
-    return { user: toUser(row), sessionId };
+    this.db
+      .prepare('UPDATE users SET last_login_at = ? WHERE id = ?')
+      .run(Date.now(), row.id);
+    return { user: toUser({ ...row, last_login_at: Date.now() }), sessionId };
   }
 
   logout(sessionId: string): void {
@@ -184,5 +303,10 @@ export class AuthService
 }
 
 function toUser(row: UserRow): User {
-  return { id: row.id, name: row.name, createdAt: row.created_at };
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    lastLoginAt: row.last_login_at ?? null,
+  };
 }

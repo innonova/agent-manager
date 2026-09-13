@@ -71,6 +71,9 @@ export class EventsGateway
     this.daemon.on('disconnected', () =>
       this.broadcast({ type: 'daemon', connected: false }),
     );
+    this.auth.on('users', (users) =>
+      this.broadcast({ type: 'users.changed', users }),
+    );
     this.auth.on('revoked', (sessionId) => {
       for (const [c, sid] of this.clients)
         if (sid === sessionId) c.close(4401, 'logged out');
