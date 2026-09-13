@@ -733,14 +733,16 @@ export class AgentsService
     if (!live || !agent || !live.queued.length || live.flushing) return;
     if (!agent.currentSessionId) return this.dropQueued(agent, live);
     live.flushing = true;
-    const next = live.queued.shift()!;
-    live.status = { ...live.status, queued: live.queued.length };
-    this.emit('state', agent.id, agent.projectId, live.status);
+    // The message stays at the head of the queue until it is sent, so a
+    // refusal never has to put it back (and the queue's bound holds).
+    const next = live.queued[0]!;
+    let sent = false;
     try {
       const mode = await this.turn(id, next.text, next.userId, {
         forSession: next.sessionId,
         images: next.images,
       });
+      sent = true;
       if (mode === 'dropped') this.dropQueued(agent, live);
     } catch (err) {
       const e = err as HttpException;
@@ -750,16 +752,19 @@ export class AgentsService
         e instanceof HttpException &&
         (e.getStatus() === 409 || e.getStatus() === 503);
       if (later && this.find(id)?.currentSessionId === next.sessionId) {
-        live.queued.unshift(next);
-        live.status = { ...live.status, queued: live.queued.length };
-        this.emit('state', agent.id, agent.projectId, live.status);
         live.flushing = false;
         return; // the next idle (after the reconnect's replay, if that was it) tries again
       }
       this.logger.warn(
         `agent ${id}: a queued message could not be sent and was dropped: ${(err as Error).message}`,
       );
+      sent = true; // dropped: it leaves the queue all the same
     } finally {
+      if (sent && live.queued[0] === next) {
+        live.queued.shift();
+        live.status = { ...live.status, queued: live.queued.length };
+        this.emit('state', agent.id, agent.projectId, live.status);
+      }
       live.flushing = false;
     }
     if (live.queued.length && live.status.state === 'idle')

@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 import type { AgentStatus, StoredItem } from './agents.service.js';
 
 /** Bump when any adapter's normalised output changes; a mismatch rebuilds every agent from the log. */
@@ -148,29 +147,36 @@ export class TranscriptCache {
     const out: StoredItem[] = [];
     const fh = await fs.open(this.itemsPath(agentId), 'r');
     try {
-      let rest = '';
-      let scanned = 0; // where the next newline search starts: what came before was searched already
-      const decoder = new StringDecoder('utf8');
-      const buf = Buffer.alloc(64 * 1024);
+      // Lines are found by the newline byte in each chunk as it arrives; the
+      // pieces of a line are only joined (and decoded) when the line is one
+      // that was asked for, so a multi-megabyte item costs one pass, not one
+      // per chunk.
+      let parts: Buffer[] = [];
       while (index < to && pos < state.bytes) {
-        const { bytesRead } = await fh.read(
-          buf,
-          0,
-          Math.min(buf.length, state.bytes - pos),
-          pos,
-        );
+        const buf = Buffer.allocUnsafe(Math.min(64 * 1024, state.bytes - pos));
+        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
         if (bytesRead === 0) break;
         pos += bytesRead;
-        rest += decoder.write(buf.subarray(0, bytesRead));
+        const chunk = buf.subarray(0, bytesRead);
+        let start = 0;
         let nl: number;
-        while (index < to && (nl = rest.indexOf('\n', scanned)) >= 0) {
-          const line = rest.slice(0, nl);
-          rest = rest.slice(nl + 1);
-          scanned = 0;
-          if (index >= from) out.push(JSON.parse(line) as StoredItem);
+        while (index < to && (nl = chunk.indexOf(0x0a, start)) >= 0) {
+          if (index >= from) {
+            const line = Buffer.concat([
+              ...parts,
+              chunk.subarray(start, nl),
+            ]).toString('utf8');
+            out.push(JSON.parse(line) as StoredItem);
+          }
+          parts = [];
+          start = nl + 1;
           index++;
         }
-        scanned = rest.length; // no newline in what is left: skip it next time
+        if (index < to && start < chunk.length) {
+          // the tail of this chunk belongs to a line that continues; keep it only if that line is wanted
+          if (index >= from) parts.push(Buffer.from(chunk.subarray(start)));
+          else parts = [];
+        }
       }
     } finally {
       await fh.close();

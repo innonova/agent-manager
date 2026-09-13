@@ -104,3 +104,22 @@ describe('TranscriptCache', () => {
     expect(fs.existsSync(hp)).toBe(false);
   });
 });
+
+describe('TranscriptCache: large and multibyte lines', () => {
+  it('reads an item far larger than a chunk, with multibyte text across chunk boundaries, in one pass', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-cache-big-'));
+    const cache = new TranscriptCache(dir);
+    const state: CacheState = { count: 0, bytes: 0, offsets: [] };
+    const big = item(0, 'ü✓'.repeat(300_000)); // ~1.5 MB of two- and three-byte characters
+    const small = item(1);
+    await cache.append('a', state, [big, small], header);
+    const t0 = Date.now();
+    const back = await cache.read('a', state, 0, 2);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(back[0]!.item).toEqual(big.item);
+    expect(back[1]).toEqual(small);
+    // skipping the big one costs nothing but the scan
+    expect(await cache.read('a', state, 1, 2)).toEqual([small]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
