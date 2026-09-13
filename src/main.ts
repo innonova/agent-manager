@@ -23,8 +23,18 @@ export async function createApp(
   );
   app.useWebSocketAdapter(new WsAdapter(app));
   app.useGlobalFilters(new DaemonErrorFilter());
-  // A turn may carry a few images as base64 (see IMAGE_LIMITS); nothing else needs more than a megabyte.
+  // A turn may carry a few images as base64 (see IMAGE_LIMITS); an upload is
+  // the raw file; nothing else needs more than a megabyte.
   app.use('/api/agents/:id/turn', express.json({ limit: '12mb' }));
+  const rawFile = express.raw({ type: () => true, limit: '25mb' });
+  app.use(
+    '/api/projects/:id/file',
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) => (req.method === 'PUT' ? rawFile(req, res, next) : next()),
+  );
   app.use(express.json({ limit: '1mb' }));
   const config = app.get<ManagerConfig>(MANAGER_CONFIG);
   // Only a configured proxy may tell us the client address (login throttling keys on it).
@@ -55,6 +65,7 @@ export async function createApp(
       if (
         mutating &&
         req.body !== undefined &&
+        !Buffer.isBuffer(req.body) && // an upload's raw body
         (typeof req.body !== 'object' ||
           req.body === null ||
           Array.isArray(req.body))

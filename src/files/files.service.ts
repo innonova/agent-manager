@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -188,6 +189,82 @@ export class FilesService {
     return { path: clean, entries };
   }
 
+  /**
+   * Writes a file into a repository of the project, at most `UPLOAD_LIMIT`
+   * bytes; refuses to replace an existing file unless told to. The file
+   * is then simply part of the working tree (untracked, until committed).
+   */
+  async write(
+    projectId: string,
+    rel: unknown,
+    data: Buffer,
+    overwrite: boolean,
+  ): Promise<{ path: string; size: number; replaced: boolean }> {
+    const target = this.resolve(projectId, rel);
+    if ('root' in target)
+      throw new BadRequestException('a file needs a path inside a repository');
+    if (target.rel.split('/').length < 2)
+      throw new BadRequestException('a file needs a path inside a repository');
+    if (data.length > UPLOAD_LIMIT)
+      throw new BadRequestException(
+        `a file may be at most ${UPLOAD_LIMIT / 1024 / 1024} MB`,
+      );
+    let replaced = false;
+    try {
+      const st = await fs.lstat(target.abs);
+      if (!st.isFile())
+        throw new BadRequestException(`not a regular file: ${target.rel}`);
+      if (!overwrite)
+        throw new ConflictException(
+          `${target.rel} exists; send overwrite=1 to replace it`,
+        );
+      replaced = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    const parent = path.dirname(target.abs);
+    try {
+      const st = await fs.stat(parent);
+      if (!st.isDirectory())
+        throw new BadRequestException(
+          `not a directory: ${path.posix.dirname(target.rel)}`,
+        );
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new NotFoundException(
+          `no such directory: ${path.posix.dirname(target.rel)}`,
+        );
+      throw err;
+    }
+    const tmp = `${target.abs}.${process.pid}.upload`;
+    await fs.writeFile(tmp, data, { mode: 0o644 });
+    await fs.rename(tmp, target.abs);
+    return { path: target.rel, size: data.length, replaced };
+  }
+
+  /** Creates a directory (and missing parents) inside a repository; an existing directory is fine, a file in the way is not. */
+  async mkdir(
+    projectId: string,
+    rel: unknown,
+  ): Promise<{ path: string; created: boolean }> {
+    const target = this.resolve(projectId, rel);
+    if ('root' in target || target.rel.split('/').length < 2)
+      throw new BadRequestException(
+        'a directory needs a path inside a repository',
+      );
+    try {
+      const st = await fs.stat(target.abs);
+      if (st.isDirectory()) return { path: target.rel, created: false };
+      throw new ConflictException(
+        `${target.rel} exists and is not a directory`,
+      );
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    await fs.mkdir(target.abs, { recursive: true });
+    return { path: target.rel, created: true };
+  }
+
   async read(projectId: string, rel: unknown): Promise<FileContent> {
     const target = this.resolve(projectId, rel);
     if ('root' in target) throw new BadRequestException('is a directory: /');
@@ -237,6 +314,9 @@ export class FilesService {
  * matched; 128 (not a repository) or a missing git means nothing is
  * ignored, which is the honest answer outside a repo.
  */
+/** Bytes an uploaded file may have. */
+export const UPLOAD_LIMIT = 25 * 1024 * 1024;
+
 export function gitIgnored(dir: string, names: string[]): Promise<Set<string>> {
   const result = new Set<string>();
   if (names.includes('.git')) result.add('.git');

@@ -217,6 +217,50 @@ export class HubService
     return { status: res.status, body: prefixIds(spoke.name, data) as T };
   }
 
+  /** A request whose body is bytes (an upload), forwarded as such. */
+  async callRaw<T = unknown>(
+    spoke: Spoke,
+    method: string,
+    apiPath: string,
+    actingUser: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<{ status: number; body: T }> {
+    let res: Response;
+    try {
+      res = await fetch(spoke.url.replace(/\/$/, '') + apiPath, {
+        method,
+        headers: {
+          authorization: `Bearer ${spoke.token}`,
+          'x-acting-user': actingUser,
+          'content-type': contentType,
+        },
+        body: new Uint8Array(body),
+        signal: AbortSignal.timeout(SPOKE_TIMEOUT_MS * 4),
+      });
+    } catch (err) {
+      this.noteError(spoke.name, (err as Error).message);
+      throw err;
+    }
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { statusCode: res.status, message: text.slice(0, 200) };
+    }
+    if (res.status === 401 || res.status === 403)
+      return {
+        status: 502,
+        body: {
+          statusCode: 502,
+          code: 'spoke-auth',
+          message: `${spoke.name} refused the hub's credentials`,
+        } as T,
+      };
+    return { status: res.status, body: prefixIds(spoke.name, data) as T };
+  }
+
   /** What a request to a spoke last said, shown in its host status. */
   private noteError(name: string, error: string | undefined): void {
     const l = this.links.get(name);

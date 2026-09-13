@@ -42,7 +42,7 @@ async function createProject(name = 'p') {
     defaultProfile: 'fake',
   });
   expect(r.status).toBe(201);
-  return r.body.project as { id: string };
+  return r.body.project as { id: string; path: string };
 }
 
 async function createAgent(projectId: string, name = 'a') {
@@ -328,6 +328,92 @@ describe('projects', () => {
 });
 
 describe('agents', () => {
+  it('uploads a file into a repository and creates directories; refuses to leave it or to clobber silently', async () => {
+    const p = await createProject();
+    const put = (path: string, body: string | Buffer, overwrite = false) =>
+      fetch(
+        `${m.url}/api/projects/${p.id}/file?path=${encodeURIComponent(path)}${overwrite ? '&overwrite=1' : ''}`,
+        {
+          method: 'PUT',
+          headers: {
+            cookie: api.cookie,
+            'content-type': 'application/octet-stream',
+          },
+          body: typeof body === 'string' ? body : new Uint8Array(body),
+        },
+      );
+    const repo = (await api.get(`/api/projects/${p.id}`)).body.project.repos[0]
+      .name;
+    let r = await put(`${repo}/notes/app.log`, 'line one\n');
+    expect(r.status).toBe(404); // the directory is not there yet
+    const mk = await api.post(`/api/projects/${p.id}/dir`, {
+      path: `${repo}/notes/2026`,
+    });
+    expect(mk.status).toBe(201);
+    expect(mk.body).toEqual({ path: `${repo}/notes/2026`, created: true });
+    expect(
+      (
+        await api.post(`/api/projects/${p.id}/dir`, {
+          path: `${repo}/notes/2026`,
+        })
+      ).body.created,
+    ).toBe(false);
+    r = await put(`${repo}/notes/app.log`, 'line one\n');
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({
+      path: `${repo}/notes/app.log`,
+      size: 9,
+      replaced: false,
+    });
+    expect(fs.readFileSync(path.join(p.path, 'notes', 'app.log'), 'utf8')).toBe(
+      'line one\n',
+    );
+    r = await put(`${repo}/notes/app.log`, 'line two\n');
+    expect(r.status).toBe(409);
+    r = await put(`${repo}/notes/app.log`, 'line two\n', true);
+    expect((await r.json()).replaced).toBe(true);
+    const bin = Buffer.from([0, 1, 2, 255]);
+    r = await put(`${repo}/notes/2026/blob.bin`, bin);
+    expect(r.status).toBe(200);
+    expect(
+      fs.readFileSync(path.join(p.path, 'notes', '2026', 'blob.bin')),
+    ).toEqual(bin);
+    // seen by the tree, and readable back
+    const top = (await api.get(`/api/projects/${p.id}/files?path=${repo}`)).body
+      .entries;
+    expect(top.find((e: any) => e.name === 'notes')).toMatchObject({
+      type: 'dir',
+    }); // (the test project is not a git repository)
+    const listed = (
+      await api.get(`/api/projects/${p.id}/files?path=${repo}/notes`)
+    ).body.entries;
+    expect(listed.find((e: any) => e.name === 'app.log')).toMatchObject({
+      type: 'file',
+    });
+    expect(
+      (await api.get(`/api/projects/${p.id}/file?path=${repo}/notes/app.log`))
+        .body.content,
+    ).toBe('line two\n');
+    // never outside a repository
+    expect((await put(`${repo}/../outside.txt`, 'x')).status).toBe(400);
+    expect((await put(`nope/x.txt`, 'x')).status).toBe(404);
+    expect((await put(`${repo}`, 'x')).status).toBe(400);
+    expect(
+      (await api.post(`/api/projects/${p.id}/dir`, { path: `${repo}/../up` }))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await api.post(`/api/projects/${p.id}/dir`, {
+          path: `${repo}/notes/app.log`,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (await put(`${repo}/big.bin`, Buffer.alloc(26 * 1024 * 1024))).status,
+    ).toBe(413);
+  }, 30000);
+
   it('a turn may carry images, within limits; they show on the user item and reach the agent', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'looker');

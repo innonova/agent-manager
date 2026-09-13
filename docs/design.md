@@ -428,6 +428,20 @@ transcript cache and the items pages carry whatever the log carries. A
 pasted screenshot is a few hundred kilobytes; if large images become
 common, storing them beside the log is the change to make.
 
+## Uploads and directories
+
+The files view can write, in two small ways: `PUT
+/api/projects/:id/file` puts a raw body at a path inside a repository,
+and `POST /api/projects/:id/dir` creates a directory there. That is
+all: the file is then part of the working tree like anything else,
+untracked until committed, seen by the changes view and readable by the
+agent with its own tools; the manager keeps nothing about it. A path is
+validated as on the read side (`..` refused, the first segment a
+repository name). An existing file is not replaced without
+`overwrite=1`, a missing parent is not created by an upload (the
+directory route is for that), and a file is at most 25 MB. Uploads
+travel through a hub to a spoke as bytes.
+
 ## Transcript items
 
 A `user` item carries `by`, the name of the user who sent the turn, when
@@ -647,6 +661,8 @@ GET    /api/health                  (public)                    -> { status: 'ok
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
+PUT    /api/projects/:id/file?path=<file>[&overwrite=1]         raw body -> { path, size, replaced }; writes the file into a repository (at most 25 MB; 404 if the directory is missing; 409 if the file exists without overwrite)
+POST   /api/projects/:id/dir        { path }                    -> 201 { path, created }; creates the directory and missing parents inside a repository (409 if a file is in the way)
 GET    /api/projects/:id/changes?base=<spec>                    -> { base, repos: [{ repo, base, head, note, files: [{ path, status: modified|added|deleted|renamed|untracked, oldPath? }] }] }; spec is `read` (the caller's cursor, default), `feature:<slug>` or a commit-ish; measured against the working tree; `note` says when the base fell back to HEAD (nothing read yet, history rewritten, no range recorded) or when git itself failed, which is never shown as a clean tree
 GET    /api/projects/:id/changes/file?path=<repo/path>&base=<spec> -> { path, base, before, after, binary, truncated }; before is the file at the base (null if absent there), after the working file (null if gone)
 POST   /api/projects/:id/changes/read { repo? }                 -> sets the caller's read cursor to HEAD in one or every repository

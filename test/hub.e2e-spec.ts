@@ -286,6 +286,24 @@ describe('hub', () => {
     expect((await api.get(`/api/projects/${pid}/files?path=`)).status).toBe(
       200,
     );
+    // an upload's raw body goes through the hub to the spoke as bytes
+    const repo = (await api.get(`/api/projects/${pid}`)).body.project.repos[0]
+      .name;
+    const up = await fetch(
+      `${hub.url}/api/projects/${pid}/file?path=${encodeURIComponent(`${repo}/from-hub.txt`)}`,
+      {
+        method: 'PUT',
+        headers: {
+          cookie: api.cookie,
+          'content-type': 'application/octet-stream',
+        },
+        body: 'via the hub\n',
+      },
+    );
+    expect(up.status).toBe(200);
+    expect(fs.readFileSync(path.join(projectDir, 'from-hub.txt'), 'utf8')).toBe(
+      'via the hub\n',
+    );
     expect((await api.post(`/api/agents/${agentId}/stop`, {})).status).toBe(
       201,
     );

@@ -50,13 +50,22 @@ export function hubProxy(hub: HubService, auth: AuthService) {
     const apiPath = `/api/${m[1]}/${encodeURIComponent(target.id)}${m[3] ?? ''}${query}`;
     const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     try {
-      const r = await hub.call(
-        target.spoke,
-        req.method,
-        apiPath,
-        user.name,
-        mutating ? (req.body ?? {}) : undefined,
-      );
+      const r = Buffer.isBuffer(req.body)
+        ? await hub.callRaw(
+            target.spoke,
+            req.method,
+            apiPath,
+            user.name,
+            req.body,
+            String(req.headers['content-type'] ?? 'application/octet-stream'),
+          )
+        : await hub.call(
+            target.spoke,
+            req.method,
+            apiPath,
+            user.name,
+            mutating ? (req.body ?? {}) : undefined,
+          );
       res.status(r.status).json(r.body);
     } catch (err) {
       res.status(502).json({
