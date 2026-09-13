@@ -98,21 +98,22 @@ export class CodexAdapter implements AgentAdapter {
     spend: { inputTokens: 0, outputTokens: 0, turns: 0 },
   };
 
-  private usageNow(): AccountUsage {
+  /** The usage as of a record: `at` is the record's time, so a replayed report keeps its date. */
+  private usageNow(at: number): AccountUsage {
     const { windows, status, plan, spend, context } = this.usage;
     return {
-      windows,
+      windows: windows.map((w) => ({ ...w })),
       ...(status ? { status } : {}),
       ...(plan ? { plan } : {}),
       ...(spend.turns ? { spend: { ...spend } } : {}),
-      ...(context ? { context } : {}),
-      at: Date.now(),
+      ...(context ? { context: { ...context } } : {}),
+      at,
     };
   }
 
   snapshot(): unknown {
     return {
-      usage: this.usage,
+      usage: structuredClone(this.usage), // a copy: the header is written later than it is taken
       threadId: this.threadId,
       resume: this.resume,
       nextId: this.nextId,
@@ -287,16 +288,20 @@ export class CodexAdapter implements AgentAdapter {
         this.usage.windows = windows;
         this.usage.status = rl.rateLimitReachedType ? 'rejected' : 'ok';
         if (rl.planType) this.usage.plan = String(rl.planType);
-        return { usage: this.usageNow() };
+        return { usage: this.usageNow(record.t) };
       }
       case 'thread/tokenUsage/updated': {
         const t = line.params?.tokenUsage ?? {};
         const total = t.total ?? {};
         if (typeof total.inputTokens === 'number') {
+          // one report per model call: a turn counts once, by its id
+          const turnId = String(line.params?.turnId ?? '');
+          const newTurn = turnId !== '' && turnId !== this.usage.lastTurnId;
+          if (newTurn) this.usage.lastTurnId = turnId;
           this.usage.spend = {
             inputTokens: Number(total.inputTokens ?? 0),
             outputTokens: Number(total.outputTokens ?? 0),
-            turns: this.usage.spend.turns + 1,
+            turns: this.usage.spend.turns + (newTurn ? 1 : 0),
           };
         }
         if (
@@ -307,7 +312,7 @@ export class CodexAdapter implements AgentAdapter {
             used: Number(t.last.totalTokens),
             size: Number(t.modelContextWindow),
           };
-        return { usage: this.usageNow() };
+        return { usage: this.usageNow(record.t) };
       }
       case 'thread/started': {
         const model = line.params?.thread?.model;
@@ -733,4 +738,6 @@ interface UsageState {
   plan?: string;
   spend: NonNullable<AccountUsage['spend']>;
   context?: { used: number; size: number };
+  /** The turn the last token report belonged to, so a turn is counted once. */
+  lastTurnId?: string;
 }

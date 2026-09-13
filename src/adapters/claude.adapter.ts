@@ -80,7 +80,10 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   snapshot(): unknown {
-    return { backgrounded: [...this.backgrounded], usage: this.usage };
+    return {
+      backgrounded: [...this.backgrounded],
+      usage: structuredClone(this.usage), // a copy: the header is written later than it is taken
+    };
   }
 
   restore(state: unknown): void {
@@ -166,7 +169,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (record.s === 'in') return this.ingestInput(line);
     switch (line?.type) {
       case 'rate_limit_event':
-        return this.ingestRateLimit(line);
+        return this.ingestRateLimit(line, record.t);
       case 'system':
         return this.ingestSystem(line);
       case 'control_request':
@@ -178,7 +181,7 @@ export class ClaudeAdapter implements AgentAdapter {
       case 'user':
         return this.ingestToolResults(line);
       case 'result':
-        return this.ingestResult(line);
+        return this.ingestResult(line, record.t);
       case 'error': {
         this.turnOpen = false;
         this.permissions.clear();
@@ -284,14 +287,15 @@ export class ClaudeAdapter implements AgentAdapter {
     spend: { inputTokens: 0, outputTokens: 0, turns: 0 },
   };
 
-  private usageNow(): AccountUsage {
+  /** The usage as of a record: `at` is the record's time, so a replayed report keeps its date. */
+  private usageNow(at: number): AccountUsage {
     const { windows, status, spend, provider } = this.usage;
     return {
-      windows,
+      windows: windows.map((w) => ({ ...w })),
       ...(status ? { status } : {}),
       ...(spend.turns ? { spend: { ...spend } } : {}),
       ...(provider ? { provider } : {}),
-      at: Date.now(),
+      at,
     };
   }
 
@@ -302,7 +306,7 @@ export class ClaudeAdapter implements AgentAdapter {
    * Desktop shows as the Fable limit, and any per-model window Claude
    * adds (a Sonnet, Opus or other family limit).
    */
-  private ingestRateLimit(line: any): Ingest {
+  private ingestRateLimit(line: any, at: number): Ingest {
     const info = line.rate_limit_info ?? {};
     const windows = Object.entries(
       (info.unifiedWindows ?? {}) as Record<
@@ -322,7 +326,7 @@ export class ClaudeAdapter implements AgentAdapter {
         : info.status === 'allowed_warning'
           ? 'warning'
           : 'ok';
-    return { usage: this.usageNow() };
+    return { usage: this.usageNow(at) };
   }
 
   private ingestInput(line: any): Ingest {
@@ -566,7 +570,7 @@ export class ClaudeAdapter implements AgentAdapter {
     return { ops };
   }
 
-  private ingestResult(line: any): Ingest {
+  private ingestResult(line: any, at: number): Ingest {
     this.turnOpen = false;
     this.streaming = null;
     this.permissions.clear(); // a request from an ended turn cannot be answered
@@ -582,14 +586,12 @@ export class ClaudeAdapter implements AgentAdapter {
       outputTokens:
         this.usage.spend.outputTokens + Number(u.output_tokens ?? 0),
       turns: this.usage.spend.turns + 1,
-      ...(typeof line.total_cost_usd === 'number' ||
-      this.usage.spend.costUsd !== undefined
-        ? {
-            costUsd:
-              (this.usage.spend.costUsd ?? 0) +
-              Number(line.total_cost_usd ?? 0),
-          }
-        : {}),
+      // Claude's total_cost_usd is the session's running total, not the turn's
+      ...(typeof line.total_cost_usd === 'number'
+        ? { costUsd: line.total_cost_usd }
+        : this.usage.spend.costUsd !== undefined
+          ? { costUsd: this.usage.spend.costUsd }
+          : {}),
     };
     const provider = Object.values(
       (line.modelUsage ?? {}) as Record<string, { provider?: string }>,
@@ -610,7 +612,7 @@ export class ClaudeAdapter implements AgentAdapter {
             ? line.result
             : String(line.subtype ?? 'error');
       return {
-        usage: this.usageNow(),
+        usage: this.usageNow(at),
         state: 'error',
         error: message,
         ops: [append({ kind: 'error', message }), append(end)],
@@ -618,7 +620,7 @@ export class ClaudeAdapter implements AgentAdapter {
       };
     }
     return {
-      usage: this.usageNow(),
+      usage: this.usageNow(at),
       state: 'idle',
       ops: [append(end)],
       conversationId: line.session_id,

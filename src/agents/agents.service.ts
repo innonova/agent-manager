@@ -478,6 +478,17 @@ export class AgentsService
     });
   }
 
+  /** The account's latest report wins, by the report's own time: an older one replayed later does not. */
+  private noteUsage(agent: Agent, usage: AccountUsage): void {
+    const have = this.latestUsage.get(agent.profile);
+    if (have && have.usage.at > usage.at) return;
+    this.latestUsage.set(agent.profile, {
+      profile: agent.profile,
+      agentId: agent.id,
+      usage,
+    });
+  }
+
   /** The vendor accounts' usage on this machine, one entry per profile that has reported. */
   usage(): { profile: string; agentId: string; usage: AccountUsage }[] {
     return [...this.latestUsage.values()].sort((a, b) =>
@@ -1315,11 +1326,7 @@ export class AgentsService
       this.setBackground(agent, live, ingest.background, sl.attaching);
     if (ingest.usage && sl.id === agent.currentSessionId) {
       live.status = { ...live.status, usage: ingest.usage };
-      this.latestUsage.set(agent.profile, {
-        profile: agent.profile,
-        agentId: agent.id,
-        usage: ingest.usage,
-      });
+      this.noteUsage(agent, ingest.usage);
       if (sl.attaching) live.stateHeld = true;
       else this.emit('state', agent.id, agent.projectId, live.status);
     }
@@ -1826,6 +1833,7 @@ export class AgentsService
           this.setState(agent, live, cached.state, cached.error, true);
           live.status = { ...cached, queued: 0 }; // nothing survives a restart
           live.stateHeld = true;
+          if (cached.usage) this.noteUsage(agent, cached.usage); // the account's state as of the cache
         } else
           this.setState(
             agent,

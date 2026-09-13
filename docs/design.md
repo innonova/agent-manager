@@ -147,7 +147,10 @@ Codex's primary and secondary from `account/rateLimits/updated`, named
 by their length) with used percent and reset time, a verdict when the
 vendor gives one, the plan; the session's `spend` (tokens in and out,
 turns, and dollars when the vendor prices them: Claude's `result`,
-Codex's `thread/tokenUsage/updated`); the `provider` when Claude says
+whose cost is the session's running total, Codex's
+`thread/tokenUsage/updated`, one per model call, counted once per
+turn); each report carries its record's time, and the manager keeps the
+newest per profile, seeded from the cached status after a restart; the `provider` when Claude says
 (firstParty, bedrock, vertex); and the context window's use (Codex,
 Copilot). On Bedrock or Vertex there are no account windows, so spend
 and provider are the usage there is. Copilot exposes no account quota

@@ -237,7 +237,7 @@ export class CopilotAdapter implements AgentAdapter {
     switch (line?.method) {
       case 'session/update':
         if (this.loading) return {}; // replayed history during session/load
-        return this.ingestUpdate(line.params?.update);
+        return this.ingestUpdate(line.params?.update, record.t);
       case 'session/request_permission': {
         const requestId = String(line.id);
         const tc = line.params?.toolCall ?? {};
@@ -411,7 +411,7 @@ export class CopilotAdapter implements AgentAdapter {
     }
   }
 
-  private ingestUpdate(u: any): Ingest {
+  private ingestUpdate(u: any, at: number): Ingest {
     switch (u?.sessionUpdate) {
       case 'usage_update':
         return typeof u.used === 'number' && typeof u.size === 'number'
@@ -419,7 +419,7 @@ export class CopilotAdapter implements AgentAdapter {
               usage: {
                 windows: [],
                 context: { used: u.used, size: u.size },
-                at: Date.now(),
+                at,
               },
             }
           : {};

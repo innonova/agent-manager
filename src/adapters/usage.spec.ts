@@ -75,6 +75,26 @@ describe('account usage from the vendors', () => {
       turns: 1,
       costUsd: 1.21,
     });
+    // the cost is the session's running total: a second result replaces it, tokens add up
+    const r2 = a.ingest(
+      rec(
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'ok',
+          total_cost_usd: 1.5,
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+        3,
+      ),
+    ).usage!;
+    expect(r2.spend).toEqual({
+      inputTokens: 364788,
+      outputTokens: 3032,
+      turns: 2,
+      costUsd: 1.5,
+    });
+    expect(r2.at).toBe(1000); // the record's time
     expect(r.provider).toBe('bedrock');
     expect(r.windows.map((x) => x.name)).toEqual(['7d opus', '7d fable']); // kept alongside
   });
@@ -139,9 +159,43 @@ describe('account usage from the vendors', () => {
         2,
       ),
     ).usage!;
-    expect(u.spend).toMatchObject({ inputTokens: 30925, outputTokens: 58 });
+    expect(u.spend).toMatchObject({
+      inputTokens: 30925,
+      outputTokens: 58,
+      turns: 1,
+    });
     expect(u.context).toEqual({ used: 15523, size: 258400 });
     expect(u.windows.map((w) => w.name)).toEqual(['7d']);
+    expect(u.at).toBe(1000); // the record's time, not now
+    // another report of the same turn does not count a second turn; a new turn does
+    const again = a.ingest(
+      rec(
+        {
+          method: 'thread/tokenUsage/updated',
+          params: {
+            threadId: 't',
+            turnId: 'u',
+            tokenUsage: { total: { inputTokens: 40000, outputTokens: 100 } },
+          },
+        },
+        3,
+      ),
+    ).usage!;
+    expect(again.spend!.turns).toBe(1);
+    const next = a.ingest(
+      rec(
+        {
+          method: 'thread/tokenUsage/updated',
+          params: {
+            threadId: 't',
+            turnId: 'v',
+            tokenUsage: { total: { inputTokens: 50000, outputTokens: 120 } },
+          },
+        },
+        4,
+      ),
+    ).usage!;
+    expect(next.spend!.turns).toBe(2);
   });
   it('copilot: usage_update is the context window only', () => {
     const a = new CopilotAdapter();
