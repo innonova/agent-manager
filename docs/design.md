@@ -140,8 +140,12 @@ values are valid, the vendor rejects a bad one at start.
 The status also carries `queued`, the number of messages held for the
 next turn because they arrived with `steer` while the vendor could not
 take one mid-turn; the oldest is sent as a turn each time the agent
-becomes idle, a stop drops them, and so does a manager restart (they
-live in memory only, since nothing in the daemon log records them).
+becomes idle. Each is held for the session it arrived in: a stop, an
+exit or an archive drops them, a session started since never receives
+them, and a manager restart forgets them (they live in memory only,
+since nothing in the daemon log records them). A refusal that is only
+temporary (busy again, the daemon link down) keeps the message for the
+next idle.
 
 The status also carries `background`, the number of jobs the agent has
 left running (Claude Code's background shell commands and scheduled

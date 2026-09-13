@@ -50,6 +50,15 @@ async function handle(text) {
   }
 }
 
+/** Ends a turn: notes anything steered in meanwhile, then the result. */
+async function finish(t0) {
+  while (steers.length) {
+    const batch = steers.splice(0); // more may arrive while this streams
+    await stream(`Also noted: ${batch.join(' / ')}.`, 15);
+  }
+  out({ type: 'result', durationMs: Date.now() - t0 });
+}
+
 async function turn(text) {
   turns++;
   const t0 = Date.now();
@@ -95,7 +104,7 @@ async function turn(text) {
       out({ type: 'background', count: 1 });
       await stream('Started a background job.');
     }
-    out({ type: 'result', durationMs: Date.now() - t0 });
+    await finish(t0);
     return;
   }
   if (text.includes('tool')) {
@@ -123,11 +132,7 @@ async function turn(text) {
       : `You said: ${text}. Turn ${turns} done.`,
     text.includes('slow') ? 60 : 15,
   );
-  while (steers.length) {
-    const batch = steers.splice(0); // more may arrive while this streams
-    await stream(`Also noted: ${batch.join(' / ')}.`, 15);
-  }
-  out({ type: 'result', durationMs: Date.now() - t0 });
+  await finish(t0);
   if (text.includes('exit')) {
     // answer first, then leave: "please exit" is quick, "slow then exit" streams first
     await sleep(20);

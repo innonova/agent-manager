@@ -530,6 +530,62 @@ describe('steering', () => {
     daemon.removeAllListeners('input');
   }, 40000);
 
+  it('a message held for one session never reaches the session that replaces it', async () => {
+    // turns never report turn/started, so every steer is queued
+    daemon.on('input', (sid, line: any) => {
+      if (line?.method === 'initialize')
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { userAgent: 'scripted' },
+        });
+      if (line?.method === 'thread/start' || line?.method === 'thread/resume') {
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { thread: { id: 'thread-1' } },
+        });
+        daemon.out(sid, {
+          method: 'thread/started',
+          params: { thread: { id: 'thread-1', model: 'scripted-1' } },
+        });
+      }
+      if (line?.method === 'turn/start')
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { turn: { id: 'turn-1' } },
+        });
+    });
+    const id = await newAgent('s4');
+    const s1 = await sessionOf(id);
+    let mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'one' });
+    await stateOf(id, 'working', mark);
+    expect(
+      (await api.post(`/api/agents/${id}/turn`, { text: 'held', steer: true }))
+        .body.mode,
+    ).toBe('queued');
+    // the session ends on its own while the message is held (an exit, not a stop)
+    mark = events.mark();
+    daemon.exit(s1);
+    await stateOf(id, 'exited', mark);
+    expect((await api.get(`/api/agents/${id}`)).body.status.queued).toBe(0);
+    // a resume: the new session gets its own turn and nothing else
+    mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'two' });
+    await stateOf(id, 'working', mark);
+    const s2 = await sessionOf(id);
+    expect(s2).not.toBe(s1);
+    await sleep(300);
+    const sent = daemon
+      .inputs(s2)
+      .filter((l: any) => l.method === 'turn/start')
+      .map((l: any) => l.params.input[0].text);
+    expect(sent).toEqual(['two']);
+    daemon.removeAllListeners('input');
+  }, 30000);
+
   it('two people steering are each credited with their own message', async () => {
     scriptCodex(daemon, { holdTurn: true });
     const id = await newAgent('s3');

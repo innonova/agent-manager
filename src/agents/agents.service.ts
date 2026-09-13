@@ -166,8 +166,8 @@ interface Live {
   adoptionNeeded: boolean;
   /** User ids of turns sent and not yet seen back as input records, in order. */
   pendingAuthors: string[];
-  /** Messages sent while a turn ran that the vendor could not take then; sent as turns when idle. In memory only. */
-  queued: { text: string; userId?: string }[];
+  /** Messages sent while a turn ran that the vendor could not take then; sent as turns when idle, to the session they were held for. In memory only. */
+  queued: { text: string; userId?: string; sessionId: string }[];
   /** A queued message is being sent; no second flush until it is done. */
   flushing: boolean;
   /** When the watchdog last asked about background jobs. */
@@ -595,7 +595,7 @@ export class AgentsService
     id: string,
     text: unknown,
     userId?: string,
-    opts: { steer?: boolean; fromQueue?: boolean } = {},
+    opts: { steer?: boolean; forSession?: string } = {},
   ): Promise<'sent' | 'steered' | 'queued' | 'dropped'> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
@@ -606,10 +606,11 @@ export class AgentsService
       if (agent.archivedAt) throw new ConflictException('agent is archived');
       if (this.deleting.has(agent.projectId))
         throw new ConflictException('project is being deleted');
+      // A held message belongs to the session it was held for: it never
+      // resumes an agent, and never reaches a session started since.
+      if (opts.forSession && agent.currentSessionId !== opts.forSession)
+        return 'dropped';
       if (!agent.currentSessionId) {
-        // A held message belongs to the session it was held for; it never
-        // resumes an agent that was stopped or exited meanwhile.
-        if (opts.fromQueue) return 'dropped';
         await this.startSession(agent, live);
         agent = this.get(id);
       }
@@ -646,7 +647,11 @@ export class AgentsService
           throw busy();
         const lines = sl.adapter.steer?.(text) ?? [];
         if (lines.length === 0) {
-          live.queued.push({ text, userId });
+          live.queued.push({
+            text,
+            userId,
+            sessionId: agent.currentSessionId!,
+          });
           live.status = { ...live.status, queued: live.queued.length };
           this.emit('state', agent.id, agent.projectId, live.status);
           return 'queued';
@@ -707,23 +712,26 @@ export class AgentsService
     this.emit('state', agent.id, agent.projectId, live.status);
     try {
       const mode = await this.turn(id, next.text, next.userId, {
-        fromQueue: true,
+        forSession: next.sessionId,
       });
       if (mode === 'dropped') this.dropQueued(agent, live);
     } catch (err) {
       const e = err as HttpException;
-      if (
+      // Busy again, or the daemon link down: not now, but still owed, as
+      // long as the session it was held for is the current one.
+      const later =
         e instanceof HttpException &&
-        e.getStatus() === 409 &&
-        this.find(id)?.currentSessionId
-      ) {
+        (e.getStatus() === 409 || e.getStatus() === 503);
+      if (later && this.find(id)?.currentSessionId === next.sessionId) {
         live.queued.unshift(next);
         live.status = { ...live.status, queued: live.queued.length };
         this.emit('state', agent.id, agent.projectId, live.status);
-      } else
-        this.logger.warn(
-          `agent ${id}: a queued message could not be sent and was dropped: ${(err as Error).message}`,
-        );
+        live.flushing = false;
+        return; // the next idle (after the reconnect's replay, if that was it) tries again
+      }
+      this.logger.warn(
+        `agent ${id}: a queued message could not be sent and was dropped: ${(err as Error).message}`,
+      );
     } finally {
       live.flushing = false;
     }
