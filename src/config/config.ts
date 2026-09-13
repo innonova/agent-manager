@@ -21,6 +21,8 @@ export interface ManagerConfig {
   trustedProxies: string[];
   /** Interval of websocket pings on /api/events; keeps idle sockets alive through proxies. */
   eventsPingMs: number;
+  /** An agent idle with background jobs and no activity this long is asked to check on them; 0 disables. */
+  backgroundPokeMs: number;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -70,5 +72,8 @@ export function loadConfig(
       .map((s) => s.trim())
       .filter(Boolean),
     eventsPingMs: Number(env.AGENT_MANAGER_EVENTS_PING_MS ?? 25_000),
+    backgroundPokeMs: Number(
+      env.AGENT_MANAGER_BACKGROUND_POKE_MS ?? 30 * 60_000,
+    ),
   };
 }

@@ -166,6 +166,14 @@ does not contain, so a decision refused or lost in flight can be given
 again. A turn is also refused while the adapter still has a turn open,
 whatever state is displayed (a refused interrupt is not the turn ending).
 
+Every transcript item carries `at`, the time of the daemon record it
+came from, so clients can show when a turn ended, a permission was asked
+or a job started. An agent idle with background jobs and no activity for
+`AGENT_MANAGER_BACKGROUND_POKE_MS` (30 minutes) is poked: a short turn
+asking it to check whether the jobs are still alive, since a job that
+died without notifying leaves the agent waiting forever. At most one poke
+per interval, none while the daemon is disconnected.
+
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
 the `errors` array of an error result, then `result`, then the subtype).
@@ -571,6 +579,7 @@ swept once a minute.
 | `AGENT_MANAGER_SECURE_COOKIE` | `0` | force Secure cookies |
 | `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
 | `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
+| `AGENT_MANAGER_BACKGROUND_POKE_MS` | `1800000` | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables |
 | `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
 

@@ -1,10 +1,12 @@
 import {
   BadRequestException,
+  Inject,
   ConflictException,
   HttpException,
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
@@ -24,6 +26,8 @@ import {
   DaemonSession,
   LogRecord,
 } from '../daemon/daemon-client.js';
+import { MANAGER_CONFIG } from '../config/config.js';
+import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
 
@@ -62,6 +66,8 @@ export interface StoredItem {
   /** Daemon record range the item was built from; 0 for synthetic boundary items. */
   seqFrom: number;
   seqTo: number;
+  /** When the item first appeared, unix ms (the daemon record's time). */
+  at: number;
   item: Item;
 }
 
@@ -119,6 +125,8 @@ interface Live {
   adoptionNeeded: boolean;
   /** User ids of turns sent and not yet seen back as input records, in order. */
   pendingAuthors: string[];
+  /** When the watchdog last asked about background jobs. */
+  lastPokeAt: number;
   /**
    * The status changed while a replay was in flight and has not been
    * announced: states derived from history are applied silently and only
@@ -210,7 +218,7 @@ const asHttp = (err: unknown): unknown =>
 @Injectable()
 export class AgentsService
   extends EventEmitter<AgentEvents>
-  implements OnModuleInit
+  implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(AgentsService.name);
   private readonly live = new Map<string, Live>();
@@ -219,9 +227,11 @@ export class AgentsService
   /** projects being deleted; creates and turns are refused meanwhile */
   private readonly deleting = new Set<string>();
   private resyncChain: Promise<void> = Promise.resolve();
+  private watchdog: NodeJS.Timeout | null = null;
   private resyncGeneration = 0;
 
   constructor(
+    @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly dbs: DbService,
     private readonly daemon: DaemonClient,
     private readonly adapters: AdaptersService,
@@ -234,7 +244,49 @@ export class AgentsService
     return this.dbs.db;
   }
 
+  /**
+   * An agent idle with background jobs for a long time may be waiting on
+   * something that died without saying so. Every minute, any agent idle
+   * with jobs pending and no activity for `backgroundPokeMs` gets a short
+   * turn asking it to check on them, at most once per interval.
+   */
+  private startWatchdog(): void {
+    this.watchdog = setInterval(() => void this.pokeStalled(), 60_000);
+    this.watchdog.unref();
+  }
+
+  private async pokeStalled(): Promise<void> {
+    const limit = this.config.backgroundPokeMs;
+    if (!limit || !this.daemon.connected) return;
+    const now = Date.now();
+    for (const [id, live] of this.live) {
+      const st = live.status;
+      if (st.state !== 'idle' || !st.background) continue;
+      if (now - st.lastActivityAt < limit) continue;
+      if (live.lastPokeAt && now - live.lastPokeAt < limit) continue;
+      live.lastPokeAt = now;
+      const minutes = Math.round((now - st.lastActivityAt) / 60_000);
+      const jobs = `${st.background} background job${st.background === 1 ? '' : 's'}`;
+      this.logger.log(`poking agent ${id}: ${jobs} pending for ${minutes} min`);
+      try {
+        await this.turn(
+          id,
+          `You have had ${jobs} pending for ${minutes} minutes with no news. Check whether they are still running; if one has finished or died, act on it or report it. If all is well and still running, say so briefly.`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `poke of agent ${id} failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  onModuleDestroy(): void {
+    if (this.watchdog) clearInterval(this.watchdog);
+  }
+
   onModuleInit(): void {
+    this.startWatchdog();
     this.daemon.on('output', (id, record) => this.onOutput(id, record));
     this.daemon.on('changed', (session) => this.onSessionChanged(session));
     this.daemon.on('connected', () => this.scheduleResync());
@@ -921,7 +973,7 @@ export class AgentsService
       agent.vendorConversationId = ingest.conversationId;
     }
     for (const op of ingest.ops ?? [])
-      this.applyOp(agent.id, live, sl, record.seq, op);
+      this.applyOp(agent.id, live, sl, record.seq, op, record.t);
     if (ingest.send?.length) {
       if (sl.attaching)
         sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
@@ -947,6 +999,7 @@ export class AgentsService
     sl: SessionLive,
     seq: number,
     op: ItemOp,
+    at = Date.now(),
   ): void {
     if (op.op === 'update') {
       const index = sl.keys.get(op.key);
@@ -960,7 +1013,7 @@ export class AgentsService
       }
     }
     if (op.item.kind === 'user') this.attribute(live, sl, seq, op.item);
-    const stored = this.appendItem(agentId, live, sl.id, seq, op.item);
+    const stored = this.appendItem(agentId, live, sl.id, seq, op.item, at);
     if (op.key) sl.keys.set(op.key, stored.index);
   }
 
@@ -1287,6 +1340,7 @@ export class AgentsService
         adoptionNeeded: true,
         stateHeld: false,
         pendingAuthors: [],
+        lastPokeAt: 0,
       };
       this.live.set(agent.id, live);
     }
@@ -1357,12 +1411,14 @@ export class AgentsService
     sessionId: string,
     seq: number,
     item: Item,
+    at = Date.now(),
   ): StoredItem {
     const stored: StoredItem = {
       index: live.items.length,
       sessionId,
       seqFrom: seq,
       seqTo: seq,
+      at,
       item,
     };
     live.items.push(stored);

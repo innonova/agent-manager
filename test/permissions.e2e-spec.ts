@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { AgentsService } from '../src/agents/agents.service.js';
 import {
   Api,
   Events,
@@ -49,6 +50,80 @@ afterAll(async () => {
   await events?.close();
   await m?.stop();
   await daemon?.stop();
+});
+
+describe('background watchdog', () => {
+  it('an agent idle with background jobs and no activity is asked to check on them', async () => {
+    const m2 = await startManager(daemon.url, undefined, {
+      backgroundPokeMs: 300,
+    });
+    const api2 = new Api(m2.url);
+    await api2.login();
+    const ev = await Events.connect(m2.url, api2.cookie);
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-poke-'));
+      const project = (
+        await api2.post('/api/projects', { name: 'poke', path: dir })
+      ).body.project;
+      const agent = (
+        await api2.post(`/api/projects/${project.id}/agents`, {
+          name: 'bg',
+          profile: 'fake',
+        })
+      ).body.agent;
+      await ev.waitFor(
+        (f) =>
+          f.type === 'agent.state' &&
+          f.agentId === agent.id &&
+          f.status.state === 'idle',
+        10000,
+      );
+      let mark = ev.mark();
+      await api2.post(`/api/agents/${agent.id}/turn`, {
+        text: 'start a background job',
+      });
+      await ev.waitFor(
+        (f) =>
+          f.type === 'agent.state' &&
+          f.agentId === agent.id &&
+          f.status.state === 'idle' &&
+          f.status.background === 1,
+        10000,
+        mark,
+      );
+      // the watchdog runs every minute in production; here it is driven directly
+      mark = ev.mark();
+      await sleep(400);
+      await (m2.app.get(AgentsService) as any).pokeStalled();
+      const poke = await ev.waitFor(
+        (f) =>
+          f.type === 'agent.item' &&
+          f.agentId === agent.id &&
+          f.item.item.kind === 'user' &&
+          /background job/.test(f.item.item.text),
+        10000,
+        mark,
+      );
+      expect(poke.item.item.by).toBeUndefined(); // the manager asked, not a user
+      await ev.waitFor(
+        (f) =>
+          f.type === 'agent.state' &&
+          f.agentId === agent.id &&
+          f.status.state === 'idle' &&
+          f.status.background === 0,
+        10000,
+        mark,
+      );
+      const items = (await api2.get(`/api/agents/${agent.id}/items`)).body
+        .items;
+      expect(
+        items.every((i: any) => typeof i.at === 'number' && i.at > 0),
+      ).toBe(true);
+    } finally {
+      await ev.close();
+      await m2.stop();
+    }
+  }, 30000);
 });
 
 describe('permissions', () => {

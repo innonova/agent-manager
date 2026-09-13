@@ -185,6 +185,8 @@ export class FakeAdapter implements AgentAdapter {
           ],
         };
       }
+      case 'background':
+        return { background: Number(line.count) || 0 };
       case 'thinking':
         return { ops: [append({ kind: 'thinking', text: line.text })] };
       case 'tool_use':
