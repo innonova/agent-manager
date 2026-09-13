@@ -25,7 +25,14 @@ export interface PermissionRequest {
 }
 
 export type Item =
-  | { kind: 'user'; text: string; /** Who sent it, when known. */ by?: string }
+  | {
+      kind: 'user';
+      text: string;
+      /** Who sent it, when known. */
+      by?: string;
+      /** Images sent with it, as they went to the agent. */
+      images?: TurnImage[];
+    }
   | {
       kind: 'permission';
       requestId: string;
@@ -90,6 +97,12 @@ export interface Ingest {
  * a record in, an Ingest out, with only per-session parsing state. One
  * instance per daemon session.
  */
+/** An image sent with a turn: base64, with its media type. */
+export interface TurnImage {
+  mediaType: string;
+  data: string;
+}
+
 export interface AgentAdapter {
   /** State right after the process starts, before it has said anything. Default 'starting'. */
   readonly initialState?: AgentState;
@@ -128,7 +141,7 @@ export interface AgentAdapter {
    * empty list, means the vendor cannot take one now; the manager queues
    * the message for the next turn instead.
    */
-  steer?(text: string): unknown[];
+  steer?(text: string, images?: TurnImage[]): unknown[];
   /**
    * Cross-turn parsing state at a quiescent point (a turn end), as plain
    * JSON, so a restart can continue from a cached transcript without
@@ -141,7 +154,7 @@ export interface AgentAdapter {
   /** stdin lines answering a pending request with one of its options; null if no such request. */
   decide?(requestId: string, optionId: string): unknown[] | null;
   /** stdin lines for a user turn. */
-  turn(text: string): unknown[];
+  turn(text: string, images?: TurnImage[]): unknown[];
   /** stdin lines to interrupt the current turn, if supported. */
   interrupt?(): unknown[];
   /** Whether the log so far shows a turn without its result yet. */

@@ -414,6 +414,20 @@ every agent on the next start and nothing else. Nothing on disk is
 trimmed; the daemon log and this cache grow with use, which is cheap
 until it is not, and that day it becomes a decision of its own.
 
+## Images with a turn
+
+A turn may carry images, pasted into the web UI or given to the CLI.
+They travel as base64 in the same input line as the text, each vendor
+in its own shape (Claude an `image` content block, Codex an `image`
+input with a data URL, Copilot an ACP `image` block; the fake agent
+counts them), so the daemon log holds them and a transcript rebuilt from
+the log shows them again: the user item carries `images` exactly as
+sent. That is the reason for the limits (four per turn, three megabytes
+each, six per turn): the daemon takes lines up to ten megabytes, and the
+transcript cache and the items pages carry whatever the log carries. A
+pasted screenshot is a few hundred kilobytes; if large images become
+common, storing them beside the log is the change to make.
+
 ## Transcript items
 
 A `user` item carries `by`, the name of the user who sent the turn, when
@@ -427,7 +441,7 @@ in their heading (`## Response (date, name)`).
 
 ```ts
 type Item =
-  | { kind: 'user'; text: string; by?: string }   // by: the user who sent it, when known
+  | { kind: 'user'; text: string; by?: string; images?: [{ mediaType, data }] }   // by: the user who sent it; images: base64, as they went to the agent
   | { kind: 'text'; text: string; streaming: boolean }
   | { kind: 'thinking'; text: string }
   | { kind: 'permission'; requestId: string; tool: string; title: string; input: unknown; options: { id, kind: 'allow' | 'allow-always' | 'deny', label }[]; decision: string | null }
@@ -622,7 +636,7 @@ GET    /api/projects/:id/agents                                 -> [{ agent, sta
 POST   /api/projects/:id/agents     { name, profile, cwd?, permissions?, model?, effort? } -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
-POST   /api/agents/:id/turn         { text, steer? }            -> 202 { mode: 'sent' | 'steered' | 'queued' }; without `steer`, 409 { code: 'agent-busy' } while a turn runs (with it, the message is steered into the turn or queued for the next one; still 409 while starting or waiting on a permission); 503 { code: 'agent-unavailable' } if the session's output cannot be attached
+POST   /api/agents/:id/turn         { text, steer?, images? }   -> 202 { mode: 'sent' | 'steered' | 'queued' }; images: [{ mediaType, data }] base64, png/jpeg/gif/webp, at most 4, 3 MB each and 6 MB per turn (400 otherwise); without `steer`, 409 { code: 'agent-busy' } while a turn runs (with it, the message is steered into the turn or queued for the next one; still 409 while starting or waiting on a permission); 503 { code: 'agent-unavailable' } if the session's output cannot be attached
 POST   /api/agents/:id/permission { requestId, option }       -> answers a pending permission request with one of the options the item offered; 404 if none is pending
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)

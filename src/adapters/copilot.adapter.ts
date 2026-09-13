@@ -1,6 +1,7 @@
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
   AgentAdapter,
+  TurnImage,
   AdapterFactory,
   Ingest,
   Item,
@@ -178,12 +179,19 @@ export class CopilotAdapter implements AgentAdapter {
     return this.turnOpen;
   }
 
-  turn(text: string): unknown[] {
+  turn(text: string, images: TurnImage[] = []): unknown[] {
     if (!this.sessionId) return [];
     return [
       this.rpc('prompt', {
         sessionId: this.sessionId,
-        prompt: [{ type: 'text', text }],
+        prompt: [
+          { type: 'text', text },
+          ...images.map((i) => ({
+            type: 'image',
+            mimeType: i.mediaType,
+            data: i.data,
+          })),
+        ],
       }),
     ];
   }
@@ -297,11 +305,27 @@ export class CopilotAdapter implements AgentAdapter {
       if (kind === 'prompt') {
         this.turnOpen = true;
         this.endText();
-        const text = (line.params?.prompt ?? [])
-          .filter((b: any) => b.type === 'text')
-          .map((b: any) => b.text)
+        const blocks = (line.params?.prompt ?? []) as any[];
+        const text = blocks
+          .filter((b) => b.type === 'text')
+          .map((b) => b.text)
           .join('');
-        return { state: 'working', ops: [append({ kind: 'user', text })] };
+        const images = blocks
+          .filter((b) => b.type === 'image' && typeof b.data === 'string')
+          .map((b) => ({
+            mediaType: String(b.mimeType ?? 'image/png'),
+            data: String(b.data),
+          }));
+        return {
+          state: 'working',
+          ops: [
+            append({
+              kind: 'user',
+              text,
+              ...(images.length ? { images } : {}),
+            }),
+          ],
+        };
       }
     }
     if (

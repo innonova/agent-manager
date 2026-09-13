@@ -159,8 +159,13 @@ rl.on('line', (line) => {
     return;
   }
   if (msg.type === 'user') {
-    if (inFlight) steers.push(String(msg.text));
-    else chain = chain.then(() => handle(String(msg.text)));
+    // images come along as base64; the fake only counts them
+    const n = Array.isArray(msg.images) ? msg.images.length : 0;
+    const text = n
+      ? `${msg.text} [with ${n} image${n === 1 ? '' : 's'}]`
+      : String(msg.text);
+    if (inFlight) steers.push(text);
+    else chain = chain.then(() => handle(text));
   }
 });
 rl.on('close', () => process.exit(0));

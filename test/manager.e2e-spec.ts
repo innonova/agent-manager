@@ -328,6 +328,53 @@ describe('projects', () => {
 });
 
 describe('agents', () => {
+  it('a turn may carry images, within limits; they show on the user item and reach the agent', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'looker');
+    const png = { mediaType: 'image/png', data: 'iVBORw0KGgo=' };
+    const mark = events.mark();
+    const r = await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'look',
+      images: [png, png],
+    });
+    expect(r.status).toBe(202);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      15000,
+      mark,
+    );
+    const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as any[];
+    const user = items.find((i) => i.item.kind === 'user');
+    expect(user.item.images).toEqual([png, png]);
+    expect(
+      items.some(
+        (i) => i.item.kind === 'text' && /with 2 images/.test(i.item.text),
+      ),
+    ).toBe(true);
+    // limits and shapes
+    const bad = async (images: unknown) =>
+      (await api.post(`/api/agents/${agent.id}/turn`, { text: 'x', images }))
+        .status;
+    expect(await bad('nope')).toBe(400);
+    expect(await bad([{ mediaType: 'text/plain', data: 'aGk=' }])).toBe(400);
+    expect(await bad([{ mediaType: 'image/png', data: 'not base64!' }])).toBe(
+      400,
+    );
+    expect(await bad(Array(5).fill(png))).toBe(400);
+    expect(
+      await bad([
+        {
+          mediaType: 'image/png',
+          data: 'A'.repeat((4 * 1024 * 1024 * 4) / 3 + 4),
+        },
+      ]),
+    ).toBe(400);
+  }, 30000);
+
   it('a message during a turn is refused without steer and taken mid-turn with it', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'steered');

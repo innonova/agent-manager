@@ -1,6 +1,7 @@
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
   AgentAdapter,
+  TurnImage,
   AdapterFactory,
   Ingest,
   Item,
@@ -120,13 +121,22 @@ export class ClaudeAdapter implements AgentAdapter {
     return this.turnOpen;
   }
 
-  turn(text: string): unknown[] {
-    return [{ type: 'user', message: { role: 'user', content: text } }];
+  turn(text: string, images: TurnImage[] = []): unknown[] {
+    const content = images.length
+      ? [
+          { type: 'text', text },
+          ...images.map((i) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: i.mediaType, data: i.data },
+          })),
+        ]
+      : text;
+    return [{ type: 'user', message: { role: 'user', content } }];
   }
 
   /** Claude Code takes a user message during a turn and reads it after the running tool. */
-  steer(text: string): unknown[] {
-    return this.turn(text);
+  steer(text: string, images: TurnImage[] = []): unknown[] {
+    return this.turn(text, images);
   }
 
   interrupt(): unknown[] {
@@ -295,17 +305,32 @@ export class ClaudeAdapter implements AgentAdapter {
                 .map((b: any) => b.text)
                 .join('')
             : '';
+      const images = Array.isArray(c)
+        ? c
+            .filter(
+              (b: any) => b.type === 'image' && b.source?.type === 'base64',
+            )
+            .map((b: any) => ({
+              mediaType: String(b.source.media_type),
+              data: String(b.source.data),
+            }))
+        : [];
+      const item = {
+        kind: 'user' as const,
+        text,
+        ...(images.length ? { images } : {}),
+      };
       if (this.turnOpen) {
         // A message steered into the running turn: the stream under way
         // and any pending permission are untouched by it.
         return {
           state: this.permissions.size ? 'waiting-permission' : 'working',
-          ops: [append({ kind: 'user', text })],
+          ops: [append(item)],
         };
       }
       this.turnOpen = true;
       this.streaming = null;
-      return { state: 'working', ops: [append({ kind: 'user', text })] };
+      return { state: 'working', ops: [append(item)] };
     }
     if (
       line?.type === 'control_request' &&

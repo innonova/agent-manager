@@ -18,6 +18,7 @@ import type {
   Item,
   ItemOp,
   Permissions,
+  TurnImage,
 } from '../adapters/adapter.js';
 import { AdaptersService } from '../adapters/adapters.service.js';
 import {
@@ -167,7 +168,12 @@ interface Live {
   /** User ids of turns sent and not yet seen back as input records, in order. */
   pendingAuthors: string[];
   /** Messages sent while a turn ran that the vendor could not take then; sent as turns when idle, to the session they were held for. In memory only. */
-  queued: { text: string; userId?: string; sessionId: string }[];
+  queued: {
+    text: string;
+    userId?: string;
+    images: TurnImage[];
+    sessionId: string;
+  }[];
   /** A queued message is being sent; no second flush until it is done. */
   flushing: boolean;
   /** When the watchdog last asked about background jobs. */
@@ -595,10 +601,11 @@ export class AgentsService
     id: string,
     text: unknown,
     userId?: string,
-    opts: { steer?: boolean; forSession?: string } = {},
+    opts: { steer?: boolean; forSession?: string; images?: unknown } = {},
   ): Promise<'sent' | 'steered' | 'queued' | 'dropped'> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
+    const images = parseImages(opts.images);
     const live = this.ensureLive(this.get(id));
     await this.awaitSynced(live);
     return await this.withLock(live, async () => {
@@ -645,11 +652,12 @@ export class AgentsService
           live.status.state === 'waiting-permission'
         )
           throw busy();
-        const lines = sl.adapter.steer?.(text) ?? [];
+        const lines = sl.adapter.steer?.(text, images) ?? [];
         if (lines.length === 0) {
           live.queued.push({
             text,
             userId,
+            images,
             sessionId: agent.currentSessionId!,
           });
           live.status = { ...live.status, queued: live.queued.length };
@@ -670,7 +678,7 @@ export class AgentsService
       }
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
-      const lines = sl.adapter.turn(text);
+      const lines = sl.adapter.turn(text, images);
       if (lines.length === 0)
         throw unavailable('the session is not ready for a turn yet');
       const before = live.status;
@@ -713,6 +721,7 @@ export class AgentsService
     try {
       const mode = await this.turn(id, next.text, next.userId, {
         forSession: next.sessionId,
+        images: next.images,
       });
       if (mode === 'dropped') this.dropQueued(agent, live);
     } catch (err) {
@@ -2026,4 +2035,51 @@ export class AgentsService
     if (live.status.state === 'idle' && live.queued.length)
       setImmediate(() => void this.flushQueued(agent.id));
   }
+}
+
+/** Images a turn may carry: a few, small enough to travel in one daemon log line with room to spare. */
+export const IMAGE_LIMITS = {
+  count: 4,
+  /** raw bytes per image */
+  bytes: 3 * 1024 * 1024,
+  /** raw bytes per turn */
+  total: 6 * 1024 * 1024,
+  types: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+};
+
+/** `images` from a request: `[{ mediaType, data }]`, base64, within IMAGE_LIMITS. */
+function parseImages(raw: unknown): TurnImage[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw))
+    throw new BadRequestException('"images" must be a list');
+  if (raw.length > IMAGE_LIMITS.count)
+    throw new BadRequestException(
+      `at most ${IMAGE_LIMITS.count} images per turn`,
+    );
+  let total = 0;
+  const out: TurnImage[] = [];
+  for (const i of raw as unknown[]) {
+    const o = (i ?? {}) as { mediaType?: unknown; data?: unknown };
+    if (
+      typeof o.mediaType !== 'string' ||
+      !IMAGE_LIMITS.types.includes(o.mediaType)
+    )
+      throw new BadRequestException(
+        `image type must be one of ${IMAGE_LIMITS.types.join(', ')}`,
+      );
+    if (typeof o.data !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(o.data))
+      throw new BadRequestException('image data must be base64');
+    const bytes = Math.floor((o.data.length * 3) / 4);
+    if (bytes > IMAGE_LIMITS.bytes)
+      throw new BadRequestException(
+        `an image may be at most ${IMAGE_LIMITS.bytes / 1024 / 1024} MB`,
+      );
+    total += bytes;
+    if (total > IMAGE_LIMITS.total)
+      throw new BadRequestException(
+        `images may total at most ${IMAGE_LIMITS.total / 1024 / 1024} MB per turn`,
+      );
+    out.push({ mediaType: o.mediaType, data: o.data });
+  }
+  return out;
 }

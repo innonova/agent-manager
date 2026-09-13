@@ -23,6 +23,8 @@ export async function createApp(
   );
   app.useWebSocketAdapter(new WsAdapter(app));
   app.useGlobalFilters(new DaemonErrorFilter());
+  // A turn may carry a few images as base64 (see IMAGE_LIMITS); nothing else needs more than a megabyte.
+  app.use('/api/agents/:id/turn', express.json({ limit: '12mb' }));
   app.use(express.json({ limit: '1mb' }));
   const config = app.get<ManagerConfig>(MANAGER_CONFIG);
   // Only a configured proxy may tell us the client address (login throttling keys on it).

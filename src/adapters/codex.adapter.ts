@@ -1,6 +1,7 @@
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
   AgentAdapter,
+  TurnImage,
   AdapterFactory,
   Ingest,
   Item,
@@ -174,24 +175,24 @@ export class CodexAdapter implements AgentAdapter {
     return this.turnOpen;
   }
 
-  turn(text: string): unknown[] {
+  turn(text: string, images: TurnImage[] = []): unknown[] {
     if (!this.threadId) return [];
     return [
       this.rpc('turn', 'turn/start', {
         threadId: this.threadId,
-        input: [{ type: 'text', text }],
+        input: userInput(text, images),
       }),
     ];
   }
 
   /** `turn/steer`: input the model sees at its next step of the active turn; nothing before the turn id is known. */
-  steer(text: string): unknown[] {
+  steer(text: string, images: TurnImage[] = []): unknown[] {
     if (!this.threadId || !this.turnId) return [];
     return [
       this.rpc('steer', 'turn/steer', {
         threadId: this.threadId,
         expectedTurnId: this.turnId,
-        input: [{ type: 'text', text }],
+        input: userInput(text, images),
       }),
     ];
   }
@@ -368,23 +369,17 @@ export class CodexAdapter implements AgentAdapter {
       if (line.id >= this.nextId) this.nextId = line.id + 1;
       if (kind === 'turn') {
         this.turnOpen = true;
-        const text = (line.params?.input ?? [])
-          .filter((b: any) => b.type === 'text')
-          .map((b: any) => b.text)
-          .join('');
-        return { state: 'working', ops: [append({ kind: 'user', text })] };
+        return {
+          state: 'working',
+          ops: [append(userItem(line.params?.input))],
+        };
       }
       if (kind === 'interrupt')
         return {
           ops: [append({ kind: 'system', text: 'interrupt requested' })],
         };
-      if (kind === 'steer') {
-        const text = (line.params?.input ?? [])
-          .filter((b: any) => b.type === 'text')
-          .map((b: any) => b.text)
-          .join('');
-        return { ops: [append({ kind: 'user', text })] };
-      }
+      if (kind === 'steer')
+        return { ops: [append(userItem(line.params?.input))] };
     }
     return {};
   }
@@ -629,3 +624,36 @@ export const codexAdapterFactory: AdapterFactory = {
   profile: 'codex',
   create: () => new CodexAdapter(),
 };
+
+/** Codex's `UserInput[]`: the text, then each image as a data URL. */
+function userInput(text: string, images: TurnImage[]): unknown[] {
+  return [
+    { type: 'text', text },
+    ...images.map((i) => ({
+      type: 'image',
+      url: `data:${i.mediaType};base64,${i.data}`,
+    })),
+  ];
+}
+
+/** The user item for a logged `turn/start` or `turn/steer` input: its text and any images. */
+function userItem(input: unknown): Item {
+  const blocks = Array.isArray(input) ? (input as any[]) : [];
+  const text = blocks
+    .filter((b) => b.type === 'text')
+    .map((b) => String(b.text ?? ''))
+    .join('');
+  const images = blocks
+    .filter(
+      (b) =>
+        b.type === 'image' &&
+        typeof b.url === 'string' &&
+        b.url.startsWith('data:'),
+    )
+    .map((b) => {
+      const m = /^data:([^;]+);base64,(.*)$/s.exec(b.url as string);
+      return m ? { mediaType: m[1]!, data: m[2]! } : null;
+    })
+    .filter((x): x is TurnImage => x !== null);
+  return { kind: 'user', text, ...(images.length ? { images } : {}) };
+}

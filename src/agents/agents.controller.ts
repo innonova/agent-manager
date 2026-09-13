@@ -89,10 +89,11 @@ export class AgentsController {
   async turn(
     @Req() req: Request & { user?: User },
     @Param('id') id: string,
-    @Body() body: { text?: unknown; steer?: unknown },
+    @Body() body: { text?: unknown; steer?: unknown; images?: unknown },
   ): Promise<{ ok: true; mode: 'sent' | 'steered' | 'queued' }> {
     const mode = await this.agents.turn(id, body?.text, req.user?.id, {
       steer: body?.steer === true,
+      images: body?.images,
     });
     // 'dropped' only happens for a message the manager itself sends from its queue
     return { ok: true, mode: mode === 'dropped' ? 'queued' : mode };

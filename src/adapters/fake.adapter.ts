@@ -1,6 +1,7 @@
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
   AgentAdapter,
+  TurnImage,
   AdapterFactory,
   Ingest,
   Item,
@@ -80,12 +81,12 @@ export class FakeAdapter implements AgentAdapter {
     return this.turnOpen;
   }
 
-  turn(text: string): unknown[] {
-    return [{ type: 'user', text }];
+  turn(text: string, images: TurnImage[] = []): unknown[] {
+    return [{ type: 'user', text, ...(images.length ? { images } : {}) }];
   }
 
-  steer(text: string): unknown[] {
-    return this.turn(text);
+  steer(text: string, images: TurnImage[] = []): unknown[] {
+    return this.turn(text, images);
   }
 
   interrupt(): unknown[] {
@@ -104,9 +105,18 @@ export class FakeAdapter implements AgentAdapter {
     if (record.s === 'in') {
       if (line.type === 'user') {
         this.turnOpen = true;
+        const images = Array.isArray(line.images)
+          ? (line.images as TurnImage[])
+          : [];
         return {
           state: 'working',
-          ops: [append({ kind: 'user', text: line.text })],
+          ops: [
+            append({
+              kind: 'user',
+              text: line.text,
+              ...(images.length ? { images } : {}),
+            }),
+          ],
         };
       }
       if (line.type === 'interrupt')
