@@ -69,6 +69,9 @@ export class FilesService {
     const raw = rel === undefined || rel === null ? '' : rel;
     if (typeof raw !== 'string')
       throw new BadRequestException('"path" must be a string');
+    // `..` is judged on the raw components, before normalisation folds it away
+    if (raw.replace(/\\/g, '/').split('/').includes('..'))
+      throw new BadRequestException('"path" may not leave the project');
     const normalised = path.posix
       .normalize(raw.replace(/\\/g, '/'))
       .replace(/^\/+/, '')
@@ -198,10 +201,16 @@ export class FilesService {
     }
     if (st.isDirectory())
       throw new BadRequestException(`is a directory: ${clean}`);
+    if (!st.isFile())
+      throw new BadRequestException(`not a regular file: ${clean}`);
     const base = { path: clean, size: st.size, mtime: st.mtimeMs };
     if (st.size > MAX_FILE_BYTES)
       return { ...base, content: '', binary: false, truncated: true };
-    const buf = await fs.readFile(abs);
+    const read = await readRegular(abs, MAX_FILE_BYTES);
+    if (read === null) throw new NotFoundException(`no such file: ${clean}`);
+    if (read.truncated)
+      return { ...base, content: '', binary: false, truncated: true };
+    const buf = read.buf;
     const head = buf.subarray(0, 8192);
     if (head.includes(0))
       return { ...base, content: '', binary: true, truncated: false };
@@ -323,4 +332,35 @@ export function gitStatus(
       );
     });
   });
+}
+
+/**
+ * Reads a regular file, at most `max` bytes (+1 to know it overflowed).
+ * The descriptor is checked after opening so a FIFO or a device cannot
+ * block a worker, and a file that grew since it was stat'ed cannot exceed
+ * the cap. Null when the file is gone.
+ */
+export async function readRegular(
+  abs: string,
+  max: number,
+): Promise<{ buf: Buffer; truncated: boolean } | null> {
+  let fh: import('node:fs/promises').FileHandle;
+  try {
+    fh = await fs.open(abs, 'r');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) throw new BadRequestException('not a regular file');
+    const buf = Buffer.alloc(Math.min(st.size, max) + 1);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return {
+      buf: buf.subarray(0, Math.min(bytesRead, max)),
+      truncated: bytesRead > max,
+    };
+  } finally {
+    await fh.close();
+  }
 }

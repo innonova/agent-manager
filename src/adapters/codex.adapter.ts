@@ -53,8 +53,34 @@ export class CodexAdapter implements AgentAdapter {
     }
   >();
   private permissionsMode: Permissions = 'bypass';
-  /** Request kinds already in the log, so a replayed reply never repeats a handshake step. */
+  /** Request kinds already in the log, and whether initialize was answered: what a replay owes. */
   private sentKinds = new Set<string>();
+  private initReplied = false;
+  private cwd = '';
+
+  afterReplay(opts: {
+    cwd: string;
+    resume?: string | null;
+    permissions?: Permissions;
+  }): unknown[] {
+    this.permissionsMode = opts.permissions ?? this.permissionsMode;
+    this.resume = opts.resume ?? this.resume;
+    // a reservation whose answer never reached the log is released
+    for (const a of this.approvals.values()) a.answered = false;
+    if (!this.sentKinds.has('initialize')) return this.startLines(opts);
+    if (this.initReplied && !this.sentKinds.has('thread'))
+      return [{ jsonrpc: '2.0', method: 'initialized' }, this.threadLine()];
+    return [];
+  }
+
+  private threadLine(): unknown {
+    return this.resume
+      ? this.rpc('thread', 'thread/resume', {
+          threadId: this.resume,
+          ...this.policy(),
+        })
+      : this.rpc('thread', 'thread/start', this.policy());
+  }
 
   pendingPermissions(): PermissionRequest[] {
     return [...this.approvals].map(([requestId, a]) => ({
@@ -269,6 +295,8 @@ export class CodexAdapter implements AgentAdapter {
                 : null;
       if (kind) this.pending.set(line.id, kind);
       if (kind) this.sentKinds.add(kind);
+      if (line.method === 'thread/resume' && line.params?.threadId)
+        this.resume = String(line.params.threadId);
       if (line.id >= this.nextId) this.nextId = line.id + 1;
       if (kind === 'turn') {
         this.turnOpen = true;
@@ -325,7 +353,9 @@ export class CodexAdapter implements AgentAdapter {
     };
     for (const d of decisions) {
       if (typeof d === 'string') {
-        const o = STRING_DECISIONS[d];
+        const o = Object.hasOwn(STRING_DECISIONS, d)
+          ? STRING_DECISIONS[d]
+          : undefined;
         if (!o || values.has(o.id)) continue;
         values.set(o.id, d);
         options.push({ id: o.id, kind: o.kind, label: o.label });
@@ -381,7 +411,17 @@ export class CodexAdapter implements AgentAdapter {
     this.pending.delete(line.id);
     if (line.error) {
       const message = String(line.error.message ?? JSON.stringify(line.error));
-      if (kind === 'turn') this.turnOpen = false;
+      if (kind === 'interrupt')
+        // the turn is still running; only the interrupt was refused
+        return {
+          ops: [
+            append({ kind: 'system', text: `interrupt refused: ${message}` }),
+          ],
+        };
+      if (kind === 'turn') {
+        this.turnOpen = false;
+        this.approvals.clear();
+      }
       return {
         state: 'error',
         error: message,
@@ -390,17 +430,9 @@ export class CodexAdapter implements AgentAdapter {
     }
     switch (kind) {
       case 'initialize':
-        if (this.sentKinds.has('thread')) return {}; // already past this step
+        this.initReplied = true;
         return {
-          send: [
-            { jsonrpc: '2.0', method: 'initialized' },
-            this.resume
-              ? this.rpc('thread', 'thread/resume', {
-                  threadId: this.resume,
-                  ...this.policy(),
-                })
-              : this.rpc('thread', 'thread/start', this.policy()),
-          ],
+          send: [{ jsonrpc: '2.0', method: 'initialized' }, this.threadLine()],
         };
       case 'thread': {
         this.threadId = line.result?.thread?.id ?? this.resume ?? null;

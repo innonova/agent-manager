@@ -58,8 +58,30 @@ export class CopilotAdapter implements AgentAdapter {
     ];
   }
 
-  /** Request kinds already in the log, so a replayed reply never repeats a handshake step. */
+  /** Request kinds already in the log, and whether initialize was answered: what a replay owes. */
   private sentKinds = new Set<string>();
+  private initReplied = false;
+
+  afterReplay(opts: {
+    cwd: string;
+    resume?: string | null;
+    permissions?: Permissions;
+  }): unknown[] {
+    this.cwd = opts.cwd;
+    this.resume = this.resume ?? opts.resume ?? null;
+    for (const p of this.permissions.values()) p.answered = false;
+    if (!this.sentKinds.has('initialize')) return this.startLines(opts);
+    if (this.initReplied && !this.sentKinds.has('session'))
+      return [
+        this.rpc(
+          'session',
+          this.resume
+            ? { sessionId: this.resume, cwd: this.cwd, mcpServers: [] }
+            : { cwd: this.cwd, mcpServers: [] },
+        ),
+      ];
+    return [];
+  }
   /** A session/load is in flight: session/update frames are history, ignored. */
   private loading = false;
   /** request_permission requests not yet answered. */
@@ -276,12 +298,15 @@ export class CopilotAdapter implements AgentAdapter {
         ...this.endText(),
         append({ kind: 'error', message }),
       ];
-      if (kind === 'prompt') ops.push(append({ kind: 'turn_end' }));
+      if (kind === 'prompt') {
+        this.permissions.clear();
+        ops.push(append({ kind: 'turn_end' }));
+      }
       return { state: 'error', error: message, ops };
     }
     switch (kind) {
       case 'initialize':
-        if (this.sentKinds.has('session')) return {}; // already past this step
+        this.initReplied = true;
         return {
           send: [
             this.rpc(

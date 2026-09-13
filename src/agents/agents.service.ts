@@ -427,14 +427,15 @@ export class AgentsService
           );
       }
       await this.awaitStarting(live);
+      const sl = live.sessions.get(agent.currentSessionId!);
+      if (!sl) throw unavailable('session not tracked');
       if (
         live.status.state === 'working' ||
         live.status.state === 'starting' ||
-        live.status.state === 'waiting-permission'
+        live.status.state === 'waiting-permission' ||
+        sl.adapter.turnInProgress?.()
       )
         throw busy();
-      const sl = live.sessions.get(agent.currentSessionId!);
-      if (!sl) throw unavailable('session not tracked');
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
       const lines = sl.adapter.turn(text);
@@ -493,6 +494,15 @@ export class AgentsService
         for (const line of lines)
           await this.daemon.input(agent.currentSessionId!, line);
       } catch (err) {
+        // Refused for certain: the answer can be given again. A lost link
+        // is uncertain; the replay that follows decides (afterReplay
+        // releases what the log does not contain).
+        if (!(err instanceof DaemonError && err.code === 'disconnected'))
+          sl.adapter.afterReplay?.({
+            cwd: agent.cwd,
+            resume: agent.vendorConversationId,
+            permissions: agent.permissions,
+          });
         throw asHttp(err);
       }
     });
@@ -691,8 +701,10 @@ export class AgentsService
     });
     // Attach with replay from the start: anything the process said (or an
     // exit) between start and now is in the log.
+    // The attach's post-replay step sends the handshake (nothing is logged
+    // yet, so the adapter owes all of it); adapters without one need none.
     await this.attachSession(agent, live, sl);
-    if (adapter.startLines)
+    if (!sl.replayed && adapter.startLines)
       this.sendLines(
         agent,
         sl,
@@ -772,12 +784,23 @@ export class AgentsService
     } finally {
       sl.attaching = false;
     }
-    // Handshake follow-ups produced while attaching. The adapters skip a
-    // step whose request is already in the log, so what is left here is a
-    // step the previous process never got to send: send it now.
+    // Replies replayed from history produce follow-ups that are history
+    // too: drop them. What the process is still owed is judged by the
+    // adapter from the whole log, once, now.
     void boundary;
-    const queued = sl.pendingSends.splice(0);
-    for (const q of queued) this.sendLines(agent, sl, q.lines);
+    sl.pendingSends.splice(0);
+    if (
+      sl.replayed &&
+      sl.adapter.afterReplay &&
+      sl.id === agent.currentSessionId
+    ) {
+      const owed = sl.adapter.afterReplay({
+        cwd: agent.cwd,
+        resume: agent.vendorConversationId,
+        permissions: agent.permissions,
+      });
+      if (owed.length) this.sendLines(agent, sl, owed);
+    }
     if (sl.pendingExit && sl.replayed) {
       const s = sl.pendingExit;
       sl.pendingExit = null;
@@ -951,7 +974,7 @@ export class AgentsService
         'SELECT u.name FROM turn_authors a JOIN users u ON u.id = a.user_id WHERE a.daemon_session_id = ? AND a.seq = ?',
       )
       .get(sl.id, seq) as { name: string } | undefined;
-    if (!row && !sl.attaching && live.pendingAuthors.length) {
+    if (!row && live.pendingAuthors.length) {
       const userId = live.pendingAuthors.shift()!;
       this.db
         .prepare(

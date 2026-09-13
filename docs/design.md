@@ -66,7 +66,7 @@ Copilot's ACP.
 | A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
 | Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
 | Git diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. Per-entry status in the file listing (`git status` and `git check-ignore` per directory) is cheap and is done, so the tree can tint entries as VS Code does. |
-| No file containment beyond rejecting `..` | Agents run with permissions bypassed and sudo on an isolated VM; containing the editor would be patching a missing barn wall with toothpicks. Authentication is the boundary. Symlinks are followed. |
+| No file containment beyond rejecting `..` (judged per path component, before normalisation; only regular files are read, at most the size cap) | Agents run with permissions bypassed and sudo on an isolated VM; containing the editor would be patching a missing barn wall with toothpicks. Authentication is the boundary. Symlinks are followed. |
 
 ## Terminology
 
@@ -155,6 +155,16 @@ resync in progress and is refused with `agent-unavailable` at once while
 the daemon is disconnected, so nothing queues up to run whenever the
 link returns. A turn the adapter cannot build yet (a handshake not
 finished) is refused the same way rather than marked working.
+
+After a replay of a session's log (a fresh session, a reconnect or a
+restart), the adapter is asked once what the process is still owed:
+nothing logged means the whole handshake, a reply logged without its
+follow-up means the follow-up, everything logged means nothing. Sends
+produced while replaying history are dropped, since they are history
+too. The same step releases decision reservations whose answer the log
+does not contain, so a decision refused or lost in flight can be given
+again. A turn is also refused while the adapter still has a turn open,
+whatever state is displayed (a refused interrupt is not the turn ending).
 
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
@@ -336,9 +346,12 @@ title, body, priority and dependencies through the API; the UI offers
 that for planned features, before or between rounds of work.
 
 The manager's own writes to a feature file are serialised per feature
-and re-read the file just before writing, with a unique temporary name,
-so a status change or response never overwrites a report the agent
-appended meanwhile.
+and done as read, modify, write with a check that the file's mtime is
+still what was read before the replacement is renamed into place,
+retrying on the fresh content otherwise (and giving up after a few
+rounds rather than clobbering), so a status change or response does not
+overwrite a report the agent appended meanwhile. Creation is exclusive:
+a file that appeared meanwhile makes the create a 409.
 
 Because agents (and humans with an editor) write the files directly, the
 manager polls every project's feature files every few seconds and emits

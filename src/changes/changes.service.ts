@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DbService } from '../db/db.service.js';
-import { MAX_FILE_BYTES } from '../files/files.service.js';
+import { MAX_FILE_BYTES, readRegular } from '../files/files.service.js';
 import { FeaturesService } from '../features/features.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { isSlug } from '../features/feature-file.js';
@@ -173,8 +173,12 @@ export class ChangesService {
     const beforeSize = b.base ? await sizeAt(repo.path, b.base, inRepo) : null;
     let afterSize: number | null = null;
     try {
-      afterSize = (await fs.stat(path.join(repo.path, ...rest))).size;
-    } catch {
+      const st = await fs.stat(path.join(repo.path, ...rest));
+      if (!st.isFile())
+        throw new BadRequestException(`not a regular file: ${rel}`);
+      afterSize = st.size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       afterSize = null;
     }
     const size = Math.max(beforeSize ?? 0, afterSize ?? 0);
@@ -191,11 +195,21 @@ export class ChangesService {
       beforeSize === null ? null : await showAt(repo.path, b.base!, inRepo);
     let afterBuf: Buffer | null = null;
     if (afterSize !== null) {
-      try {
-        afterBuf = await fs.readFile(path.join(repo.path, ...rest));
-      } catch {
-        afterBuf = null;
-      }
+      // bounded and regular-file-only; a failure other than "gone" is an error, not a deletion
+      const read = await readRegular(
+        path.join(repo.path, ...rest),
+        MAX_FILE_BYTES,
+      );
+      if (read?.truncated)
+        return {
+          path: rel,
+          base: b.base,
+          before: null,
+          after: null,
+          binary: false,
+          truncated: true,
+        };
+      afterBuf = read?.buf ?? null;
     }
     const binary = [beforeBuf, afterBuf].some((buf) =>
       buf?.subarray(0, 8192).includes(0),

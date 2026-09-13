@@ -171,6 +171,48 @@ export async function readFeature(
 }
 
 /** Rewrites a feature file with new frontmatter values, keeping the body and unknown keys. */
+/** Creates the file, refusing if one appeared meanwhile (EEXIST). */
+export async function createFeatureFile(
+  repoPath: string,
+  f: FeatureFile,
+): Promise<void> {
+  const dir = path.join(repoPath, FEATURES_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${f.slug}.md`), serializeFeature(f), {
+    flag: 'wx',
+  });
+}
+
+/**
+ * Read, modify, write: `fn` gets the current file and returns the new one.
+ * If the file changed on disk between the read and the moment we would
+ * replace it (an agent appending its report), the write is retried on the
+ * fresh content; after a few rounds it gives up rather than clobber.
+ */
+export async function modifyFeature(
+  repo: { name: string; path: string },
+  slug: string,
+  fn: (current: FeatureFile) => FeatureFile | Promise<FeatureFile>,
+): Promise<FeatureFile | null> {
+  const p = path.join(repo.path, FEATURES_DIR, `${slug}.md`);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const current = await readFeature(repo, slug);
+    if (!current) return null;
+    const next = await fn(current);
+    const tmp = `${p}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`;
+    await fs.writeFile(tmp, serializeFeature(next));
+    const st = await fs.stat(p).catch(() => null);
+    if (!st || st.mtimeMs !== current.mtime) {
+      // someone wrote meanwhile: start over on what they wrote
+      await fs.rm(tmp, { force: true });
+      continue;
+    }
+    await fs.rename(tmp, p);
+    return next;
+  }
+  throw new Error(`feature ${slug} keeps changing under us; not overwriting`);
+}
+
 export async function writeFeature(
   repoPath: string,
   f: FeatureFile,

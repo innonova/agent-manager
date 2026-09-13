@@ -103,6 +103,19 @@ export interface AgentAdapter {
     resume?: string | null;
     permissions?: Permissions;
   }): unknown[];
+  /**
+   * Called once a replay of the session log has caught up. Returns the
+   * handshake lines still owed to the process, judged from the whole log
+   * (nothing logged: the full start; a reply logged without its follow-up:
+   * the follow-up; everything logged: nothing), and releases decision
+   * reservations whose answer the log does not contain. Replaces
+   * `startLines` for a fresh session too, so there is one path.
+   */
+  afterReplay?(opts: {
+    cwd: string;
+    resume?: string | null;
+    permissions?: Permissions;
+  }): unknown[];
   /** Permission requests the vendor is waiting on, from the log so far. */
   pendingPermissions?(): PermissionRequest[];
   /** stdin lines answering a pending request with one of its options; null if no such request. */

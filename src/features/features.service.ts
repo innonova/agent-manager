@@ -17,9 +17,10 @@ import {
   FeatureFile,
   FeatureStatus,
   isSlug,
+  createFeatureFile,
+  modifyFeature,
   readFeature,
   readFeatures,
-  writeFeature,
 } from './feature-file.js';
 
 export type Feature = Omit<FeatureFile, 'extra'> & {
@@ -131,6 +132,12 @@ export class FeaturesService
       }
     }
     return [...seen.values()];
+  }
+
+  private async repoHolding(repos: Repo[], slug: string): Promise<Repo | null> {
+    if (!isSlug(slug)) return null;
+    for (const repo of repos) if (await readFeature(repo, slug)) return repo;
+    return null;
   }
 
   private async readOne(repos: Repo[], slug: string): Promise<Found | null> {
@@ -259,13 +266,14 @@ export class FeaturesService
           const key = `${project.id}/${f.slug}`;
           if (!known) {
             // First sight (startup): a feature already in progress with no
-            // base recorded gets one now. HEAD now is the best evidence
-            // there is; the true start was before the manager was watching.
-            if (
-              f.status === 'in-progress' &&
-              !this.range(project.id, f.slug)[project.repos[0]!.name]
-            )
-              await this.recordRange(project.id, f.slug, 'in-progress');
+            // base recorded gets one now, and one already done gets an
+            // empty range; HEAD now is the best evidence there is, the
+            // true start was before the manager was watching.
+            if (f.status === 'in-progress' || f.status === 'done') {
+              const have = this.range(project.id, f.slug);
+              if (project.repos.some((r) => !have[r.name]))
+                await this.recordRange(project.id, f.slug, f.status);
+            }
           } else if (known.get(f.slug) !== f.mtime) {
             const was = this.lastStatus.get(key);
             if (was !== f.status)
@@ -359,24 +367,34 @@ export class FeaturesService
       throw new BadRequestException(
         `"repo" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`,
       );
-    if (await this.readOne(project.repos, input.slug))
-      throw new ConflictException(`feature ${input.slug} already exists`);
-    const f: FeatureFile = {
-      slug: input.slug,
-      repo: repo.name,
-      path: `${repo.name}/features/${input.slug}.md`,
-      title: input.title.trim(),
-      status: 'planned',
-      priority,
-      dependsOn,
-      body: (input.body as string | undefined) ?? '',
-      extra: {},
-      mtime: Date.now(),
-    };
-    await writeFeature(repo.path, f);
-    const feature = await this.get(projectId, f.slug);
-    this.announce(projectId, feature);
-    return feature;
+    const slug = input.slug;
+    const title = input.title.trim();
+    return this.serialised(`${projectId}/${slug}`, async () => {
+      if (await this.readOne(project.repos, slug))
+        throw new ConflictException(`feature ${slug} already exists`);
+      const f: FeatureFile = {
+        slug,
+        repo: repo.name,
+        path: `${repo.name}/features/${slug}.md`,
+        title,
+        status: 'planned',
+        priority,
+        dependsOn,
+        body: (input.body as string | undefined) ?? '',
+        extra: {},
+        mtime: Date.now(),
+      };
+      try {
+        await createFeatureFile(repo.path, f);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST')
+          throw new ConflictException(`feature ${slug} already exists`);
+        throw err;
+      }
+      const feature = await this.get(projectId, f.slug);
+      this.announce(projectId, feature);
+      return feature;
+    });
   }
 
   /**
@@ -432,18 +450,22 @@ export class FeaturesService
     )
       throw new BadRequestException('nothing to change');
     return this.serialised(`${projectId}/${slug}`, async () => {
-      const found = await this.readOne(project.repos, slug);
-      if (!found) throw new NotFoundException(`no feature ${slug}`);
-      const f = found.file;
-      const before = f.status;
-      if (input.status !== undefined) f.status = input.status as FeatureStatus;
-      if (input.title !== undefined) f.title = (input.title as string).trim();
-      if (input.body !== undefined) f.body = input.body as string;
-      if (input.priority !== undefined) f.priority = Number(input.priority);
-      if (input.dependsOn !== undefined)
-        f.dependsOn = input.dependsOn as string[];
-      await writeFeature(found.repoPath, f);
-      return this.finish(projectId, slug, before, f.status, userId);
+      const repo = await this.repoHolding(project.repos, slug);
+      if (!repo) throw new NotFoundException(`no feature ${slug}`);
+      let before: FeatureStatus | null = null;
+      const written = await modifyFeature(repo, slug, (f) => {
+        before ??= f.status;
+        if (input.status !== undefined)
+          f.status = input.status as FeatureStatus;
+        if (input.title !== undefined) f.title = (input.title as string).trim();
+        if (input.body !== undefined) f.body = input.body as string;
+        if (input.priority !== undefined) f.priority = Number(input.priority);
+        if (input.dependsOn !== undefined)
+          f.dependsOn = input.dependsOn as string[];
+        return f;
+      });
+      if (!written) throw new NotFoundException(`no feature ${slug}`);
+      return this.finish(projectId, slug, before!, written.status, userId);
     });
   }
 
@@ -470,15 +492,18 @@ export class FeaturesService
         `"status" must be one of ${HUMAN_STATUSES.join(', ')}`,
       );
     return this.serialised(`${projectId}/${slug}`, async () => {
-      const found = await this.readOne(project.repos, slug);
-      if (!found) throw new NotFoundException(`no feature ${slug}`);
-      const f = found.file;
-      const before = f.status;
+      const repo = await this.repoHolding(project.repos, slug);
+      if (!repo) throw new NotFoundException(`no feature ${slug}`);
+      let before: FeatureStatus | null = null;
       const heading = by ? `${today()}, ${by}` : today();
-      f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${heading})\n\n${text}\n`;
-      f.status = status as FeatureStatus;
-      await writeFeature(found.repoPath, f);
-      return this.finish(projectId, slug, before, f.status, userId);
+      const written = await modifyFeature(repo, slug, (f) => {
+        before ??= f.status;
+        f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${heading})\n\n${text}\n`;
+        f.status = status as FeatureStatus;
+        return f;
+      });
+      if (!written) throw new NotFoundException(`no feature ${slug}`);
+      return this.finish(projectId, slug, before!, written.status, userId);
     });
   }
 }

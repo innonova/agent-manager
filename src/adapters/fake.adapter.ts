@@ -41,6 +41,11 @@ export class FakeAdapter implements AgentAdapter {
     ];
   }
 
+  afterReplay(): unknown[] {
+    for (const p of this.pending.values()) p.answered = false;
+    return [];
+  }
+
   pendingPermissions(): PermissionRequest[] {
     return [...this.pending].map(([requestId, p]) => ({
       requestId,
@@ -219,6 +224,7 @@ export class FakeAdapter implements AgentAdapter {
         };
       case 'error':
         this.turnOpen = false;
+        this.pending.clear();
         return {
           state: 'error',
           error: line.message,

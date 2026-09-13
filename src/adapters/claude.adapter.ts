@@ -66,6 +66,11 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   >();
 
+  afterReplay(): unknown[] {
+    for (const p of this.permissions.values()) p.answered = false;
+    return [];
+  }
+
   pendingPermissions(): PermissionRequest[] {
     return [...this.permissions].map(([requestId, p]) => ({
       requestId,
@@ -136,6 +141,7 @@ export class ClaudeAdapter implements AgentAdapter {
         return this.ingestResult(line);
       case 'error': {
         this.turnOpen = false;
+        this.permissions.clear();
         const message = String(line.message ?? line.error ?? record.d);
         return {
           state: 'error',
