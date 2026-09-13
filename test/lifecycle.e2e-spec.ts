@@ -19,7 +19,12 @@ let projectId: string;
 /** A minimal Codex app-server: answers the handshake and runs a turn that asks for approval when told. */
 function scriptCodex(
   d: ScriptedDaemon,
-  opts: { approvalOnTurn?: boolean; failInterrupt?: boolean } = {},
+  opts: {
+    approvalOnTurn?: boolean;
+    failInterrupt?: boolean;
+    /** Start turns but never finish them; the test calls finishTurn itself. */
+    holdTurn?: boolean;
+  } = {},
 ) {
   d.on('input', (sid, line: any) => {
     if (line?.method === 'initialize')
@@ -58,7 +63,7 @@ function scriptCodex(
             availableDecisions: ['accept', 'cancel'],
           },
         });
-      else finishTurn(d, sid);
+      else if (!opts.holdTurn) finishTurn(d, sid);
     }
     if (line?.method === 'turn/interrupt') {
       if (opts.failInterrupt)
@@ -105,10 +110,13 @@ const itemOf = (agentId: string, pred: (i: any) => boolean, from = 0) =>
     from,
   );
 
+/** A small resident tail, so the cache is on the path of every test here. */
+const managerOverrides = { residentItems: 6 };
+
 async function restartManager() {
   await events.close();
   await m.stop();
-  m = await startManager(daemon.url, m.dataDir);
+  m = await startManager(daemon.url, m.dataDir, managerOverrides);
   api = new Api(m.url);
   await api.login();
   events = await Events.connect(m.url, api.cookie);
@@ -151,7 +159,7 @@ const methods = (sid: string) =>
 
 beforeAll(async () => {
   daemon = await ScriptedDaemon.start();
-  m = await startManager(daemon.url);
+  m = await startManager(daemon.url, undefined, managerOverrides);
   api = new Api(m.url);
   await api.login();
   events = await Events.connect(m.url, api.cookie);
@@ -464,4 +472,173 @@ describe('interrupts and attribution', () => {
     ).toEqual(['admin:from admin', 'bob:from bob']);
     daemon.removeAllListeners('input');
   });
+});
+
+describe('transcript cache', () => {
+  const turn = async (id: string, text: string) => {
+    const mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text });
+    await stateOf(id, 'idle', mark);
+  };
+  const itemsOf = async (id: string, query = '') =>
+    (await api.get(`/api/agents/${id}/items${query}`)).body as {
+      items: any[];
+      total: number;
+    };
+
+  it('a restart continues from the cache: only the log past the last turn end is replayed', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c1');
+    const sid = await sessionOf(id);
+    for (const t of ['one', 'two', 'three']) await turn(id, t);
+    const before = await itemsOf(id);
+    expect(before.total).toBe(before.items.length);
+    expect(before.items.map((i) => i.index)).toEqual(
+      before.items.map((_, k) => k),
+    );
+    expect(before.items.filter((i) => i.item.kind === 'turn_end')).toHaveLength(
+      3,
+    );
+    const settledSeq = daemon.sessions.get(sid)!.record.lastSeq;
+    await sleep(200); // the cache write
+    daemon.attaches.length = 0;
+    await restartManager();
+    await untilState(id, 'idle');
+    expect(daemon.attaches.filter((a) => a.sessionId === sid)).toEqual([
+      { sessionId: sid, fromSeq: settledSeq + 1 },
+    ]);
+    expect(methods(sid).filter((x) => x === 'initialize')).toHaveLength(1);
+    expect(await itemsOf(id)).toEqual(before);
+    await turn(id, 'four');
+    const more = await itemsOf(id, `?from=${before.total}`);
+    expect(more.items.map((i) => i.item.kind)).toEqual([
+      'user',
+      'text',
+      'turn_end',
+    ]);
+    expect(more.items[0].item.by).toBe('admin');
+    expect(more.total).toBe(before.total + 3);
+    daemon.removeAllListeners('input');
+  }, 30000);
+
+  it('a restart mid-turn replays from the last turn end; the turn then finishes without duplicates', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c2');
+    const sid = await sessionOf(id);
+    await turn(id, 'one');
+    await sleep(200);
+    const settledSeq = daemon.sessions.get(sid)!.record.lastSeq;
+    daemon.removeAllListeners('input');
+    scriptCodex(daemon, { holdTurn: true });
+    let mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'two' });
+    await stateOf(id, 'working', mark);
+    await sleep(200);
+    daemon.attaches.length = 0;
+    await restartManager();
+    await untilState(id, 'working');
+    expect(daemon.attaches.filter((a) => a.sessionId === sid)).toEqual([
+      { sessionId: sid, fromSeq: settledSeq + 1 },
+    ]);
+    mark = events.mark();
+    finishTurn(daemon, sid);
+    await stateOf(id, 'idle', mark);
+    const { items, total } = await itemsOf(id);
+    expect(total).toBe(items.length);
+    expect(items.map((i) => i.item.kind)).toEqual([
+      'system',
+      'user',
+      'text',
+      'turn_end',
+      'user',
+      'text',
+      'turn_end',
+    ]);
+    expect(items.map((i) => i.item.by ?? '')).toContain('admin');
+    daemon.removeAllListeners('input');
+  }, 30000);
+
+  it('pages backwards with stable indexes across the cache and the resident tail', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c3');
+    for (const t of ['one', 'two', 'three', 'four']) await turn(id, t);
+    await sleep(200);
+    const all = await itemsOf(id);
+    expect(all.total).toBe(13); // started + 4 * (user, text, turn_end)
+    const tail = await itemsOf(id, '?tail=2');
+    expect(tail).toEqual({ items: all.items.slice(-2), total: 13 });
+    const page = await itemsOf(id, `?before=${tail.items[0].index}&limit=3`);
+    expect(page).toEqual({ items: all.items.slice(8, 11), total: 13 });
+    expect(await itemsOf(id, '?before=2&limit=5')).toEqual({
+      items: all.items.slice(0, 2),
+      total: 13,
+    });
+    expect(await itemsOf(id, '?before=0&limit=5')).toEqual({
+      items: [],
+      total: 13,
+    });
+    expect(await itemsOf(id, '?from=11')).toEqual({
+      items: all.items.slice(11),
+      total: 13,
+    });
+    expect(await itemsOf(id, '?tail=100')).toEqual(all);
+    for (const bad of ['?tail=x', '?before=-1', '?limit=1.5'])
+      expect((await api.get(`/api/agents/${id}/items${bad}`)).status).toBe(400);
+    daemon.removeAllListeners('input');
+  }, 30000);
+
+  it('an archived agent is left alone at start and loaded on the first request', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c4');
+    const sid = await sessionOf(id);
+    await turn(id, 'one');
+    await turn(id, 'two');
+    expect((await api.post(`/api/agents/${id}/archive`)).status).toBe(201);
+    await sleep(300);
+    const before = await itemsOf(id);
+    expect(before.items.map((i) => i.item.kind).slice(-2)).toEqual([
+      'turn_end',
+      'system',
+    ]);
+    daemon.attaches.length = 0;
+    await restartManager();
+    await sleep(300);
+    expect(daemon.attaches.filter((a) => a.sessionId === sid)).toEqual([]);
+    expect(await itemsOf(id)).toEqual(before);
+    // the ended session was fully cached: consulted, nothing replayed
+    expect(daemon.attaches.filter((a) => a.sessionId === sid)).toEqual([
+      { sessionId: sid, fromSeq: daemon.sessions.get(sid)!.record.lastSeq + 1 },
+    ]);
+    daemon.removeAllListeners('input');
+  }, 30000);
+
+  it('a cache the log contradicts is rebuilt from the log', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c5');
+    const sid = await sessionOf(id);
+    await turn(id, 'one');
+    await sleep(200);
+    const before = await itemsOf(id);
+    await events.close();
+    await m.stop();
+    // the daemon forgot the tail of the log (a daemon reinstalled from a backup, say)
+    const session = daemon.sessions.get(sid)!;
+    session.log.splice(-2);
+    session.record.lastSeq = session.log[session.log.length - 1]!.seq;
+    m = await startManager(daemon.url, m.dataDir, managerOverrides);
+    api = new Api(m.url);
+    await api.login();
+    events = await Events.connect(m.url, api.cookie);
+    await sleep(500);
+    const after = await itemsOf(id);
+    expect(after.items.map((i) => i.index)).toEqual(
+      after.items.map((_, k) => k),
+    );
+    expect(after.total).toBe(before.total - 2);
+    expect(daemon.attaches.filter((a) => a.sessionId === sid).pop()).toEqual({
+      sessionId: sid,
+      fromSeq: 1,
+    });
+    daemon.removeAllListeners('input');
+  }, 30000);
 });

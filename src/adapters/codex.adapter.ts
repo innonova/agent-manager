@@ -90,6 +90,45 @@ export class CodexAdapter implements AgentAdapter {
       : this.rpc('thread', 'thread/start', this.policy());
   }
 
+  snapshot(): unknown {
+    return {
+      threadId: this.threadId,
+      resume: this.resume,
+      nextId: this.nextId,
+      pending: [...this.pending],
+      sentKinds: [...this.sentKinds],
+      initReplied: this.initReplied,
+      permissionsMode: this.permissionsMode,
+      openCommands: [...this.openCommands],
+    };
+  }
+
+  restore(state: unknown): void {
+    const st = (state ?? {}) as Partial<{
+      threadId: string | null;
+      resume: string | null;
+      nextId: number;
+      pending: [number, 'initialize' | 'thread' | 'turn' | 'interrupt'][];
+      sentKinds: string[];
+      initReplied: boolean;
+      permissionsMode: Permissions;
+      openCommands: string[];
+    }>;
+    this.threadId = st.threadId ?? null;
+    this.resume = st.resume ?? null;
+    this.nextId = st.nextId ?? this.nextId;
+    this.pending = new Map(st.pending ?? []);
+    this.sentKinds = new Set(st.sentKinds ?? []);
+    this.initReplied = st.initReplied ?? false;
+    this.permissionsMode = st.permissionsMode ?? 'bypass';
+    this.openCommands = new Set(st.openCommands ?? []);
+    this.turnOpen = false;
+    this.turnId = null;
+    this.approvals.clear();
+    this.textKeys.clear();
+    this.texts.clear();
+  }
+
   pendingPermissions(): PermissionRequest[] {
     return [...this.approvals].map(([requestId, a]) => ({
       requestId,

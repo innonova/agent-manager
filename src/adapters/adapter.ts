@@ -122,6 +122,13 @@ export interface AgentAdapter {
     resume?: string | null;
     permissions?: Permissions;
   }): unknown[];
+  /**
+   * Cross-turn parsing state at a quiescent point (a turn end), as plain
+   * JSON, so a restart can continue from a cached transcript without
+   * replaying the whole log; `restore` is the inverse on a fresh adapter.
+   */
+  snapshot?(): unknown;
+  restore?(state: unknown): void;
   /** Permission requests the vendor is waiting on, from the log so far. */
   pendingPermissions?(): PermissionRequest[];
   /** stdin lines answering a pending request with one of its options; null if no such request. */

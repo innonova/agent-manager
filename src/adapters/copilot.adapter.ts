@@ -96,6 +96,49 @@ export class CopilotAdapter implements AgentAdapter {
     { options: PermissionOption[]; item: PermissionItem; answered?: boolean }
   >();
 
+  snapshot(): unknown {
+    return {
+      sessionId: this.sessionId,
+      resume: this.resume,
+      cwd: this.cwd,
+      nextId: this.nextId,
+      pending: [...this.pending],
+      sentKinds: [...this.sentKinds],
+      initReplied: this.initReplied,
+      texts: this.texts,
+      backgroundCalls: [...this.backgroundCalls],
+    };
+  }
+
+  restore(state: unknown): void {
+    const st = (state ?? {}) as Partial<{
+      sessionId: string | null;
+      resume: string | null;
+      cwd: string;
+      nextId: number;
+      pending: [number, 'initialize' | 'session' | 'prompt' | 'cancel'][];
+      sentKinds: string[];
+      initReplied: boolean;
+      texts: number;
+      backgroundCalls: string[];
+    }>;
+    this.sessionId = st.sessionId ?? null;
+    this.resume = st.resume ?? null;
+    this.cwd = st.cwd ?? this.cwd;
+    this.nextId = st.nextId ?? this.nextId;
+    this.pending = new Map(st.pending ?? []);
+    this.sentKinds = new Set(st.sentKinds ?? []);
+    this.initReplied = st.initReplied ?? false;
+    this.texts = st.texts ?? this.texts;
+    this.backgroundCalls = new Set(st.backgroundCalls ?? []);
+    this.loading = false;
+    this.turnOpen = false;
+    this.textKey = null;
+    this.text = '';
+    this.thoughtKey = null;
+    this.permissions.clear();
+  }
+
   pendingPermissions(): PermissionRequest[] {
     return [...this.permissions].map(([requestId, p]) => ({
       requestId,

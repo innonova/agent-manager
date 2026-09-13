@@ -55,11 +55,25 @@ export class AgentsController {
   items(
     @Param('id') id: string,
     @Query('from') from?: string,
-  ): { items: StoredItem[] } {
-    const cursor = from === undefined || from === '' ? 0 : Number(from);
-    if (!Number.isSafeInteger(cursor) || cursor < 0)
-      throw new BadRequestException('"from" must be a non-negative integer');
-    return { items: this.agents.items(id, cursor) };
+    @Query('tail') tail?: string,
+    @Query('before') before?: string,
+    @Query('limit') limit?: string,
+  ): Promise<{ items: StoredItem[]; total: number }> {
+    const num = (name: string, raw: string | undefined): number | undefined => {
+      if (raw === undefined || raw === '') return undefined;
+      const n = Number(raw);
+      if (!Number.isSafeInteger(n) || n < 0)
+        throw new BadRequestException(
+          `"${name}" must be a non-negative integer`,
+        );
+      return n;
+    };
+    return this.agents.items(id, {
+      from: num('from', from),
+      tail: num('tail', tail),
+      before: num('before', before),
+      limit: num('limit', limit),
+    });
   }
 
   @Post('agents/:id/turn')

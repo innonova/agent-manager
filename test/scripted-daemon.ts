@@ -22,6 +22,8 @@ export class ScriptedDaemon extends EventEmitter<{
   started: [session: ScriptedSession];
 }> {
   readonly sessions = new Map<string, ScriptedSession>();
+  /** Every attach seen, with the sequence the client asked to replay from. */
+  readonly attaches: { sessionId: string; fromSeq: number }[] = [];
   private readonly server: WebSocketServer;
   private readonly clients = new Set<WebSocket>();
   /** The test sets this to shape the answer to the next input (or all inputs). */
@@ -182,6 +184,7 @@ export class ScriptedDaemon extends EventEmitter<{
           return this.error(ws, f, 'unknown-session', `no session ${id}`);
         const from =
           (f.replay as { fromSeq?: number } | undefined)?.fromSeq ?? 1;
+        this.attaches.push({ sessionId: id, fromSeq: from });
         let last = from - 1;
         for (const r of session.log)
           if (r.seq >= from) {

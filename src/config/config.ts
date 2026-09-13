@@ -23,6 +23,8 @@ export interface ManagerConfig {
   eventsPingMs: number;
   /** An agent idle with background jobs and no activity this long is asked to check on them; 0 disables. */
   backgroundPokeMs: number;
+  /** Transcript items kept in memory per agent beyond what the transcript cache holds. */
+  residentItems: number;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -75,5 +77,6 @@ export function loadConfig(
     backgroundPokeMs: Number(
       env.AGENT_MANAGER_BACKGROUND_POKE_MS ?? 30 * 60_000,
     ),
+    residentItems: Number(env.AGENT_MANAGER_RESIDENT_ITEMS ?? 500),
   };
 }

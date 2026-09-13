@@ -77,6 +77,18 @@ export class ClaudeAdapter implements AgentAdapter {
     return [];
   }
 
+  snapshot(): unknown {
+    return { backgrounded: [...this.backgrounded] };
+  }
+
+  restore(state: unknown): void {
+    const st = (state ?? {}) as { backgrounded?: string[] };
+    this.backgrounded = new Set(st.backgrounded ?? []);
+    this.turnOpen = false;
+    this.streaming = null;
+    this.permissions.clear();
+  }
+
   pendingPermissions(): PermissionRequest[] {
     return [...this.permissions].map(([requestId, p]) => ({
       requestId,

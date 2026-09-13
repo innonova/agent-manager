@@ -272,6 +272,55 @@ once, retire every pending request when the turn ends or errors, derive
 decided when our answer appears as an input record. A decision is sent
 under the agent's lock on a replayed session, like a turn.
 
+## Transcript cache
+
+The daemon log stays the only truth; the manager keeps a cache of what
+it derives from it, so that neither memory nor restart time grows with
+the history of every agent ever.
+
+- Per agent, under `<dataDir>/transcripts/`, an NDJSON file of the
+  normalised items in index order (`<agentId>.ndjson`, only ever
+  appended) and a header (`<agentId>.json`, rewritten atomically after
+  each append): cache version, item count and byte length, a byte offset
+  every 256 items, and per session the last daemon sequence its cached
+  items came from, the index its cached items end at, the two boundary
+  flags, the adapter's snapshot of its cross-turn state at that point
+  (`snapshot()`/`restore()` on the adapter) and, for the current session,
+  the agent's status then. A file longer than its header says is cut
+  back on load.
+- Items are cached only once settled. Everything up to and including a
+  `turn_end` is settled (keys are per turn, pending permissions are
+  retired at turn end), so the session's settled point moves at every
+  turn end and at its "session ended" item; the write happens then, or
+  once at the end of a replay. The unfinished turn lives in memory only
+  and is rebuilt from the log tail after a restart.
+- A live agent keeps a tail of `AGENT_MANAGER_RESIDENT_ITEMS` (500)
+  items resident; older resident items that the cache holds are evicted
+  after each write. `live.items` is the resident window and `itemBase`
+  its first index, so an item's index is the same whether it is resident
+  or read from the cache. Updates only ever target the current turn,
+  which is resident.
+- Restart: with a header of the current version, the tail is loaded,
+  each cached session's adapter is restored from its snapshot, and the
+  daemon is replayed from the cached sequence onward; the current
+  session starts from the status it had at its last turn end. A missing
+  or stale cache (the version bumps when an adapter's output changes)
+  means one full replay for that agent, which then writes the cache. A
+  cache the daemon's log contradicts (a cached sequence past the log's
+  end, or an ended session with records past the cache) is dropped and
+  rebuilt the same way. Archived agents are not touched at start;
+  requesting one loads it, from cache and log.
+- `GET /api/agents/:id/items` takes `tail=N` (the last N), `before=I&limit=N`
+  (the N before index I) or the existing `from=I`, and always returns
+  `total`, so clients can page backwards with stable indexes. The UI
+  opens on the last 300 and fills earlier pages in when the reader
+  scrolls to the top (or presses "load earlier").
+
+The cache is a cache: deleting the directory costs a full replay of
+every agent on the next start and nothing else. Nothing on disk is
+trimmed; the daemon log and this cache grow with use, which is cheap
+until it is not, and that day it becomes a decision of its own.
+
 ## Transcript items
 
 A `user` item carries `by`, the name of the user who sent the turn, when
@@ -474,7 +523,7 @@ DELETE /api/projects/:id            (does not touch the repository)
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }
 POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
-GET    /api/agents/:id/items?from=<n>                           -> { items: StoredItem[] }, n a non-negative integer index
+GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
 POST   /api/agents/:id/turn         { text }                    -> 202; 409 { code: 'agent-busy' } while a turn runs; 503 { code: 'agent-unavailable' } if the session's output cannot be attached
 POST   /api/agents/:id/permission { requestId, option }       -> answers a pending permission request with one of the options the item offered; 404 if none is pending
 POST   /api/agents/:id/interrupt
@@ -589,6 +638,7 @@ swept once a minute.
 | `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
 | `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
 | `AGENT_MANAGER_BACKGROUND_POKE_MS` | `1800000` | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables |
+| `AGENT_MANAGER_RESIDENT_ITEMS` | `500` | transcript items kept in memory per agent beyond what the transcript cache holds |
 | `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
 
@@ -648,7 +698,12 @@ running in the daemon and are re-adopted on start.
 6. **Interactive permissions** (done): `permissions: ask` per agent, the
    vendor's gate routed to the human as a transcript item. See the
    decisions table and Adapters.
-7. Later, each needing its own discussion:
+7. **Bounded transcript history** (done): items are materialised per
+   session in a cache the manager can always rebuild from the daemon
+   log; a live agent keeps only a tail resident, a restart replays only
+   what the cache does not have, archived agents are loaded when opened,
+   the items endpoint pages backwards. See "Transcript cache".
+8. Later, each needing its own discussion:
    worktrees and multi-agent coordination;
    idle timeout and automatic resume; clone-from-URL; roles; log
    retention.

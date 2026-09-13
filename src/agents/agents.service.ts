@@ -21,6 +21,12 @@ import type {
 } from '../adapters/adapter.js';
 import { AdaptersService } from '../adapters/adapters.service.js';
 import {
+  type CachedSession,
+  type CacheState,
+  TranscriptCache,
+  TRANSCRIPT_CACHE_VERSION,
+} from './transcript-cache.js';
+import {
   DaemonClient,
   DaemonError,
   DaemonSession,
@@ -116,13 +122,36 @@ interface SessionLive {
   keys: Map<string, number>;
   /** Handshake lines produced while a replay was in flight, with the seq that produced them. */
   pendingSends: { seq: number; lines: unknown[] }[];
+  /** The last point at which everything of this session so far was final and cacheable. */
+  settled: CachedSession | null;
+  /** Tracked from the cache header, not from the daemon; checked against the daemon on resync. */
+  fromCache: boolean;
 }
 
 /** Everything about an agent that is rebuilt from the daemon, never stored. */
 interface Live {
   sessions: Map<string, SessionLive>;
   status: AgentStatus;
+  /** The resident tail of the transcript; older items are read from the cache. */
   items: StoredItem[];
+  /** Agent-wide index of `items[0]`. */
+  itemBase: number;
+  cache: {
+    /** Items handed to the writer so far (also the index of the next item to hand it). */
+    claimed: number;
+    /** What is actually on disk; touched only by the write chain. */
+    written: CacheState;
+    /** Writes in order; each also evicts what it made safe to drop. */
+    chain: Promise<void>;
+    /** The header has been read (or found absent) since the process started. */
+    loaded: boolean;
+    /** A write failed: nothing is evicted and nothing more is written until a rebuild. */
+    broken: boolean;
+  };
+  /** Per session, the settled point last written to the header, to notice a header-only change. */
+  cacheHeaders: Map<string, CachedSession>;
+  /** The daemon has been consulted about this agent since the process started. */
+  loaded: boolean;
   /** Serialises commands and rebuilds for this agent. */
   lock: Promise<unknown>;
   /** Resolves once the pending resync has handled this agent; commands wait for it. */
@@ -239,6 +268,7 @@ export class AgentsService
   private resyncChain: Promise<void> = Promise.resolve();
   private watchdog: NodeJS.Timeout | null = null;
   private resyncGeneration = 0;
+  private readonly cache: TranscriptCache;
 
   constructor(
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
@@ -248,6 +278,7 @@ export class AgentsService
     private readonly projects: ProjectsService,
   ) {
     super();
+    this.cache = new TranscriptCache(config.dataDir);
   }
 
   private get db() {
@@ -353,9 +384,55 @@ export class AgentsService
     }));
   }
 
-  items(id: string, from = 0): StoredItem[] {
-    const live = this.ensureLive(this.get(id));
-    return from <= 0 ? live.items : live.items.slice(from);
+  /**
+   * Transcript items by index: everything from `from`, the last `tail`, or
+   * `limit` items before `before`. Indexes are stable across the resident
+   * tail and the cache. An archived agent is loaded on first access.
+   */
+  async items(
+    id: string,
+    query: { from?: number; tail?: number; before?: number; limit?: number },
+  ): Promise<{ items: StoredItem[]; total: number }> {
+    const agent = this.get(id);
+    const live = this.ensureLive(agent);
+    if (agent.archivedAt && !live.loaded) await this.loadArchived(id, live);
+    const total = live.itemBase + live.items.length;
+    let from = 0;
+    let to = total;
+    if (query.before !== undefined) {
+      to = Math.min(query.before, total);
+      from = Math.max(0, to - (query.limit ?? this.config.residentItems));
+    } else if (query.tail !== undefined) {
+      from = Math.max(0, total - query.tail);
+    } else from = query.from ?? 0;
+    if (from >= to) return { items: [], total };
+    const base = live.itemBase;
+    const resident =
+      to > base ? live.items.slice(Math.max(from, base) - base, to - base) : [];
+    const cached =
+      from < base
+        ? await this.cache.read(
+            id,
+            live.cache.written,
+            from,
+            Math.min(to, base),
+          )
+        : [];
+    return { items: [...cached, ...resident], total };
+  }
+
+  /** Brings an archived agent's transcript in (from the cache, and the daemon for what the cache lacks) once per process. */
+  private async loadArchived(id: string, live: Live): Promise<void> {
+    await this.withLock(live, async () => {
+      if (live.loaded) return;
+      try {
+        await this.resyncAgent(id, this.resyncGeneration, live);
+      } catch (err) {
+        this.logger.warn(
+          `agent ${id}: could not load archived transcript: ${(err as Error).message}`,
+        );
+      }
+    });
   }
 
   counts(projectId: string): AgentCounts {
@@ -455,6 +532,8 @@ export class AgentsService
         effort,
       );
     const live = this.ensureLive(agent);
+    live.cache.loaded = true; // nothing on disk for a new agent
+    live.loaded = true;
     try {
       await this.withLock(live, () => this.startSession(agent, live));
     } catch (err) {
@@ -652,6 +731,8 @@ export class AgentsService
           for (const sid of live.sessions.keys()) this.sessionOwner.delete(sid);
           this.live.delete(agent.id);
           this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
+          await live.cache.chain;
+          await this.cache.clear(agent.id).catch(() => undefined);
         });
       }
     } catch (err) {
@@ -835,6 +916,8 @@ export class AgentsService
         endedBoundary: false,
         keys: new Map(),
         pendingSends: [],
+        settled: null,
+        fromCache: false,
       };
       live.sessions.set(sessionId, sl);
     }
@@ -900,6 +983,7 @@ export class AgentsService
       this.endBoundary(agent, live, sl, s);
     }
     this.releaseState(agent, live);
+    this.writeCache(agent, live);
   }
 
   /** Writes adapter-produced lines to a live, current session; failures are logged, the record path continues. */
@@ -933,6 +1017,7 @@ export class AgentsService
       text: `session ended${exitWhy(session)}`,
     });
     sl.endedBoundary = true;
+    this.settle(agent, live, sl);
   }
 
   /**
@@ -1002,8 +1087,11 @@ export class AgentsService
         .run(ingest.conversationId, agent.id);
       agent.vendorConversationId = ingest.conversationId;
     }
-    for (const op of ingest.ops ?? [])
+    let turnEnded = false;
+    for (const op of ingest.ops ?? []) {
       this.applyOp(agent.id, live, sl, record.seq, op, record.t);
+      if (op.item.kind === 'turn_end') turnEnded = true;
+    }
     if (ingest.send?.length) {
       if (sl.attaching)
         sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
@@ -1030,6 +1118,171 @@ export class AgentsService
         ingest.error ?? null,
         sl.attaching,
       );
+    // At a turn end everything the session produced so far is final:
+    // remember the adapter's state here so a restart can continue from it.
+    if (turnEnded) this.settle(agent, live, sl);
+  }
+
+  /**
+   * Marks everything of the session so far as cacheable, with the adapter
+   * state and status of this moment, and writes the cache unless a replay
+   * is in flight (its end writes once for all of it).
+   */
+  private settle(agent: Agent, live: Live, sl: SessionLive): void {
+    const current = sl.id === agent.currentSessionId;
+    sl.settled = {
+      lastSeq: sl.lastSeq,
+      end: live.itemBase + live.items.length,
+      startedBoundary: sl.startedBoundary,
+      endedBoundary: sl.endedBoundary,
+      adapter: sl.adapter.snapshot?.() ?? null,
+      status: current ? { ...live.status } : null,
+    };
+    if (!sl.attaching) this.writeCache(agent, live);
+  }
+
+  /**
+   * Appends the settled items the cache does not have yet and rewrites the
+   * header; afterwards the resident list is cut back to its tail. Writes
+   * are chained per agent; a failure disables the cache for the agent.
+   */
+  private writeCache(agent: Agent, live: Live): void {
+    const cache = live.cache;
+    if (cache.broken || !cache.loaded) return;
+    let end = cache.claimed;
+    for (const sl of live.sessions.values())
+      if (sl.settled && sl.settled.end > end) end = sl.settled.end;
+    if (end === cache.claimed && !this.headerDirty(live)) return;
+    if (cache.claimed < live.itemBase) return; // cannot happen: only cached items are evicted
+    const items = live.items.slice(
+      cache.claimed - live.itemBase,
+      end - live.itemBase,
+    );
+    const sessions: Record<string, CachedSession> = {};
+    for (const sl of live.sessions.values())
+      if (sl.settled && sl.settled.end <= end) {
+        sessions[sl.id] = sl.settled;
+        live.cacheHeaders.set(sl.id, sl.settled);
+      }
+    const header = { version: TRANSCRIPT_CACHE_VERSION, sessions };
+    cache.claimed = end; // the next write starts after these items
+    cache.chain = cache.chain
+      .then(async () => {
+        if (cache.broken) return;
+        await this.cache.append(agent.id, cache.written, items, header);
+        this.evict(live);
+      })
+      .catch((err: Error) => {
+        cache.broken = true;
+        this.logger.warn(
+          `agent ${agent.id}: transcript cache disabled: ${err.message}`,
+        );
+      });
+  }
+
+  /** A session's settled point changed since the header was last written. */
+  private headerDirty(live: Live): boolean {
+    for (const sl of live.sessions.values())
+      if (sl.settled && sl.settled !== live.cacheHeaders.get(sl.id))
+        return true;
+    return false;
+  }
+
+  /** Drops resident items the cache holds, keeping the configured tail. */
+  private evict(live: Live): void {
+    if (live.cache.broken) return;
+    const droppable = Math.min(
+      live.items.length - this.config.residentItems,
+      live.cache.written.count - live.itemBase,
+    );
+    if (droppable <= 0) return;
+    live.items.splice(0, droppable);
+    live.itemBase += droppable;
+  }
+
+  /** Reads the cache once per process: the tail becomes resident and each cached session resumes from its snapshot. */
+  private async loadCache(agent: Agent, live: Live): Promise<void> {
+    if (live.cache.loaded) return;
+    live.cache.loaded = true;
+    const h = await this.cache.load(agent.id);
+    if (!h) return;
+    const state: CacheState = {
+      count: h.count,
+      bytes: h.bytes,
+      offsets: h.offsets,
+    };
+    const tail = await this.cache.read(
+      agent.id,
+      state,
+      Math.max(0, h.count - this.config.residentItems),
+      h.count,
+    );
+    const base = h.count - tail.length;
+    if (
+      tail.length !== Math.min(h.count, this.config.residentItems) ||
+      tail.some((it, i) => it.index !== base + i)
+    ) {
+      this.logger.warn(
+        `agent ${agent.id}: transcript cache unreadable; rebuilding`,
+      );
+      await this.cache.clear(agent.id).catch(() => undefined);
+      return;
+    }
+    live.cache.written = state;
+    live.cache.claimed = state.count;
+    live.items = tail;
+    live.itemBase = base;
+    for (const [sid, cs] of Object.entries(h.sessions)) {
+      const adapter = this.adapters.create(agent.profile);
+      adapter.restore?.(cs.adapter);
+      const sl = this.trackSession(agent, live, sid, adapter);
+      sl.lastSeq = cs.lastSeq;
+      sl.complete = true;
+      sl.startedBoundary = cs.startedBoundary;
+      sl.endedBoundary = cs.endedBoundary;
+      sl.settled = cs;
+      sl.fromCache = true;
+      live.cacheHeaders.set(sid, cs);
+    }
+    this.logger.log(
+      `agent ${agent.id}: ${h.count} item(s) from the transcript cache, ${Object.keys(h.sessions).length} session(s)`,
+    );
+  }
+
+  /** Starts the transcript over: resident items, cache and every session's cursor. */
+  private rebuild(agent: Agent, live: Live, why: string): void {
+    this.logger.log(`agent ${agent.id}: rebuilding transcript: ${why}`);
+    live.items = [];
+    live.itemBase = 0;
+    live.cacheHeaders.clear();
+    const cache = live.cache;
+    cache.claimed = 0;
+    cache.broken = false;
+    cache.chain = cache.chain
+      .catch(() => undefined)
+      .then(async () => {
+        await this.cache.clear(agent.id);
+        cache.written = { count: 0, bytes: 0, offsets: [] };
+      })
+      .catch((err: Error) => {
+        cache.broken = true;
+        this.logger.warn(
+          `agent ${agent.id}: transcript cache disabled: ${err.message}`,
+        );
+      });
+    for (const sl of live.sessions.values()) {
+      sl.lastSeq = 0;
+      sl.replayed = false;
+      sl.complete = false;
+      sl.suspended = true; // live frames must not advance the cursor before the replay attach
+      sl.startedBoundary = false;
+      sl.endedBoundary = false;
+      sl.keys.clear();
+      sl.settled = null;
+      sl.fromCache = false;
+      sl.adapter = this.adapters.create(agent.profile);
+    }
+    this.emit('reset', agent.id);
   }
 
   private applyOp(
@@ -1042,8 +1295,8 @@ export class AgentsService
   ): void {
     if (op.op === 'update') {
       const index = sl.keys.get(op.key);
-      if (index !== undefined) {
-        const stored = live.items[index];
+      if (index !== undefined && index >= live.itemBase) {
+        const stored = live.items[index - live.itemBase];
         stored.item = op.item;
         stored.seqTo = seq;
         live.status.lastActivityAt = Date.now();
@@ -1154,9 +1407,9 @@ export class AgentsService
   private scheduleResync(): void {
     const generation = ++this.resyncGeneration;
     // Every known agent waits for this resync before accepting commands.
-    for (const { id } of this.db.prepare('SELECT id FROM agents').all() as {
-      id: string;
-    }[]) {
+    for (const { id } of this.db
+      .prepare('SELECT id FROM agents WHERE archived_at IS NULL')
+      .all() as { id: string }[]) {
       const agent = this.find(id);
       if (agent) this.gate(this.ensureLive(agent));
     }
@@ -1214,8 +1467,11 @@ export class AgentsService
    * lock. A newer resync supersedes an older one.
    */
   private async resync(generation: number): Promise<void> {
+    // Archived agents are left alone here and loaded when somebody asks.
     const ids = (
-      this.db.prepare('SELECT id FROM agents').all() as { id: string }[]
+      this.db
+        .prepare('SELECT id FROM agents WHERE archived_at IS NULL')
+        .all() as { id: string }[]
     ).map((r) => r.id);
     let done = 0;
     for (const id of ids) {
@@ -1223,102 +1479,118 @@ export class AgentsService
       const stale = this.find(id);
       if (!stale) continue;
       const live = this.ensureLive(stale);
-      await this.withLock(live, async () => {
-        const agent = this.find(id);
-        if (!agent || generation !== this.resyncGeneration) return;
-        const sessions = await this.daemon.listSessions();
-        const byId = new Map(sessions.map((s) => [s.id, s]));
-        this.adoptSessions(agent, sessions);
-        live.adoptionNeeded = false;
-        let refs = this.sessions(agent.id);
-
-        // An earlier session whose replay failed, with newer history already
-        // shown after it: the only way to keep order is to start over.
-        const failedEarlier = refs.some(
-          (ref, i) =>
-            i < refs.length - 1 &&
-            live.sessions.get(ref.daemonSessionId)?.complete === false,
-        );
-        if (failedEarlier && live.items.length > 0) {
-          this.logger.log(
-            `agent ${agent.id}: rebuilding transcript so recovered history keeps its order`,
-          );
-          live.items = [];
-          for (const sl of live.sessions.values()) {
-            sl.lastSeq = 0;
-            sl.replayed = false;
-            sl.complete = false;
-            sl.suspended = true; // live frames must not advance the cursor before the replay attach
-            sl.startedBoundary = false;
-            sl.endedBoundary = false;
-            sl.keys.clear();
-            sl.adapter = this.adapters.create(agent.profile);
-          }
-          this.emit('reset', agent.id);
-        }
-        refs = this.sessions(agent.id);
-        for (const [i, ref] of refs.entries()) {
-          if (generation !== this.resyncGeneration) return;
-          const s = byId.get(ref.daemonSessionId);
-          if (!s) continue;
-          const sl = this.trackSession(
-            agent,
-            live,
-            s.id,
-            live.sessions.get(s.id)?.adapter ??
-              this.adapters.create(agent.profile),
-          );
-          if (!sl.startedBoundary) {
-            this.appendItem(agent.id, live, s.id, 0, {
-              kind: 'system',
-              text: `${i === 0 ? 'session started' : 'session resumed'} (${s.id})`,
-            });
-            sl.startedBoundary = true;
-          }
-          const isCurrent = s.id === agent.currentSessionId;
-          if (
-            isCurrent &&
-            s.state === 'running' &&
-            (live.status.state === 'starting' || live.status.state === 'exited')
-          ) {
-            this.setState(
-              agent,
-              live,
-              sl.adapter.initialState ?? 'starting',
-              null,
-              true, // provisional: the replay that follows knows better
-            );
-          }
-          // Catch up whenever the cursor trails the daemon, exited or not.
-          if (
-            !sl.replayed ||
-            sl.lastSeq < s.lastSeq ||
-            (isCurrent && s.state === 'running')
-          ) {
-            await this.attachSession(agent, live, sl);
-            if (isCurrent && s.state === 'running' && sl.replayed)
-              this.reconcileTurnState(agent, live, sl);
-          }
-          if (s.state === 'exited' && !sl.pendingExit) {
-            if (isCurrent) this.applyExit(agent, live, s);
-            else this.endBoundary(agent, live, sl, s);
-            if (ref.endedAt === null)
-              this.db
-                .prepare(
-                  'UPDATE agent_sessions SET ended_at = ? WHERE daemon_session_id = ?',
-                )
-                .run(s.exitedAt ?? Date.now(), s.id);
-          }
-        }
-        await this.reconcileCurrent(agent, live);
-        const fresh = this.find(agent.id);
-        if (fresh && !fresh.currentSessionId && live.status.state !== 'exited')
-          this.setState(agent, live, 'exited', null);
-        live.markSynced();
-      });
+      await this.withLock(live, () => this.resyncAgent(id, generation, live));
       done++;
     }
     this.logger.log(`resynced ${done} agent(s)`);
+  }
+
+  /** One agent's share of a resync; runs under the agent's lock. */
+  private async resyncAgent(
+    id: string,
+    generation: number,
+    live: Live,
+  ): Promise<void> {
+    const agent = this.find(id);
+    if (!agent || generation !== this.resyncGeneration) return;
+    await this.loadCache(agent, live);
+    const sessions = await this.daemon.listSessions();
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    this.adoptSessions(agent, sessions);
+    live.adoptionNeeded = false;
+    let refs = this.sessions(agent.id);
+
+    // An earlier session whose replay failed, with newer history already
+    // shown after it: the only way to keep order is to start over.
+    const failedEarlier = refs.some(
+      (ref, i) =>
+        i < refs.length - 1 &&
+        live.sessions.get(ref.daemonSessionId)?.complete === false,
+    );
+    if (failedEarlier && live.itemBase + live.items.length > 0)
+      this.rebuild(agent, live, 'recovered history must keep its order');
+    // A cached session the daemon's log contradicts (cut short, or an
+    // ended one with records past the cache) cannot be continued.
+    const contradicted = refs.some((ref) => {
+      const s = byId.get(ref.daemonSessionId);
+      const sl = live.sessions.get(ref.daemonSessionId);
+      if (!s || !sl?.fromCache) return false;
+      return (
+        sl.lastSeq > s.lastSeq || (sl.endedBoundary && sl.lastSeq < s.lastSeq)
+      );
+    });
+    if (contradicted)
+      this.rebuild(agent, live, 'the cache disagrees with the daemon log');
+    refs = this.sessions(agent.id);
+    for (const [i, ref] of refs.entries()) {
+      if (generation !== this.resyncGeneration) return;
+      const s = byId.get(ref.daemonSessionId);
+      if (!s) continue;
+      const sl = this.trackSession(
+        agent,
+        live,
+        s.id,
+        live.sessions.get(s.id)?.adapter ?? this.adapters.create(agent.profile),
+      );
+      if (!sl.startedBoundary) {
+        this.appendItem(agent.id, live, s.id, 0, {
+          kind: 'system',
+          text: `${i === 0 ? 'session started' : 'session resumed'} (${s.id})`,
+        });
+        sl.startedBoundary = true;
+      }
+      const isCurrent = s.id === agent.currentSessionId;
+      if (
+        isCurrent &&
+        s.state === 'running' &&
+        (live.status.state === 'starting' || live.status.state === 'exited')
+      ) {
+        // Provisional, quietly: the replay that follows knows better. A
+        // cached session brings the status it had at its last turn end;
+        // the replay from there is short and refines it.
+        const cached = sl.fromCache ? sl.settled?.status : null;
+        if (cached) {
+          this.setState(agent, live, cached.state, cached.error, true);
+          live.status = { ...cached };
+          live.stateHeld = true;
+        } else
+          this.setState(
+            agent,
+            live,
+            sl.adapter.initialState ?? 'starting',
+            null,
+            true,
+          );
+      }
+      // Catch up whenever the cursor trails the daemon, exited or not.
+      if (
+        !sl.replayed ||
+        sl.lastSeq < s.lastSeq ||
+        (isCurrent && s.state === 'running')
+      ) {
+        await this.attachSession(agent, live, sl);
+        if (isCurrent && s.state === 'running' && sl.replayed)
+          this.reconcileTurnState(agent, live, sl);
+      }
+      if (s.state === 'exited' && !sl.pendingExit) {
+        if (isCurrent) this.applyExit(agent, live, s);
+        else this.endBoundary(agent, live, sl, s);
+        if (ref.endedAt === null)
+          this.db
+            .prepare(
+              'UPDATE agent_sessions SET ended_at = ? WHERE daemon_session_id = ?',
+            )
+            .run(s.exitedAt ?? Date.now(), s.id);
+      }
+    }
+    await this.reconcileCurrent(agent, live);
+    const fresh = this.find(agent.id);
+    if (fresh && !fresh.currentSessionId && live.status.state !== 'exited')
+      this.setState(agent, live, 'exited', null);
+    for (const sl of live.sessions.values()) sl.fromCache = false;
+    this.writeCache(agent, live);
+    live.loaded = true;
+    live.markSynced();
   }
 
   /** Sessions the daemon labelled for this agent that the database does not know: record them, and pick a live one as current if we have none. */
@@ -1373,6 +1645,16 @@ export class AgentsService
           model: null,
         },
         items: [],
+        itemBase: 0,
+        cache: {
+          claimed: 0,
+          written: { count: 0, bytes: 0, offsets: [] },
+          chain: Promise.resolve(),
+          loaded: false,
+          broken: false,
+        },
+        cacheHeaders: new Map(),
+        loaded: false,
         lock: Promise.resolve(),
         synced: Promise.resolve(),
         markSynced: () => undefined,
@@ -1454,7 +1736,7 @@ export class AgentsService
     at = Date.now(),
   ): StoredItem {
     const stored: StoredItem = {
-      index: live.items.length,
+      index: live.itemBase + live.items.length,
       sessionId,
       seqFrom: seq,
       seqTo: seq,

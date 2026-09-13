@@ -50,6 +50,17 @@ export class FakeAdapter implements AgentAdapter {
     return [];
   }
 
+  snapshot(): unknown {
+    return { texts: this.texts };
+  }
+
+  restore(state: unknown): void {
+    const st = (state ?? {}) as { texts?: number };
+    this.texts = st.texts ?? this.texts;
+    this.turnOpen = false;
+    this.pending.clear();
+  }
+
   pendingPermissions(): PermissionRequest[] {
     return [...this.pending].map(([requestId, p]) => ({
       requestId,
