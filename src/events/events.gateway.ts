@@ -229,6 +229,9 @@ export class EventsGateway
     this.clients.set(client, sessionId);
     this.alive.add(client);
     client.on('pong', () => this.alive.add(client));
+    // A ping racing a client that just hung up raises an error on the
+    // socket; without a listener it would reach the process-level handler.
+    client.on('error', () => undefined);
     this.presence.set(client, {
       userId: user.id,
       name: user.name,
