@@ -51,6 +51,10 @@ if [ -n "${AGENT_MANAGER_HUB_TOKEN:-}" ]; then
   printf '[Service]\nEnvironment="AGENT_MANAGER_HUB_TOKEN=%s"\n' "$ESCAPED" > "$UNIT_DIR/agent-manager.service.d/hub.conf"
   chmod 600 "$UNIT_DIR/agent-manager.service.d/hub.conf"
 fi
+if [ -n "${AGENT_MANAGER_HOST_NAME:-}" ]; then
+  mkdir -p "$UNIT_DIR/agent-manager.service.d"
+  printf '[Service]\nEnvironment="AGENT_MANAGER_HOST_NAME=%s"\n' "$AGENT_MANAGER_HOST_NAME" > "$UNIT_DIR/agent-manager.service.d/host.conf"
+fi
 echo "installed unit $UNIT_DIR/agent-manager.service"
 
 systemctl --user daemon-reload

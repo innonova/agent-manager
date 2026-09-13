@@ -83,19 +83,21 @@ export class EventsGateway
     this.daemon.on('connected', () =>
       this.broadcast({ type: 'daemon', connected: true }),
     );
-    // A hub: the spokes' streams, ids prefixed, and their health as hosts
+    // A hub: the spokes' streams, ids prefixed; their presence merged into
+    // ours; their health as hosts; a spoke's stream coming back as a cue
+    // for clients to refetch what they show of it.
     this.hub.on('frame', (frame) => this.broadcast(frame));
     this.hub.on('hosts', (hosts) => this.broadcast({ type: 'hosts', hosts }));
-    this.daemon.on('connected', () => {
-      this.hub.localDaemon = true;
-      if (this.hub.enabled)
-        this.broadcast({ type: 'hosts', hosts: this.hub.hosts() });
-    });
-    this.daemon.on('disconnected', () => {
-      this.hub.localDaemon = false;
-      if (this.hub.enabled)
-        this.broadcast({ type: 'hosts', hosts: this.hub.hosts() });
-    });
+    this.hub.on('presence', () => this.broadcastPresence());
+    this.hub.on('reconnected', (name) =>
+      this.broadcast({ type: 'host.reconnected', name }),
+    );
+    this.daemon.on('connected', () =>
+      this.broadcast({ type: 'hosts', hosts: this.hub.hosts() }),
+    );
+    this.daemon.on('disconnected', () =>
+      this.broadcast({ type: 'hosts', hosts: this.hub.hosts() }),
+    );
     this.daemon.on('disconnected', () =>
       this.broadcast({ type: 'daemon', connected: false }),
     );
@@ -113,7 +115,8 @@ export class EventsGateway
     });
     this.sweep = setInterval(() => {
       for (const [c, sid] of this.clients)
-        if (!this.auth.userForSession(sid)) c.close(4401, 'session expired');
+        if (!sid.startsWith('hub:') && !this.auth.userForSession(sid))
+          c.close(4401, 'session expired'); // a hub's socket has a token, not a session
     }, 60_000);
     this.sweep.unref();
     // An idle websocket carries nothing, and reverse proxies close idle
@@ -189,10 +192,12 @@ export class EventsGateway
     if (frame?.type !== 'presence') return;
     const p = this.presence.get(client);
     if (!p) return;
-    // agent ids are uuids; anything else (a prototype key, say) is ignored
+    // agent ids are uuids, on a hub prefixed with the spoke's name; anything else (a prototype key, say) is ignored
     p.agentId =
       typeof frame.agentId === 'string' &&
-      /^[A-Za-z0-9-]{1,64}$/.test(frame.agentId)
+      /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,31}:)?[A-Za-z0-9-]{1,64}$/.test(
+        frame.agentId,
+      )
         ? frame.agentId
         : null;
     p.typingAt = frame.typing === true && p.agentId ? Date.now() : 0;
@@ -220,7 +225,7 @@ export class EventsGateway
     const out: Record<
       string,
       { userId: string; name: string; typing: boolean }[]
-    > = Object.create(null);
+    > = Object.assign(Object.create(null), this.hub.remotePresence());
     for (const [id, users] of agents) out[id] = [...users.values()];
     return out;
   }

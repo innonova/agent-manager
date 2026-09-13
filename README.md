@@ -63,8 +63,12 @@ from one UI, make one manager the hub:
    (kept in the `hub.conf` drop-in, mode 600). Its port must be
    reachable from the hub.
 2. On the hub, write `~/.local/state/agent-manager/spokes.json`:
-   `[{ "name": "vibe", "url": "http://192.168.1.20:4268", "token": "<the same string>" }]`
+   `[{ "name": "vibe", "url": "http://192.168.1.20:4268", "token": "<the same string>" }]`,
+   `chmod 600` it (it is ignored otherwise: the tokens are credentials),
    and restart the manager (`systemctl --user restart agent-manager`).
+   `AGENT_MANAGER_HOST_NAME` on either side names the machine (kept in
+   the `host.conf` drop-in by the installer); a spoke must not share the
+   hub's name.
 
 The hub's project list then shows every machine's projects with the
 machine's name; agents are driven through the hub as the logged-in user,

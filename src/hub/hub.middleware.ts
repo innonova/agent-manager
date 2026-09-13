@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthService } from '../auth/auth.service.js';
-import type { HubService } from './hub.service.js';
+import { REMOTE_ID_RE, type HubService } from './hub.service.js';
 
 const PREFIXED = /^\/api\/(projects|agents)\/([^/]+)(\/.*)?$/;
 
@@ -18,8 +18,18 @@ export function hubProxy(hub: HubService, auth: AuthService) {
     if (!hub.enabled) return next();
     const m = PREFIXED.exec(req.baseUrl + req.path); // mounted under /api: req.path is relative to it;
     if (!m) return next();
-    const target = hub.split(decodeURIComponent(m[2]!));
+    let target: ReturnType<HubService['split']>;
+    try {
+      target = hub.split(decodeURIComponent(m[2]!));
+    } catch {
+      return next();
+    }
     if (!target) return next();
+    if (!REMOTE_ID_RE.test(target.id)) {
+      // never anything that could leave the spoke's project/agent routes
+      res.status(404).json({ statusCode: 404, message: 'no such id' });
+      return;
+    }
     const { user } = auth.userForHeaders(req.headers);
     if (!user) {
       res.status(401).json({ statusCode: 401, message: 'Unauthorized' });

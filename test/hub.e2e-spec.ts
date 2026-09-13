@@ -38,7 +38,11 @@ beforeAll(async () => {
   const hubData = fs.mkdtempSync(path.join(os.tmpdir(), 'am-hub-'));
   fs.writeFileSync(
     path.join(hubData, 'spokes.json'),
-    JSON.stringify([{ name: 'vibe', url: spoke.url, token: TOKEN }]),
+    JSON.stringify([
+      { name: 'vibe', url: spoke.url, token: TOKEN },
+      { name: 'wrong', url: spoke.url, token: 'not-the-token' }, // a misconfigured spoke: refused by the real one
+    ]),
+    { mode: 0o600 }, // anything wider is refused: the tokens are credentials
   );
   hub = await startManager(hubDaemon.url, hubData, {
     hostName: 'main',
@@ -64,12 +68,34 @@ afterAll(async () => {
 describe('hub', () => {
   it('lists both machines and the spoke in the hosts, and the token only with an acting user', async () => {
     const h = (await new Api(hub.url).get('/api/health')).body;
-    expect(h.hosts).toEqual([
+    expect(h.hosts.slice(0, 2)).toEqual([
       { name: 'main', local: true, connected: true, daemon: true },
       { name: 'vibe', local: false, connected: true, daemon: true },
     ]);
+    expect(h.hosts[2]).toMatchObject({ name: 'wrong', connected: false }); // its socket was refused
     const hello = events.frames.find((f) => f.type === 'hello');
-    expect(hello.hosts.map((x: any) => x.name)).toEqual(['main', 'vibe']);
+    expect(hello.hosts.map((x: any) => x.name)).toEqual([
+      'main',
+      'vibe',
+      'wrong',
+    ]);
+    // a world-readable spokes file is ignored as a whole
+    const loose = fs.mkdtempSync(path.join(os.tmpdir(), 'am-loose-'));
+    fs.writeFileSync(
+      path.join(loose, 'spokes.json'),
+      JSON.stringify([{ name: 'x', url: spoke.url, token: TOKEN }]),
+      { mode: 0o644 },
+    );
+    const looseHub = await startManager(hubDaemon.url, loose, {
+      hostName: 'loose',
+      spokesFile: path.join(loose, 'spokes.json'),
+    });
+    expect(
+      (await new Api(looseHub.url).get('/api/health')).body.hosts.map(
+        (x: any) => x.name,
+      ),
+    ).toEqual(['loose']);
+    await looseHub.stop();
     // the spoke: the token alone is not a login; with an acting user it is
     const bare = new Api(spoke.url);
     const r1 = await fetch(`${spoke.url}/api/projects`, {
@@ -123,6 +149,64 @@ describe('hub', () => {
     ).toContain('fake');
     expect((await api.get('/api/projects/vibe:nope')).status).toBe(404);
     expect((await api.get('/api/projects/nowhere:x')).status).toBe(404);
+    // nothing but a plain id is forwarded: no leaving the project/agent routes on the spoke
+    const traversal = await api.post(
+      '/api/projects/vibe:../users/anyone/password',
+      {},
+    );
+    expect(traversal.status).toBe(404);
+    expect((await api.get('/api/projects/vibe:..%2Fusers')).status).toBe(404);
+    // a spoke that refuses the hub's token: 502 with its own code, never a 401 the client would take for its own login
+    const refused = await api.get('/api/projects/wrong:anything');
+    expect(refused.status).toBe(502);
+    expect(refused.body.code).toBe('spoke-auth');
+    expect(
+      (await api.get('/api/health')).body.hosts.find(
+        (x: any) => x.name === 'wrong',
+      ).error,
+    ).toMatch(/refused/);
+  });
+
+  it('a hub user is created on the spoke by name on first sight, cannot get a password there, and the restart reply is prefixed', async () => {
+    const bobPw = (await api.post('/api/users', { name: 'bob-hub' })).body
+      .password;
+    const bob = new Api(hub.url);
+    await bob.login('bob-hub', bobPw);
+    const pid = ((await bob.get('/api/projects')).body as any[]).find(
+      (r) => r.project.host === 'vibe',
+    ).project.id;
+    expect((await bob.get(`/api/projects/${pid}`)).status).toBe(200);
+    const onSpoke = (await spokeApi.get('/api/users')).body.users as any[];
+    const created = onSpoke.find((u) => u.name === 'bob-hub');
+    expect(created).toBeDefined();
+    // the spoke's own admin cannot give that account a password: it logs in on the hub
+    const reset = await spokeApi.post(`/api/users/${created.id}/password`, {});
+    expect(reset.status).toBe(409);
+    expect((await new Api(spoke.url).login('bob-hub', 'anything')).status).toBe(
+      401,
+    );
+    // the restart reply names agents in the hub's id space
+    const r = await api.post(`/api/projects/${pid}/agents/restart`, {});
+    expect(r.status).toBe(201);
+    for (const id of [
+      ...r.body.restarted,
+      ...r.body.skipped.map((s: any) => s.id),
+    ])
+      expect(id).toMatch(/^vibe:/);
+    // presence about a spoke's agent is accepted on the hub (ids with the prefix)
+    const agentId = (
+      (await api.get(`/api/projects/${pid}/agents`)).body as any[]
+    )[0]?.agent.id;
+    if (agentId) {
+      events.ws.send(
+        JSON.stringify({ type: 'presence', agentId, typing: false }),
+      );
+      const p = await events.waitFor(
+        (f) => f.type === 'presence' && f.agents[agentId],
+        5000,
+      );
+      expect(p.agents[agentId].map((u: any) => u.name)).toContain('admin');
+    }
   });
 
   it('drives an agent on the spoke: turn, items and events through the hub, attributed to the hub user', async () => {
@@ -207,6 +291,16 @@ describe('hub', () => {
     );
     const list = (await api.get('/api/projects')).body as any[];
     expect(list.map((r) => r.project.host)).toEqual(['main']);
+    // the agents created earlier are gone with it from the hub's view; presence keys of that host are dropped
+    expect(
+      Object.keys(
+        (
+          await events
+            .waitFor((f) => f.type === 'presence', 3000)
+            .catch(() => ({ agents: {} }))
+        ).agents,
+      ).some((k) => k.startsWith('vibe:')),
+    ).toBe(false);
     const r = await api.get(`/api/projects/${pid}`);
     expect(r.status).toBe(502);
     expect(r.body.code).toBe('spoke-unreachable');

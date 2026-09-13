@@ -65,10 +65,28 @@ export class ProjectsController {
           { statusCode: 404, message: `no host ${host}` },
           404,
         );
-      const r = await this.hub.call<{
-        project: Project & { host: string };
-        agentCounts: AgentCounts;
-      }>(spoke, 'POST', '/api/projects', req.user?.name ?? 'hub', rest);
+      let r: {
+        status: number;
+        body: { project: Project & { host: string }; agentCounts: AgentCounts };
+      };
+      try {
+        r = await this.hub.call(
+          spoke,
+          'POST',
+          '/api/projects',
+          req.user?.name ?? 'hub',
+          rest,
+        );
+      } catch (err) {
+        throw new HttpException(
+          {
+            statusCode: 502,
+            code: 'spoke-unreachable',
+            message: `${host} is not reachable: ${(err as Error).message}`,
+          },
+          502,
+        );
+      }
       if (r.status >= 400)
         throw new HttpException(r.body as Record<string, unknown>, r.status);
       return r.body;

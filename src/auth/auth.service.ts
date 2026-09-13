@@ -194,6 +194,13 @@ export class AuthService
     byUserId?: string,
   ): Promise<string> {
     this.getUser(id);
+    const row = this.db
+      .prepare('SELECT password_hash FROM users WHERE id = ?')
+      .get(id) as { password_hash: string } | undefined;
+    if (row?.password_hash.startsWith('hub:'))
+      throw new ConflictException(
+        'this user was created by a hub and logs in there; it has no password here',
+      );
     const password = generatePassword();
     const hash = await argon2.hash(password, { type: argon2.argon2id });
     this.db

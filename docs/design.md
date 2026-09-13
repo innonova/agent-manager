@@ -309,7 +309,10 @@ the repositories on its own disk; what is shared is the view.
   hub is their only way in). Turns are attributed and presence is shown
   under that name, so the spoke's own UI sees the same names as the hub.
 - **Hub**: a manager with `<dataDir>/spokes.json` (`[{ name, url,
-  token }]`, `AGENT_MANAGER_SPOKES_FILE` overrides the path). It lists
+  token }]`, `AGENT_MANAGER_SPOKES_FILE` overrides the path; the file
+  must be readable by this user only, or it is ignored as a whole, and
+  a name that repeats or is this machine's own, or a bad url, ignores
+  it too; errors never quote an entry). It lists
   the spokes' projects beside its own, each project carrying `host`, and
   every id of a spoke's project or agent is seen as `<name>:<id>`. A
   request about such an id (`/api/projects/<name>:<id>/...`,
@@ -318,12 +321,22 @@ the repositories on its own disk; what is shared is the view.
   with `host` creates on that spoke; `GET /api/projects/:id/profiles`
   gives the profiles of the machine the project is on. The hub keeps
   one socket to each spoke's `/api/events` and fans its frames into its
-  own stream with the ids prefixed (presence keys included); the spokes'
-  `users.changed` and `ui.build` are not forwarded. Nothing about a
+  own stream with the ids prefixed; the spokes' presence is merged into
+  the hub's own picture (so one `presence` frame still says everything);
+  their `users.changed` and `ui.build` are not forwarded. A spoke's
+  socket is given ten seconds to open and is dropped after ninety
+  seconds without a ping or a frame; when it comes back the hub sends
+  `host.reconnected { name }`, on which clients refetch what they show of
+  that machine, since whatever the spoke sent meanwhile is gone. Ids
+  forwarded to a spoke must be plain (`[A-Za-z0-9-]`), so a request
+  cannot leave the project and agent routes there. A 401 or 403 from a
+  spoke is the hub's credential being refused and is reported as 502
+  `spoke-auth`, never as the user's own login expiring. Nothing about a
   spoke is stored on the hub; `spokes.json` is the whole configuration.
 - **Hosts**: `hello` and the `hosts` frame carry `[{ name, local,
-  connected, daemon }]`, the hub's link to each spoke and each host's
-  link to its daemon; `/api/health` has the same list. A spoke that does
+  connected, daemon, error? }]`, the hub's link to each spoke, each
+  host's link to its daemon, and what the last request to a spoke said
+  when it failed; `/api/health` has the same list. A spoke that does
   not answer contributes no projects to the list and its requests fail
   with 502 `spoke-unreachable`; the hub reconnects with backoff.
 - Every machine is named (`AGENT_MANAGER_HOST_NAME`, default the short
@@ -331,9 +344,13 @@ the repositories on its own disk; what is shared is the view.
   all hosts alike.
 
 Not shared: user accounts (the hub's users are the ones that log in;
-spokes see them by name), presence sent by the hub's users about a
-spoke's agents (shown on the hub, not on the spoke), and the CLI, which
-runs on a machine and talks to that machine.
+spokes see them by name, and a user a hub created cannot be given a
+password on the spoke: it logs in on the hub), presence sent by the
+hub's users about a spoke's agents (shown on the hub, not on the spoke),
+and the CLI, which runs on a machine and talks to that machine. Anyone
+holding a spoke's token can act there as any name, `admin` included:
+the token is a credential for the whole spoke, which is why the file
+holding it must be private.
 
 ## Transcript cache
 
@@ -661,7 +678,8 @@ Everything else is server to client; every frame has a
 
 ```
 hello            { user, daemon: { connected }, presence, uiBuild, hosts }   // first frame after the upgrade
-hosts            { hosts: [{ name, local, connected, daemon }] }   // a host's link changed (a hub's spokes, or this machine's daemon)
+hosts            { hosts: [{ name, local, connected, daemon, error? }] }   // a host's link changed (a hub's spokes, or this machine's daemon)
+host.reconnected { name }                          // a spoke's stream is back after a gap: refetch what you show of it
 daemon           { connected }                     // the manager's link to the daemon changed
 ui.build         { id }                            // the served UI build changed (a UI-only deploy)
 presence         { agents: { [agentId]: [{ userId, name, typing }] } }
