@@ -328,8 +328,11 @@ the repositories on its own disk; what is shared is the view.
   seconds without a ping or a frame; when it comes back the hub sends
   `host.reconnected { name }`, on which clients refetch what they show of
   that machine, since whatever the spoke sent meanwhile is gone. Ids
-  forwarded to a spoke must be plain (`[A-Za-z0-9-]`), so a request
-  cannot leave the project and agent routes there. A 401 or 403 from a
+  forwarded to a spoke must be plain (`[A-Za-z0-9-]`) and every path
+  segment after them a plain name (no dot segments, nothing
+  percent-encoded a URL parser would fold), so a request cannot leave
+  the project and agent routes there. A spoke's agent viewed both on
+  the spoke and on the hub lists both sets of people, once each. A 401 or 403 from a
   spoke is the hub's credential being refused and is reported as 502
   `spoke-auth`, never as the user's own login expiring. Nothing about a
   spoke is stored on the hub; `spokes.json` is the whole configuration.

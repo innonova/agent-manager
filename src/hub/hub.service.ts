@@ -251,6 +251,10 @@ export class HubService
               `projects not listed (${r.status}): ${String((r.body as { message?: unknown } | null)?.message ?? '')}`.trim(),
             );
         } catch (err) {
+          this.noteError(
+            spoke.name,
+            `projects not listed: ${(err as Error).message}`,
+          );
           this.logger.warn(
             `spoke ${spoke.name}: projects not listed: ${(err as Error).message}`,
           );
@@ -382,8 +386,14 @@ function loadSpokes(file: string, localName: string, logger: Logger): Spoke[] {
   } catch {
     return [];
   }
+  let list: unknown;
   try {
-    const list = JSON.parse(raw) as unknown;
+    list = JSON.parse(raw);
+  } catch {
+    logger.error(`${path.basename(file)} ignored: not valid JSON`); // never the parser's message: it quotes the text
+    return [];
+  }
+  try {
     if (!Array.isArray(list)) throw new Error('not a list');
     const out: Spoke[] = [];
     for (const [i, s] of (list as Record<string, unknown>[]).entries()) {

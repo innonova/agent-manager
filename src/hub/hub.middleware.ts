@@ -25,8 +25,17 @@ export function hubProxy(hub: HubService, auth: AuthService) {
       return next();
     }
     if (!target) return next();
-    if (!REMOTE_ID_RE.test(target.id)) {
-      // never anything that could leave the spoke's project/agent routes
+    // Never anything that could leave the spoke's project/agent routes:
+    // the id must be plain, and every segment after it a plain name (no
+    // `.`/`..`, nothing percent-encoded that a URL parser would fold).
+    const rest = m[3] ?? '';
+    const restOk = rest
+      .split('/')
+      .slice(1)
+      .every((seg) =>
+        /^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*$/.test(seg),
+      );
+    if (!REMOTE_ID_RE.test(target.id) || !restOk) {
       res.status(404).json({ statusCode: 404, message: 'no such id' });
       return;
     }

@@ -156,6 +156,21 @@ describe('hub', () => {
     );
     expect(traversal.status).toBe(404);
     expect((await api.get('/api/projects/vibe:..%2Fusers')).status).toBe(404);
+    // ...nor after a valid id, raw or encoded, since a URL parser would fold it
+    const valid = created.body.project.id;
+    for (const suffix of [
+      '/../../users/x/password',
+      '/agents/../../users',
+      '/%2e%2e/users',
+      '/agents/.%2e/x',
+    ]) {
+      const raw = await fetch(`${hub.url}/api/projects/${valid}${suffix}`, {
+        method: 'POST',
+        headers: { cookie: api.cookie, 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect([404, 400]).toContain(raw.status);
+    }
     // a spoke that refuses the hub's token: 502 with its own code, never a 401 the client would take for its own login
     const refused = await api.get('/api/projects/wrong:anything');
     expect(refused.status).toBe(502);

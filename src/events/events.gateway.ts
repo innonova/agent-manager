@@ -226,7 +226,15 @@ export class EventsGateway
       string,
       { userId: string; name: string; typing: boolean }[]
     > = Object.assign(Object.create(null), this.hub.remotePresence());
-    for (const [id, users] of agents) out[id] = [...users.values()];
+    // a spoke's agent viewed both there and here: both sets of people, once each
+    for (const [id, users] of agents) {
+      const remote = (out[id] ?? []).filter(
+        (u) =>
+          !users.has(u.userId) &&
+          ![...users.values()].some((v) => v.name === u.name),
+      );
+      out[id] = [...remote, ...users.values()];
+    }
     return out;
   }
 
