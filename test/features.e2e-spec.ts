@@ -100,6 +100,19 @@ afterAll(async () => {
 });
 
 describe('features', () => {
+  it('done features come newest first', async () => {
+    write('old-done', { title: 'Old', status: 'done', priority: 1 }, 'x');
+    await new Promise((r) => setTimeout(r, 20));
+    write('new-done', { title: 'New', status: 'done', priority: 9 }, 'y');
+    const r = await api.get(`/api/projects/${projectId}/features`);
+    const done = r.body.features
+      .filter((f: any) => f.status === 'done')
+      .map((f: any) => f.slug);
+    expect(done.slice(0, 2)).toEqual(['new-done', 'old-done']);
+    fs.unlinkSync(file('old-done'));
+    fs.unlinkSync(file('new-done'));
+  });
+
   it('lists features in working order, priority within a status; unknown or legacy statuses read as planned', async () => {
     const r = await api.get(`/api/projects/${projectId}/features`);
     expect(r.status).toBe(200);

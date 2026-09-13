@@ -135,11 +135,15 @@ export class FeaturesService
       planned: 3,
       done: 4,
     };
+    // Done features are history: newest first, by the file's last write,
+    // which is the moment it was marked done. Everything else is a queue:
+    // priority, then name.
     return features.sort(
       (a, b) =>
         order[a.status] - order[b.status] ||
-        a.priority - b.priority ||
-        a.slug.localeCompare(b.slug),
+        (a.status === 'done'
+          ? b.mtime - a.mtime
+          : a.priority - b.priority || a.slug.localeCompare(b.slug)),
     );
   }
 
