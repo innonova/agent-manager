@@ -58,10 +58,14 @@ export class CopilotAdapter implements AgentAdapter {
     ];
   }
 
+  /** Request kinds already in the log, so a replayed reply never repeats a handshake step. */
+  private sentKinds = new Set<string>();
+  /** A session/load is in flight: session/update frames are history, ignored. */
+  private loading = false;
   /** request_permission requests not yet answered. */
   private permissions = new Map<
     string,
-    { options: PermissionOption[]; item: PermissionItem }
+    { options: PermissionOption[]; item: PermissionItem; answered?: boolean }
   >();
 
   pendingPermissions(): PermissionRequest[] {
@@ -73,7 +77,9 @@ export class CopilotAdapter implements AgentAdapter {
 
   decide(requestId: string, optionId: string): unknown[] | null {
     const p = this.permissions.get(requestId);
-    if (!p || !p.options.some((o) => o.id === optionId)) return null;
+    if (!p || p.answered || !p.options.some((o) => o.id === optionId))
+      return null;
+    p.answered = true;
     return [
       {
         jsonrpc: '2.0',
@@ -151,6 +157,7 @@ export class CopilotAdapter implements AgentAdapter {
       return this.ingestReply(line);
     switch (line?.method) {
       case 'session/update':
+        if (this.loading) return {}; // replayed history during session/load
         return this.ingestUpdate(line.params?.update);
       case 'session/request_permission': {
         const requestId = String(line.id);
@@ -204,7 +211,18 @@ export class CopilotAdapter implements AgentAdapter {
               ? 'prompt'
               : null;
       if (kind) this.pending.set(line.id, kind);
+      if (kind) this.sentKinds.add(kind);
       if (line.id >= this.nextId) this.nextId = line.id + 1;
+      if (line.method === 'session/load') {
+        // The id we are resuming is ours to remember: the load reply need
+        // not repeat it, and a fresh adapter replaying the log has no
+        // `resume` to fall back on. While the load is in flight Copilot
+        // replays the conversation as session/update: history we already
+        // have from our own log, not new output.
+        this.resume =
+          String(line.params?.sessionId ?? this.resume ?? '') || null;
+        this.loading = true;
+      }
       if (kind === 'prompt') {
         this.turnOpen = true;
         this.endText();
@@ -226,7 +244,11 @@ export class CopilotAdapter implements AgentAdapter {
       if (!p) return {};
       this.permissions.delete(requestId);
       return {
-        state: this.turnOpen ? 'working' : 'idle',
+        state: this.permissions.size
+          ? 'waiting-permission'
+          : this.turnOpen
+            ? 'working'
+            : 'idle',
         ops: [
           {
             op: 'update',
@@ -259,6 +281,7 @@ export class CopilotAdapter implements AgentAdapter {
     }
     switch (kind) {
       case 'initialize':
+        if (this.sentKinds.has('session')) return {}; // already past this step
         return {
           send: [
             this.rpc(
@@ -270,6 +293,7 @@ export class CopilotAdapter implements AgentAdapter {
           ],
         };
       case 'session':
+        this.loading = false;
         this.sessionId = line.result?.sessionId ?? this.resume ?? null;
         return {
           conversationId: this.sessionId ?? undefined,
@@ -277,6 +301,7 @@ export class CopilotAdapter implements AgentAdapter {
         };
       case 'prompt': {
         this.turnOpen = false;
+        this.permissions.clear(); // a request from an ended turn cannot be answered
         const usage = line.result?.usage;
         return {
           state: 'idle',
@@ -424,6 +449,7 @@ export class CopilotAdapter implements AgentAdapter {
 
   /** A streamed text item ends when something else arrives. */
   private endText(): ItemOp[] {
+    this.thoughtKey = null;
     if (!this.textKey) return [];
     const op: ItemOp = {
       op: 'update',

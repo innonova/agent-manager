@@ -178,7 +178,8 @@ export async function writeFeature(
   const dir = path.join(repoPath, FEATURES_DIR);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${f.slug}.md`);
-  const tmp = `${p}.tmp`;
+  // Unique per write: two writers must not share a temporary file.
+  const tmp = `${p}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`;
   await fs.writeFile(tmp, serializeFeature(f));
   await fs.rename(tmp, p);
 }

@@ -87,7 +87,8 @@ export async function changedFiles(
     '--',
     '.',
   ]);
-  if (status !== null) {
+  if (status === null) return null; // half an answer is no answer
+  {
     const seen = new Set(files.map((f) => f.path));
     const s = status.split('\0');
     for (let i = 0; i < s.length; i++) {
@@ -118,4 +119,16 @@ export async function showAt(
       (err, stdout) => resolve(err ? null : (stdout as Buffer)),
     );
   });
+}
+
+/** Size of the blob at `base:path`, or null if it does not exist there. */
+export async function sizeAt(
+  cwd: string,
+  base: string,
+  path: string,
+): Promise<number | null> {
+  const out = await git(cwd, ['cat-file', '-s', `${base}:${path}`]);
+  if (out === null) return null;
+  const n = Number(out.trim());
+  return Number.isFinite(n) ? n : null;
 }

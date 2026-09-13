@@ -141,7 +141,9 @@ export class EventsGateway
     } catch {
       id = null;
     }
-    if (id === this.uiBuild) return false;
+    // A read that fails (mid-swap, say) keeps the last known id as the
+    // baseline; only a different id is a change.
+    if (id === null || id === this.uiBuild) return false;
     const changed = this.uiBuild !== null;
     this.uiBuild = id;
     return changed;
@@ -173,7 +175,12 @@ export class EventsGateway
     if (frame?.type !== 'presence') return;
     const p = this.presence.get(client);
     if (!p) return;
-    p.agentId = typeof frame.agentId === 'string' ? frame.agentId : null;
+    // agent ids are uuids; anything else (a prototype key, say) is ignored
+    p.agentId =
+      typeof frame.agentId === 'string' &&
+      /^[A-Za-z0-9-]{1,64}$/.test(frame.agentId)
+        ? frame.agentId
+        : null;
     p.typingAt = frame.typing === true && p.agentId ? Date.now() : 0;
     this.broadcastPresence();
   }
@@ -183,21 +190,25 @@ export class EventsGateway
     { userId: string; name: string; typing: boolean }[]
   > {
     const now = Date.now();
-    const agents: Record<
+    const agents = new Map<
       string,
       Map<string, { userId: string; name: string; typing: boolean }>
-    > = {};
+    >();
     for (const p of this.presence.values()) {
       if (!p.agentId) continue;
       const typing = now - p.typingAt < TYPING_TTL_MS;
-      const users = (agents[p.agentId] ??= new Map());
+      let users = agents.get(p.agentId);
+      if (!users) agents.set(p.agentId, (users = new Map()));
       const seen = users.get(p.userId);
       if (seen) seen.typing = seen.typing || typing;
       else users.set(p.userId, { userId: p.userId, name: p.name, typing });
     }
-    return Object.fromEntries(
-      Object.entries(agents).map(([id, users]) => [id, [...users.values()]]),
-    );
+    const out: Record<
+      string,
+      { userId: string; name: string; typing: boolean }[]
+    > = Object.create(null);
+    for (const [id, users] of agents) out[id] = [...users.values()];
+    return out;
   }
 
   /** Sends the snapshot to everyone when it differs from the last one sent. */

@@ -138,6 +138,8 @@ export interface AgentEvents {
 }
 
 export const LABEL_PREFIX = 'agent-manager:';
+/** How long a command waits for a resync in progress before giving up. */
+const SYNC_WAIT_MS = 10_000;
 const STARTING_GRACE_MS = 5000;
 const LOCK_PATIENCE_MS = 2000;
 
@@ -399,7 +401,7 @@ export class AgentsService
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
     const live = this.ensureLive(this.get(id));
-    await live.synced;
+    await this.awaitSynced(live);
     await this.withLock(live, async () => {
       let agent = this.get(id);
       if (agent.archivedAt) throw new ConflictException('agent is archived');
@@ -435,6 +437,9 @@ export class AgentsService
       if (!sl) throw unavailable('session not tracked');
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
+      const lines = sl.adapter.turn(text);
+      if (lines.length === 0)
+        throw unavailable('the session is not ready for a turn yet');
       const before = live.status;
       this.setState(agent, live, 'working', null);
       // The author is matched to the input record when it comes back from
@@ -442,14 +447,14 @@ export class AgentsService
       // stored by session and seq, which is what a rebuild has.
       if (userId) live.pendingAuthors.push(userId);
       try {
-        for (const line of sl.adapter.turn(text))
+        for (const line of lines)
           await this.daemon.input(agent.currentSessionId!, line);
       } catch (err) {
-        if (userId) live.pendingAuthors.pop();
         // A request lost in flight may still have been delivered; the resync
         // reconciles that from the log. Only a certain refusal reverts.
         const uncertain =
           err instanceof DaemonError && err.code === 'disconnected';
+        if (userId && !uncertain) live.pendingAuthors.pop();
         if (!uncertain && (live.status as AgentStatus).state === 'working')
           this.setState(agent, live, before.state, before.error);
         throw asHttp(err);
@@ -457,40 +462,57 @@ export class AgentsService
     });
   }
 
-  /** Answers a pending permission request with one of its options; the adapter knows which are pending from the log. */
+  /**
+   * Answers a pending permission request with one of its options. Under
+   * the agent's lock and only on a replayed session, like a turn: the
+   * adapter reserves the request when it builds the answer, so two people
+   * clicking at once produce one answer and one refusal.
+   */
   async decide(id: string, requestId: unknown, option: unknown): Promise<void> {
     if (typeof requestId !== 'string' || typeof option !== 'string')
       throw new BadRequestException('"requestId" and "option" are required');
     const live = this.ensureLive(this.get(id));
-    const agent = this.get(id);
-    await live.synced;
-    const sl = agent.currentSessionId
-      ? live.sessions.get(agent.currentSessionId)
-      : undefined;
-    const lines = sl?.adapter.decide?.(requestId, option);
-    if (!lines)
-      throw new NotFoundException(
-        'no such pending permission request (or no such option)',
-      );
-    try {
-      for (const line of lines)
-        await this.daemon.input(agent.currentSessionId!, line);
-    } catch (err) {
-      throw asHttp(err);
-    }
+    await this.awaitSynced(live);
+    await this.withLock(live, async () => {
+      const agent = this.get(id);
+      const sl = agent.currentSessionId
+        ? live.sessions.get(agent.currentSessionId)
+        : undefined;
+      if (!sl) throw unavailable('session not tracked');
+      if (!sl.replayed) {
+        await this.attachSession(agent, live, sl);
+        if (!sl.replayed)
+          throw unavailable('the session log could not be read');
+      }
+      const lines = sl.adapter.decide?.(requestId, option);
+      if (!lines)
+        throw new NotFoundException(
+          'no such pending permission request (or no such option)',
+        );
+      try {
+        for (const line of lines)
+          await this.daemon.input(agent.currentSessionId!, line);
+      } catch (err) {
+        throw asHttp(err);
+      }
+    });
   }
 
   async interrupt(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
+    await this.awaitSynced(live); // a fresh adapter mid-replay has no ids to interrupt with
     const agent = this.get(id);
     const sl = agent.currentSessionId
       ? live.sessions.get(agent.currentSessionId)
       : undefined;
     if (!sl?.adapter.interrupt)
       throw new ConflictException('nothing to interrupt');
+    const lines = sl.adapter.interrupt();
+    if (lines.length === 0)
+      throw unavailable('the session is not ready to be interrupted yet');
     // Deliberately outside the lock: an interrupt must reach a turn that is blocked on stdin.
     try {
-      for (const line of sl.adapter.interrupt())
+      for (const line of lines)
         await this.daemon.input(agent.currentSessionId!, line);
     } catch (err) {
       throw asHttp(err);
@@ -750,11 +772,12 @@ export class AgentsService
     } finally {
       sl.attaching = false;
     }
-    // Handshake replies that arrived during the attach: only those past the
-    // daemon's boundary at attach time are live; the rest are history.
+    // Handshake follow-ups produced while attaching. The adapters skip a
+    // step whose request is already in the log, so what is left here is a
+    // step the previous process never got to send: send it now.
+    void boundary;
     const queued = sl.pendingSends.splice(0);
-    for (const q of queued)
-      if (q.seq > boundary) this.sendLines(agent, sl, q.lines);
+    for (const q of queued) this.sendLines(agent, sl, q.lines);
     if (sl.pendingExit && sl.replayed) {
       const s = sl.pendingExit;
       sl.pendingExit = null;
@@ -1027,6 +1050,21 @@ export class AgentsService
       });
   }
 
+  /**
+   * Waits for the pending resync to reach this agent. While the daemon is
+   * down there is nothing to wait for: refuse now rather than hold the
+   * request open and run it whenever the link returns.
+   */
+  private async awaitSynced(live: Live): Promise<void> {
+    if (!this.daemon.connected)
+      throw unavailable('the daemon is not connected');
+    const timeout = new Promise<'timeout'>((r) =>
+      setTimeout(() => r('timeout'), SYNC_WAIT_MS).unref(),
+    );
+    if ((await Promise.race([live.synced, timeout])) === 'timeout')
+      throw unavailable('still catching up with the daemon; try again');
+  }
+
   /** Opens the gate if it is not already open; waiters from before are kept. */
   private gate(live: Live): void {
     live.adoptionNeeded = true;
@@ -1127,6 +1165,7 @@ export class AgentsService
               live,
               sl.adapter.initialState ?? 'starting',
               null,
+              true, // provisional: the replay that follows knows better
             );
           }
           // Catch up whenever the cursor trails the daemon, exited or not.
@@ -1316,7 +1355,8 @@ export class AgentsService
       state,
       error,
       lastActivityAt: Date.now(),
-      background: live.status.background,
+      // background jobs belong to the process; none survive its exit
+      background: state === 'exited' ? 0 : live.status.background,
     };
     if (quiet) {
       live.stateHeld = true;

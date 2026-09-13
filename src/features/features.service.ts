@@ -65,6 +65,25 @@ export class FeaturesService
   private seen = new Map<string, Map<string, number>>();
   /** "project/slug" -> status last seen, to notice transitions made by editing the file. */
   private lastStatus = new Map<string, FeatureStatus>();
+  /** One poll at a time; a slow one is simply not overlapped. */
+  private polling = false;
+  /**
+   * Writes to one feature file are serialised, and each one re-reads the
+   * file right before writing, so a human's status change or response
+   * never overwrites a report the agent appended meanwhile.
+   */
+  private writes = new Map<string, Promise<unknown>>();
+
+  private async serialised<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.writes.get(key) ?? Promise.resolve();
+    const next = prev.catch(() => undefined).then(fn);
+    this.writes.set(key, next);
+    try {
+      return await next;
+    } finally {
+      if (this.writes.get(key) === next) this.writes.delete(key);
+    }
+  }
 
   constructor(
     private readonly dbs: DbService,
@@ -202,12 +221,20 @@ export class FeaturesService
             'INSERT OR IGNORE INTO feature_ranges (project_id, slug, repo, base_commit) VALUES (?, ?, ?, ?)',
           )
           .run(projectId, slug, repo.name, h);
-      else
-        this.db
+      else {
+        const r = this.db
           .prepare(
             'UPDATE feature_ranges SET end_commit = ? WHERE project_id = ? AND slug = ? AND repo = ?',
           )
           .run(h, projectId, slug, repo.name);
+        // never seen in progress (done by hand, or before the manager watched): an empty range at HEAD
+        if (r.changes === 0)
+          this.db
+            .prepare(
+              'INSERT OR IGNORE INTO feature_ranges (project_id, slug, repo, base_commit, end_commit) VALUES (?, ?, ?, ?, ?)',
+            )
+            .run(projectId, slug, repo.name, h, h);
+      }
     }
   }
 
@@ -218,22 +245,48 @@ export class FeaturesService
    * projects coming and going.
    */
   private async poll(): Promise<void> {
-    for (const project of this.projects.list()) {
-      const known = this.seen.get(project.id);
-      const files = await this.readAll(project.repos);
-      const next = new Map<string, number>();
-      for (const f of files) {
-        next.set(f.slug, f.mtime);
-        // The first pass only records what is there.
-        if (known && known.get(f.slug) !== f.mtime) {
-          const was = this.lastStatus.get(`${project.id}/${f.slug}`);
-          if (was !== f.status)
-            await this.recordRange(project.id, f.slug, f.status);
-          this.emit('changed', project.id, this.decorate(project.id, f));
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      const projectIds = new Set<string>();
+      for (const project of this.projects.list()) {
+        projectIds.add(project.id);
+        const known = this.seen.get(project.id);
+        const files = await this.readAll(project.repos);
+        const next = new Map<string, number>();
+        for (const f of files) {
+          next.set(f.slug, f.mtime);
+          const key = `${project.id}/${f.slug}`;
+          if (!known) {
+            // First sight (startup): a feature already in progress with no
+            // base recorded gets one now. HEAD now is the best evidence
+            // there is; the true start was before the manager was watching.
+            if (
+              f.status === 'in-progress' &&
+              !this.range(project.id, f.slug)[project.repos[0]!.name]
+            )
+              await this.recordRange(project.id, f.slug, 'in-progress');
+          } else if (known.get(f.slug) !== f.mtime) {
+            const was = this.lastStatus.get(key);
+            if (was !== f.status)
+              await this.recordRange(project.id, f.slug, f.status);
+            this.emit('changed', project.id, this.decorate(project.id, f));
+          }
+          this.lastStatus.set(key, f.status);
         }
-        this.lastStatus.set(`${project.id}/${f.slug}`, f.status);
+        this.seen.set(project.id, next);
+        // forget bookkeeping for files that are gone
+        for (const k of this.lastStatus.keys())
+          if (
+            k.startsWith(`${project.id}/`) &&
+            !next.has(k.slice(project.id.length + 1))
+          )
+            this.lastStatus.delete(k);
       }
-      this.seen.set(project.id, next);
+      for (const id of this.seen.keys())
+        if (!projectIds.has(id)) this.seen.delete(id);
+    } finally {
+      this.polling = false;
     }
   }
 
@@ -378,18 +431,20 @@ export class FeaturesService
       input.dependsOn === undefined
     )
       throw new BadRequestException('nothing to change');
-    const found = await this.readOne(project.repos, slug);
-    if (!found) throw new NotFoundException(`no feature ${slug}`);
-    const f = found.file;
-    const before = f.status;
-    if (input.status !== undefined) f.status = input.status as FeatureStatus;
-    if (input.title !== undefined) f.title = (input.title as string).trim();
-    if (input.body !== undefined) f.body = input.body as string;
-    if (input.priority !== undefined) f.priority = Number(input.priority);
-    if (input.dependsOn !== undefined)
-      f.dependsOn = input.dependsOn as string[];
-    await writeFeature(found.repoPath, f);
-    return this.finish(projectId, slug, before, f.status, userId);
+    return this.serialised(`${projectId}/${slug}`, async () => {
+      const found = await this.readOne(project.repos, slug);
+      if (!found) throw new NotFoundException(`no feature ${slug}`);
+      const f = found.file;
+      const before = f.status;
+      if (input.status !== undefined) f.status = input.status as FeatureStatus;
+      if (input.title !== undefined) f.title = (input.title as string).trim();
+      if (input.body !== undefined) f.body = input.body as string;
+      if (input.priority !== undefined) f.priority = Number(input.priority);
+      if (input.dependsOn !== undefined)
+        f.dependsOn = input.dependsOn as string[];
+      await writeFeature(found.repoPath, f);
+      return this.finish(projectId, slug, before, f.status, userId);
+    });
   }
 
   /**
@@ -408,20 +463,23 @@ export class FeaturesService
     const project = this.projects.get(projectId);
     if (typeof input.text !== 'string' || !input.text.trim())
       throw new BadRequestException('"text" is required');
+    const text = input.text.trim();
     const status = input.status === undefined ? 'planned' : input.status;
     if (!HUMAN_STATUSES.includes(status as FeatureStatus))
       throw new BadRequestException(
         `"status" must be one of ${HUMAN_STATUSES.join(', ')}`,
       );
-    const found = await this.readOne(project.repos, slug);
-    if (!found) throw new NotFoundException(`no feature ${slug}`);
-    const f = found.file;
-    const before = f.status;
-    const heading = by ? `${today()}, ${by}` : today();
-    f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${heading})\n\n${input.text.trim()}\n`;
-    f.status = status as FeatureStatus;
-    await writeFeature(found.repoPath, f);
-    return this.finish(projectId, slug, before, f.status, userId);
+    return this.serialised(`${projectId}/${slug}`, async () => {
+      const found = await this.readOne(project.repos, slug);
+      if (!found) throw new NotFoundException(`no feature ${slug}`);
+      const f = found.file;
+      const before = f.status;
+      const heading = by ? `${today()}, ${by}` : today();
+      f.body = `${f.body.replace(/\s+$/, '')}\n\n## Response (${heading})\n\n${text}\n`;
+      f.status = status as FeatureStatus;
+      await writeFeature(found.repoPath, f);
+      return this.finish(projectId, slug, before, f.status, userId);
+    });
   }
 }
 

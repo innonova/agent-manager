@@ -187,13 +187,13 @@ describe('CodexAdapter', () => {
     expect(result.output).toContain('BACKGROUND_DONE');
   });
 
-  it('in ask mode an approval request waits for the human; the decision echoes an available one', () => {
+  it('in ask mode an approval request waits for the human; the decision echoes an available one, once', () => {
     const adapter = new CodexAdapter();
-    const lines = adapter.startLines({ cwd: '/w', permissions: 'ask' });
-    void lines;
+    adapter.startLines({ cwd: '/w', permissions: 'ask' });
     const records = loadFixture('codex', 'permission.ndjson');
     const { items, states } = replay(adapter, records);
     expect(states).toContain('waiting-permission');
+    expect(states[states.length - 1]).toBe('idle');
     const perm = items.find((i) => i.kind === 'permission') as any;
     expect(perm).toMatchObject({ tool: 'command', decision: 'allow' });
     expect(perm.input.command).toContain('touch');
@@ -202,36 +202,100 @@ describe('CodexAdapter', () => {
       'allow-always',
       'deny',
     ]);
-    const fresh = new CodexAdapter();
-    replay(
-      fresh,
-      records.slice(
-        0,
-        records.findIndex((r) => r.s === 'in' && r.d.includes('"decision"')),
-      ),
+    // the command ran after the approval: its result is not an error
+    const result = items.find((i) => i.kind === 'tool_result') as any;
+    expect(result.isError).toBe(false);
+
+    const upTo = records.slice(
+      0,
+      records.findIndex((r) => r.s === 'in' && r.d.includes('"decision"')),
     );
-    const [pending] = fresh.pendingPermissions();
-    expect(pending).toBeTruthy();
-    expect(fresh.decide(pending!.requestId, 'allow')).toEqual([
-      {
-        jsonrpc: '2.0',
-        id: Number(pending!.requestId),
-        result: { decision: 'accept' },
-      },
+    const pendingOn = () => {
+      const fresh = new CodexAdapter();
+      replay(fresh, upTo);
+      return { fresh, id: fresh.pendingPermissions()[0]!.requestId };
+    };
+    let { fresh, id } = pendingOn();
+    expect(fresh.decide(id, 'allow')).toEqual([
+      { jsonrpc: '2.0', id: Number(id), result: { decision: 'accept' } },
     ]);
+    expect(fresh.decide(id, 'deny')).toBeNull(); // answered once
+    ({ fresh, id } = pendingOn());
     expect(
-      (fresh.decide(pending!.requestId, 'allow-always') as any)[0].result
-        .decision,
+      (fresh.decide(id, 'allow-always') as any)[0].result.decision,
     ).toMatchObject({
       acceptWithExecpolicyAmendment: expect.anything(),
     });
-    expect(fresh.decide(pending!.requestId, 'deny')).toEqual([
+    ({ fresh, id } = pendingOn());
+    expect(fresh.decide(id, 'deny')).toEqual([
+      { jsonrpc: '2.0', id: Number(id), result: { decision: 'cancel' } },
+    ]);
+  });
+
+  it('maps every Codex decision explicitly: a denial never becomes an approval', () => {
+    const adapter = new CodexAdapter();
+    const { items } = replay(adapter, [
       {
-        jsonrpc: '2.0',
-        id: Number(pending!.requestId),
-        result: { decision: 'cancel' },
+        seq: 1,
+        t: 0,
+        s: 'out',
+        d: JSON.stringify({
+          method: 'item/commandExecution/requestApproval',
+          id: 7,
+          params: {
+            command: 'rm -rf x',
+            availableDecisions: [
+              'accept',
+              'acceptForSession',
+              'decline',
+              'cancel',
+            ],
+          },
+        }),
       },
     ]);
+    const perm = items[0] as any;
+    expect(perm.options).toEqual([
+      { id: 'allow', kind: 'allow', label: 'Allow' },
+      {
+        id: 'allow-always',
+        kind: 'allow-always',
+        label: 'Allow for this session',
+      },
+      { id: 'deny', kind: 'deny', label: 'Deny' },
+    ]);
+    expect(adapter.decide('7', 'deny')).toEqual([
+      { jsonrpc: '2.0', id: 7, result: { decision: 'decline' } },
+    ]);
+  });
+
+  it('a retrying error keeps the turn open', () => {
+    const adapter = new CodexAdapter();
+    const { states, items } = replay(adapter, [
+      {
+        seq: 1,
+        t: 0,
+        s: 'in',
+        d: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'turn/start',
+          params: { threadId: 't', input: [{ type: 'text', text: 'go' }] },
+        }),
+      },
+      {
+        seq: 2,
+        t: 0,
+        s: 'out',
+        d: JSON.stringify({
+          method: 'error',
+          params: { error: { message: 'rate limited' }, willRetry: true },
+        }),
+      },
+    ]);
+    expect(states).toEqual(['working']);
+    expect(items.map((i) => i.kind)).toEqual(['user', 'system']);
+    expect(adapter.turnInProgress()).toBe(true);
   });
 
   it('ask mode starts the thread with on-request approvals in the workspace sandbox', () => {

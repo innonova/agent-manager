@@ -58,7 +58,12 @@ export class ClaudeAdapter implements AgentAdapter {
   /** can_use_tool requests not yet answered, with the input to echo back on allow. */
   private permissions = new Map<
     string,
-    { input: unknown; options: PermissionOption[]; item: PermissionItem }
+    {
+      input: unknown;
+      options: PermissionOption[];
+      item: PermissionItem;
+      answered?: boolean;
+    }
   >();
 
   pendingPermissions(): PermissionRequest[] {
@@ -70,7 +75,9 @@ export class ClaudeAdapter implements AgentAdapter {
 
   decide(requestId: string, optionId: string): unknown[] | null {
     const p = this.permissions.get(requestId);
-    if (!p || !p.options.some((o) => o.id === optionId)) return null;
+    if (!p || p.answered || !p.options.some((o) => o.id === optionId))
+      return null;
+    p.answered = true;
     return [
       {
         type: 'control_response',
@@ -232,7 +239,11 @@ export class ClaudeAdapter implements AgentAdapter {
       const decision =
         line.response?.response?.behavior === 'allow' ? 'allow' : 'deny';
       return {
-        state: this.turnOpen ? 'working' : 'idle',
+        state: this.permissions.size
+          ? 'waiting-permission'
+          : this.turnOpen
+            ? 'working'
+            : 'idle',
         ops: [
           {
             op: 'update',
@@ -440,6 +451,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private ingestResult(line: any): Ingest {
     this.turnOpen = false;
     this.streaming = null;
+    this.permissions.clear(); // a request from an ended turn cannot be answered
     const end: Item = {
       kind: 'turn_end',
       usage: line.usage,

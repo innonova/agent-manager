@@ -187,7 +187,11 @@ export class AuthService
    * live session elsewhere. `keepSessionId` spares the caller's own
    * session when resetting themselves.
    */
-  async resetPassword(id: string, keepSessionId?: string): Promise<string> {
+  async resetPassword(
+    id: string,
+    keepSessionId?: string,
+    byUserId?: string,
+  ): Promise<string> {
     this.getUser(id);
     const password = generatePassword();
     const hash = await argon2.hash(password, { type: argon2.argon2id });
@@ -195,6 +199,10 @@ export class AuthService
       .prepare('UPDATE users SET password_hash = ? WHERE id = ?')
       .run(hash, id);
     this.revokeSessions(id, keepSessionId);
+    this.logger.log(
+      `password reset for user ${id}${byUserId ? ` by ${byUserId}` : ''}`,
+    );
+    this.emit('users', this.listUsers());
     return password;
   }
 
@@ -241,6 +249,12 @@ export class AuthService
       password,
     );
     if (!row || !ok) throw new UnauthorizedException('invalid credentials');
+    // Verification takes a moment; a reset meanwhile must win.
+    const current = this.db
+      .prepare('SELECT password_hash FROM users WHERE id = ?')
+      .get(row.id) as { password_hash: string } | undefined;
+    if (!current || current.password_hash !== row.password_hash)
+      throw new UnauthorizedException('invalid credentials');
     const sessionId = randomBytes(32).toString('base64url');
     this.db
       .prepare(

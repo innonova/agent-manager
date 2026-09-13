@@ -44,6 +44,7 @@ export class UsersController {
     const password = await this.auth.resetPassword(
       id,
       id === req.user!.id ? req.sessionId : undefined,
+      req.user!.id,
     );
     return { password };
   }

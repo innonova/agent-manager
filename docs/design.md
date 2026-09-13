@@ -150,6 +150,12 @@ calls until their output arrives. That last one rests on the wording of
 Copilot's result text; if Copilot sees real use here, rerun the probe
 (ask it to background `sleep 25` and end its turn) and firm this up.
 
+A command (turn, decision, interrupt) waits at most ten seconds for a
+resync in progress and is refused with `agent-unavailable` at once while
+the daemon is disconnected, so nothing queues up to run whenever the
+link returns. A turn the adapter cannot build yet (a handshake not
+finished) is refused the same way rather than marked working.
+
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
 the `errors` array of an error result, then `result`, then the subtype).
@@ -230,9 +236,14 @@ workspace-write` and sends `item/*/requestApproval` server requests whose
 means always allow this command, cancel) we echo back as the decision;
 Copilot without `--allow-all` sends `session/request_permission` with
 options (allow once, allow always, deny) answered by option id. The
-adapters normalise the options to allow, allow-always and deny, remember
-what is pending from the log (so a restart loses nothing), and mark the
-item decided when our answer appears as an input record.
+adapters normalise the options to allow, allow-always and deny (Codex's
+own decisions are mapped one by one; a denial is never turned into an
+approval), remember what is pending from the log (so a restart loses
+nothing), reserve a request when an answer is built so it is answered
+once, retire every pending request when the turn ends or errors, derive
+`waiting-permission` from what is still pending, and mark the item
+decided when our answer appears as an input record. A decision is sent
+under the agent's lock on a replayed session, like a turn.
 
 ## Transcript items
 
@@ -323,6 +334,11 @@ Ownership of `status`: `in-progress` is the agent's; `planned`, `review`,
 The manager never sets a status on its own. The human can also edit
 title, body, priority and dependencies through the API; the UI offers
 that for planned features, before or between rounds of work.
+
+The manager's own writes to a feature file are serialised per feature
+and re-read the file just before writing, with a unique temporary name,
+so a status change or response never overwrites a report the agent
+appended meanwhile.
 
 Because agents (and humans with an editor) write the files directly, the
 manager polls every project's feature files every few seconds and emits
@@ -440,7 +456,7 @@ GET    /api/health                  (public)                    -> { status: 'ok
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
 GET    /api/projects/:id/file?path=<file>                       -> { path, size, mtime, content, binary, truncated }; content empty when binary or over 2 MB
-GET    /api/projects/:id/changes?base=<spec>                    -> { base, repos: [{ repo, base, head, note, files: [{ path, status: modified|added|deleted|renamed|untracked, oldPath? }] }] }; spec is `read` (the caller's cursor, default), `feature:<slug>` or a commit-ish; measured against the working tree; `note` says when the base fell back to HEAD (nothing read yet, history rewritten, no range recorded)
+GET    /api/projects/:id/changes?base=<spec>                    -> { base, repos: [{ repo, base, head, note, files: [{ path, status: modified|added|deleted|renamed|untracked, oldPath? }] }] }; spec is `read` (the caller's cursor, default), `feature:<slug>` or a commit-ish; measured against the working tree; `note` says when the base fell back to HEAD (nothing read yet, history rewritten, no range recorded) or when git itself failed, which is never shown as a clean tree
 GET    /api/projects/:id/changes/file?path=<repo/path>&base=<spec> -> { path, base, before, after, binary, truncated }; before is the file at the base (null if absent there), after the working file (null if gone)
 POST   /api/projects/:id/changes/read { repo? }                 -> sets the caller's read cursor to HEAD in one or every repository
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, review, blocked, planned, done; within a status by priority then slug, except done which is newest first (file mtime, i.e. when it was marked done)

@@ -49,9 +49,12 @@ export class CodexAdapter implements AgentAdapter {
       options: PermissionOption[];
       values: Map<string, unknown>;
       item: PermissionItem;
+      answered?: boolean;
     }
   >();
   private permissionsMode: Permissions = 'bypass';
+  /** Request kinds already in the log, so a replayed reply never repeats a handshake step. */
+  private sentKinds = new Set<string>();
 
   pendingPermissions(): PermissionRequest[] {
     return [...this.approvals].map(([requestId, a]) => ({
@@ -62,7 +65,8 @@ export class CodexAdapter implements AgentAdapter {
 
   decide(requestId: string, optionId: string): unknown[] | null {
     const a = this.approvals.get(requestId);
-    if (!a || !a.values.has(optionId)) return null;
+    if (!a || a.answered || !a.values.has(optionId)) return null;
+    a.answered = true;
     return [
       {
         jsonrpc: '2.0',
@@ -181,6 +185,7 @@ export class CodexAdapter implements AgentAdapter {
       case 'turn/completed': {
         this.turnOpen = false;
         this.turnId = null;
+        this.approvals.clear(); // a request from an ended turn cannot be answered
         const turn = line.params?.turn;
         const end: Item = {
           kind: 'turn_end',
@@ -206,7 +211,13 @@ export class CodexAdapter implements AgentAdapter {
         const message = String(
           line.params?.error?.message ?? line.params?.message ?? record.d,
         );
+        // A retrying error is a diagnostic, not the end of the turn.
+        if (line.params?.willRetry === true)
+          return {
+            ops: [append({ kind: 'system', text: `retrying: ${message}` })],
+          };
         this.turnOpen = false;
+        this.approvals.clear();
         return {
           state: 'error',
           error: message,
@@ -230,7 +241,11 @@ export class CodexAdapter implements AgentAdapter {
         [...a.values].find(([, v]) => JSON.stringify(v) === chosen)?.[0] ??
         'deny';
       return {
-        state: this.turnOpen ? 'working' : 'idle',
+        state: this.approvals.size
+          ? 'waiting-permission'
+          : this.turnOpen
+            ? 'working'
+            : 'idle',
         ops: [
           {
             op: 'update',
@@ -253,6 +268,7 @@ export class CodexAdapter implements AgentAdapter {
                 ? 'interrupt'
                 : null;
       if (kind) this.pending.set(line.id, kind);
+      if (kind) this.sentKinds.add(kind);
       if (line.id >= this.nextId) this.nextId = line.id + 1;
       if (kind === 'turn') {
         this.turnOpen = true;
@@ -292,20 +308,32 @@ export class CodexAdapter implements AgentAdapter {
     const decisions: unknown[] = Array.isArray(p.availableDecisions)
       ? p.availableDecisions
       : ['accept', 'cancel'];
+    // Codex's decisions, mapped one by one; anything unknown is left out
+    // rather than guessed, and a denial never becomes an approval.
+    const STRING_DECISIONS: Record<
+      string,
+      { id: string; kind: PermissionOption['kind']; label: string }
+    > = {
+      accept: { id: 'allow', kind: 'allow', label: 'Allow' },
+      acceptForSession: {
+        id: 'allow-always',
+        kind: 'allow-always',
+        label: 'Allow for this session',
+      },
+      decline: { id: 'deny', kind: 'deny', label: 'Deny' },
+      cancel: { id: 'deny', kind: 'deny', label: 'Deny' },
+    };
     for (const d of decisions) {
       if (typeof d === 'string') {
-        const id = d === 'accept' ? 'allow' : 'deny';
-        if (values.has(id)) continue;
-        values.set(id, d);
-        options.push({
-          id,
-          kind: id,
-          label: id === 'allow' ? 'Allow' : 'Deny',
-        });
+        const o = STRING_DECISIONS[d];
+        if (!o || values.has(o.id)) continue;
+        values.set(o.id, d);
+        options.push({ id: o.id, kind: o.kind, label: o.label });
       } else if (
         d &&
         typeof d === 'object' &&
-        'acceptWithExecpolicyAmendment' in d
+        'acceptWithExecpolicyAmendment' in d &&
+        !values.has('allow-always')
       ) {
         values.set('allow-always', d);
         options.push({
@@ -315,6 +343,12 @@ export class CodexAdapter implements AgentAdapter {
         });
       }
     }
+    // deny last, allow first, whatever order Codex listed them in
+    options.sort(
+      (a, b) =>
+        ['allow', 'allow-always', 'deny'].indexOf(a.kind) -
+        ['allow', 'allow-always', 'deny'].indexOf(b.kind),
+    );
     const command =
       p.command ??
       (Array.isArray(p.commandActions)
@@ -356,6 +390,7 @@ export class CodexAdapter implements AgentAdapter {
     }
     switch (kind) {
       case 'initialize':
+        if (this.sentKinds.has('thread')) return {}; // already past this step
         return {
           send: [
             { jsonrpc: '2.0', method: 'initialized' },
@@ -438,7 +473,9 @@ export class CodexAdapter implements AgentAdapter {
               kind: 'tool_result',
               toolUseId: String(item.id),
               output: `${item.aggregatedOutput ?? ''}${item.exitCode != null ? `\n[exit code ${item.exitCode}]` : ''}`,
-              isError: item.exitCode != null && item.exitCode !== 0,
+              isError:
+                item.status === 'failed' ||
+                (item.exitCode != null && item.exitCode !== 0),
             }),
           ],
         };

@@ -10,7 +10,7 @@ import { MAX_FILE_BYTES } from '../files/files.service.js';
 import { FeaturesService } from '../features/features.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { isSlug } from '../features/feature-file.js';
-import { changedFiles, head, resolveCommit, showAt } from './git.js';
+import { changedFiles, head, resolveCommit, showAt, sizeAt } from './git.js';
 import { ReadCursorsService } from './read-cursors.service.js';
 import type { ChangedFile } from './git.js';
 
@@ -124,14 +124,20 @@ export class ChangesService {
     const repos: RepoChanges[] = [];
     for (const repo of project.repos) {
       const b = await this.baseFor(userId, projectId, repo, spec);
-      const files = b.base
-        ? ((await changedFiles(repo.path, b.base)) ?? [])
-        : [];
+      const listed = b.base ? await changedFiles(repo.path, b.base) : [];
+      // A failed git call is not a clean tree: say so rather than show nothing.
+      const files = listed ?? [];
+      const note =
+        listed === null
+          ? [b.note, 'could not read the changes (git failed or timed out)']
+              .filter(Boolean)
+              .join('; ')
+          : b.note;
       repos.push({
         repo: repo.name,
         base: b.base,
         head: b.head,
-        note: b.note,
+        note,
         files: files.map((f) => ({
           ...f,
           path: `${repo.name}/${f.path}`,
@@ -149,22 +155,48 @@ export class ChangesService {
     spec = 'read',
   ): Promise<FileDiff> {
     const project = this.projects.get(projectId);
-    if (typeof rel !== 'string' || !rel || rel.includes('..'))
-      throw new BadRequestException('"path" is required');
+    if (
+      typeof rel !== 'string' ||
+      !rel ||
+      rel.split('/').some((seg) => seg === '..' || seg === '')
+    )
+      throw new BadRequestException(
+        '"path" is required and may not leave the project',
+      );
     const [repoName, ...rest] = rel.split('/');
     const repo = project.repos.find((r) => r.name === repoName);
     if (!repo || rest.length === 0)
       throw new NotFoundException(`no such file: ${rel}`);
     const inRepo = rest.join('/');
     const b = await this.baseFor(userId, projectId, repo, spec);
-    const beforeBuf = b.base ? await showAt(repo.path, b.base, inRepo) : null;
-    let afterBuf: Buffer | null = null;
+    // Sizes first, so an oversized file is reported without being read.
+    const beforeSize = b.base ? await sizeAt(repo.path, b.base, inRepo) : null;
+    let afterSize: number | null = null;
     try {
-      afterBuf = await fs.readFile(path.join(repo.path, ...rest));
+      afterSize = (await fs.stat(path.join(repo.path, ...rest))).size;
     } catch {
-      afterBuf = null;
+      afterSize = null;
     }
-    const size = Math.max(beforeBuf?.length ?? 0, afterBuf?.length ?? 0);
+    const size = Math.max(beforeSize ?? 0, afterSize ?? 0);
+    if (size > MAX_FILE_BYTES)
+      return {
+        path: rel,
+        base: b.base,
+        before: null,
+        after: null,
+        binary: false,
+        truncated: true,
+      };
+    const beforeBuf =
+      beforeSize === null ? null : await showAt(repo.path, b.base!, inRepo);
+    let afterBuf: Buffer | null = null;
+    if (afterSize !== null) {
+      try {
+        afterBuf = await fs.readFile(path.join(repo.path, ...rest));
+      } catch {
+        afterBuf = null;
+      }
+    }
     const binary = [beforeBuf, afterBuf].some((buf) =>
       buf?.subarray(0, 8192).includes(0),
     );

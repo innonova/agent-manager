@@ -25,7 +25,7 @@ export class FakeAdapter implements AgentAdapter {
 
   private pending = new Map<
     string,
-    { options: PermissionOption[]; item: PermissionItem }
+    { options: PermissionOption[]; item: PermissionItem; answered?: boolean }
   >();
 
   startArgs({
@@ -50,7 +50,9 @@ export class FakeAdapter implements AgentAdapter {
 
   decide(requestId: string, optionId: string): unknown[] | null {
     const p = this.pending.get(requestId);
-    if (!p || !p.options.some((o) => o.id === optionId)) return null;
+    if (!p || p.answered || !p.options.some((o) => o.id === optionId))
+      return null;
+    p.answered = true;
     return [{ type: 'permission_response', id: requestId, decision: optionId }];
   }
 
@@ -92,7 +94,11 @@ export class FakeAdapter implements AgentAdapter {
         if (!p) return {};
         this.pending.delete(String(line.id));
         return {
-          state: this.turnOpen ? 'working' : 'idle',
+          state: this.pending.size
+            ? 'waiting-permission'
+            : this.turnOpen
+              ? 'working'
+              : 'idle',
           ops: [
             {
               op: 'update',
@@ -200,6 +206,7 @@ export class FakeAdapter implements AgentAdapter {
         };
       case 'result':
         this.turnOpen = false;
+        this.pending.clear();
         return {
           state: 'idle',
           ops: [
