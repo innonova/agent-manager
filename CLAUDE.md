@@ -35,7 +35,8 @@ npm run install:service # installs/restarts the user service; agents are unaffec
 
 ## Working here
 
-- The sibling repositories are `../agent-daemon` and `../agent-manager-ui`.
+- The sibling repositories are `../agent-daemon`, `../agent-manager-ui` and
+  `../agent-manager-cli` (a terminal client of this API).
   The daemon's protocol is in `../agent-daemon/docs/client-guide.md`.
 - Restarting the manager is fine at any time. Restarting the daemon is not;
   see `../agent-daemon/CLAUDE.md`.
@@ -68,7 +69,7 @@ part of the work: commit and push them with it (see Features).
 
 ## You may be running inside this system
 
-These three repositories are registered as one project in the installed
+These four repositories are registered as one project in the installed
 agent-manager, and agents started from it work on this very code
 (dogfooding). Keep that in mind:
 
@@ -83,7 +84,8 @@ agent-manager, and agents started from it work on this very code
   on the fixed port 4299; only one run at a time on this machine.
 - One writing agent per repository. Other repositories of the project are
   reachable at the sibling paths (`../agent-daemon`, `../agent-manager`,
-  `../agent-manager-ui`); prefer editing them only when the task needs it,
+  `../agent-manager-ui`, `../agent-manager-cli`); prefer editing them only
+  when the task needs it,
   and say so in your summary.
 
 ## Features

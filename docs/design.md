@@ -4,11 +4,12 @@ Status: milestone one implemented 2026-09-12; kept in step with the code.
 
 ## The system
 
-Three components, three repositories, one machine (an isolated VM):
+Four components, four repositories, one machine (an isolated VM):
 
 ```
 agent-manager-ui  (Vue)      browser; renders what the manager tells it
-      │  https, cookie session, REST + one websocket
+agent-manager-cli (Ink)      terminal client for an SSH shell; the same API, the same accounts
+      │  https (cli: loopback http), cookie session, REST + one websocket
 agent-manager     (Nest)     projects, agents, users; understands the agent protocols
       │  ws://127.0.0.1:4267, no auth, loopback only
 agent-daemon      (Nest)     holds the agent processes; dumb line forwarder with a disk log
@@ -54,7 +55,7 @@ Copilot's ACP.
 | An agent may span several daemon sessions | A headless process exits (end of input, daemon restart, crash) but the conversation continues via the vendor's resume; the user thinks in agents, not processes. |
 | Idle agent processes stay alive | Instant next turn, intact context; memory is cheap on the VM. An idle timeout with automatic resume is a later feature. |
 | Permissions are per agent: `bypass` (default) or `ask` | Bypass is the dogfooding mode on an isolated VM. Ask keeps each vendor's own gate (Claude's prompt over stdio, Codex's approval requests with its workspace sandbox, Copilot's ACP permission requests) and routes the question to the human as a `permission` transcript item with the vendor's options; the answer goes back in the vendor's protocol. Chosen at creation, applied when a session starts. No per-agent allowlists in the manager: what is gated is the vendor's business. |
-| A project is an ordered set of repositories, the first one primary | Real work spans several repos (this system is three). An agent's cwd is one repo; the others are handed to the CLI as extra directories (`--add-dir` for Claude Code and Copilot; Codex runs with full sandbox access and needs nothing). The primary repo is the default cwd and the default home of new features. |
+| A project is an ordered set of repositories, the first one primary | Real work spans several repos (this system is four). An agent's cwd is one repo; the others are handed to the CLI as extra directories (`--add-dir` for Claude Code and Copilot; Codex runs with full sandbox access and needs nothing). The primary repo is the default cwd and the default home of new features. |
 | Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
 | SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
 | Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. The cookie carries an opaque 256-bit server-side token rather than a signed value; revocation is a row delete. |
@@ -92,7 +93,7 @@ Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }
 Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
-Feature   { projectId, repo, slug, title, status, priority, profile?, dependsOn[] }   // derived from files, not stored
+Feature   { projectId, repo, slug, title, status, priority, dependsOn[], body, mtime, range? }   // derived from files, not stored
 ```
 
 Agents and their sessions are stored so the manager knows which daemon
@@ -205,8 +206,8 @@ endpoint) and never overwrites a vendor-derived state.
 interface AgentAdapter {
   /** state right after the process starts; default 'starting' */
   readonly initialState?: AgentState;
-  /** args to add to the profile for a new conversation, or to resume one */
-  startArgs(opts: { resume?: string | null }): string[];
+  /** args to add to the profile for a new conversation, or to resume one; extra repositories, permission mode, model and effort */
+  startArgs(opts: { resume?: string | null; extraDirs?: string[]; permissions?: 'bypass' | 'ask'; model?: string | null; effort?: string | null }): string[];
   /** the stdin line(s) for a user turn */
   turn(text: string): unknown[];
   /** the stdin line(s) to interrupt the current turn, if the vendor supports it */
@@ -215,8 +216,18 @@ interface AgentAdapter {
   steer?(text: string): unknown[];
   /** stdin lines to send once the session is running and attached (protocol handshakes) */
   startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
+  /** after a full replay of the log: the handshake lines still owed, judged from what the log shows was sent and answered */
+  afterReplay?(opts: { cwd: string; resume?: string | null; permissions?: 'bypass' | 'ask' }): unknown[];
+  /** whether a turn is open as far as the log shows */
+  turnInProgress?(): boolean;
+  /** permission requests the vendor is waiting on; and the stdin line answering one with an option */
+  pendingPermissions?(): PermissionRequest[];
+  decide?(requestId: string, option: string): unknown[];
+  /** cross-turn state at a turn end as JSON, and its inverse, for the transcript cache */
+  snapshot?(): unknown;
+  restore?(state: unknown): void;
   /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
-  ingest(record: LogRecord): { state?: AgentState; error?: string; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
+  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
 }
 type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
 ```
@@ -232,7 +243,7 @@ confuses which item grows. One adapter instance exists per daemon session.
   `tool_result` become tool results, `stream_event` deltas update the
   current text item, `result` ends the turn. Errors surface as `result`
   with `is_error`, or as `error`-typed lines.
-- **copilot** (`copilot --acp --allow-all`): ACP over stdio. The adapter
+- **copilot** (`copilot --acp`, plus `--allow-all` from the adapter in bypass mode): ACP over stdio. The adapter
   sends `initialize` on start, `session/new` (or `session/load` with the
   stored session id to resume) when the initialize reply arrives, and
   `session/prompt` per turn; `session/update` notifications become text
@@ -356,9 +367,10 @@ in their heading (`## Response (date, name)`).
 
 ```ts
 type Item =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; text: string; by?: string }   // by: the user who sent it, when known
   | { kind: 'text'; text: string; streaming: boolean }
   | { kind: 'thinking'; text: string }
+  | { kind: 'permission'; requestId: string; tool: string; title: string; input: unknown; options: { id, kind: 'allow' | 'allow-always' | 'deny', label }[]; decision: string | null }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; toolUseId: string; output: string; isError: boolean }
   | { kind: 'error'; message: string }
@@ -524,7 +536,7 @@ at startup.
 
 ## API
 
-All under `/api`, JSON, cookie-authenticated except `POST /api/auth/login`.
+All under `/api`, JSON, cookie-authenticated except `POST /api/auth/login` and `GET /api/health`.
 
 ```
 POST   /api/auth/login              { name, password }         -> { user }
@@ -543,8 +555,8 @@ PATCH  /api/projects/:id            same fields; `repos` replaces the whole list
 POST   /api/projects/:id/agents/restart -> { restarted: [agentId], skipped: [{ id, why }] }; stops and resumes every idle agent with a live session so it picks up the project's current repositories; agents working, waiting on a permission or with background jobs are skipped with the reason, exited ones need nothing
 DELETE /api/projects/:id            (does not touch the repository)
 
-GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt }
-POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
+GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt, background, model, queued }
+POST   /api/projects/:id/agents     { name, profile, cwd?, permissions?, model?, effort? } -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
 POST   /api/agents/:id/turn         { text, steer? }            -> 202 { mode: 'sent' | 'steered' | 'queued' }; without `steer`, 409 { code: 'agent-busy' } while a turn runs (with it, the message is steered into the turn or queued for the next one; still 409 while starting or waiting on a permission); 503 { code: 'agent-unavailable' } if the session's output cannot be attached
@@ -605,14 +617,17 @@ Everything else is server to client; every frame has a
 `type`:
 
 ```
-hello            { user, daemon: { connected } }   // first frame after the upgrade
+hello            { user, daemon: { connected }, presence, uiBuild }   // first frame after the upgrade
 daemon           { connected }                     // the manager's link to the daemon changed
+ui.build         { id }                            // the served UI build changed (a UI-only deploy)
+presence         { agents: { [agentId]: [{ userId, name, typing }] } }
+users.changed    { users }                         // an account was created, renamed, reset or removed
 project.counts   { projectId, counts }
-agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt }
+agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt, background, model, queued }
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
 agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0
-feature.changed  { projectId, feature }            // a feature's status or run changed
+feature.changed  { projectId, feature }            // a feature file changed (status, report, response, edit)
 ```
 
 Clients subscribe to nothing; they receive everything for the projects
@@ -654,11 +669,12 @@ swept once a minute.
 |---|---|---|
 | `AGENT_MANAGER_LISTEN` | `0.0.0.0:4268` | bind address; behind haproxy for TLS |
 | `AGENT_MANAGER_DAEMON_URL` | `ws://127.0.0.1:4267/` | the daemon |
-| `AGENT_MANAGER_DATA_DIR` | `~/.local/state/agent-manager` | SQLite database, session secret |
+| `AGENT_MANAGER_DATA_DIR` | `~/.local/state/agent-manager` | `manager.db` and the `transcripts/` cache |
 | `AGENT_MANAGER_UI_DIR` | `<install>/ui` (next to `dist/`) | built UI to serve at `/`; empty string disables |
 | `AGENT_MANAGER_PUBLIC_ORIGIN` | unset | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies |
 | `AGENT_MANAGER_SECURE_COOKIE` | `0` | force Secure cookies |
 | `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
+| `AGENT_MANAGER_SESSION_TTL_MS` | `2592000000` (30 days) | how long a login (browser cookie or `am login`) lasts |
 | `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
 | `AGENT_MANAGER_BACKGROUND_POKE_MS` | `1800000` | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables |
 | `AGENT_MANAGER_RESIDENT_ITEMS` | `500` | transcript items kept in memory per agent beyond what the transcript cache holds |
@@ -673,8 +689,8 @@ login and health requires the cookie.
 
 - Unit: adapters against recorded logs; state machine; feature file
   parsing; path resolution.
-- End-to-end: a real daemon on an ephemeral port (from the agent-daemon
-  repo's build, or `npx` of it) with the fake profile, the manager on an
+- End-to-end: a real daemon on an ephemeral port (`../agent-daemon/dist/main.js`,
+  or `AGENT_DAEMON_MAIN`) with the fake profile, the manager on an
   ephemeral port, supertest for REST and `ws` for events. Covers login,
   project and agent lifecycle, turns and items through the fake agent,
   manager restart with state rebuilt from the daemon.

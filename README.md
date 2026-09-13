@@ -44,10 +44,14 @@ For a change to the UI only, skip all that: `npm run build` in
 directory in place and does not restart the manager; open tabs offer a
 reload when they next check for a new build.
 
-It leaves the database and the drop-ins under
-`~/.config/systemd/user/agent-manager.service.d/` alone;
-`AGENT_MANAGER_ADMIN_PASSWORD` is only needed on first install or to
-change the password. Restarting the manager is a non-event for agents.
+It leaves the database and `proxy.conf` under
+`~/.config/systemd/user/agent-manager.service.d/` alone; it rewrites
+`admin.conf` there when `AGENT_MANAGER_ADMIN_PASSWORD` is set (the
+password in the clear, mode 600). That variable creates `admin` on the
+first start only, when no user exists; an existing password is reset
+from the Users page, not by reinstalling. The unit `Wants=` the daemon's,
+so starting the manager starts the daemon if it is not running.
+Restarting the manager is a non-event for agents.
 
 ## Development
 
