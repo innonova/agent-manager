@@ -58,7 +58,7 @@ Copilot's ACP.
 | Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
 | SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
 | Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. The cookie carries an opaque 256-bit server-side token rather than a signed value; revocation is a row delete. |
-| One turn at a time per agent | Neither vendor lets a queued turn be represented faithfully in the transcript, so a second turn while one runs is refused with 409 `agent-busy`; the UI offers interrupt instead. |
+| One turn at a time per agent; a message during a turn steers it | A second turn while one runs is refused with 409 `agent-busy`. Sent with `steer: true` instead, the message reaches the agent during the turn where the vendor can take one (Claude reads it after the running tool; Codex has `turn/steer` for the active turn) and is queued in memory for the next turn where it cannot (Copilot ends the running prompt when another arrives, so it is never given one mid-turn; Codex before its turn id is known). Queued messages are counted in the status and dropped by a stop or a manager restart. |
 | Archived agents keep their history | Archival hides an agent from lists and refuses commands; its transcript is still rebuilt and readable. |
 | Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
 | Changes are a diff from a base to the working tree | Git already answers "what changed since": committed, staged, unstaged and untracked in one `git diff <base>` plus `git status`. The base is a read cursor per user and repository, a feature's recorded range, or any commit; nothing is written to the tree, so an agent mid-turn is only a staleness concern. No per-hunk keep/undo: agents commit as they go, undo is a conversation or git. |
@@ -137,6 +137,12 @@ session exits. An agent is created with an optional `model` and
 and `-c model_reasoning_effort=`); the manager does not know which
 values are valid, the vendor rejects a bad one at start.
 
+The status also carries `queued`, the number of messages held for the
+next turn because they arrived with `steer` while the vendor could not
+take one mid-turn; the oldest is sent as a turn each time the agent
+becomes idle, a stop drops them, and so does a manager restart (they
+live in memory only, since nothing in the daemon log records them).
+
 The status also carries `background`, the number of jobs the agent has
 left running (Claude Code's background shell commands and scheduled
 wake-ups, announced as a list on every change). The turn ends while they
@@ -201,6 +207,8 @@ interface AgentAdapter {
   turn(text: string): unknown[];
   /** the stdin line(s) to interrupt the current turn, if the vendor supports it */
   interrupt?(): unknown[];
+  /** the stdin line(s) for a message the agent sees at its next step of the turn under way; absent or empty means queue it */
+  steer?(text: string): unknown[];
   /** stdin lines to send once the session is running and attached (protocol handshakes) */
   startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
   /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
@@ -535,7 +543,7 @@ GET    /api/projects/:id/agents                                 -> [{ agent, sta
 POST   /api/projects/:id/agents     { name, profile, cwd? }     -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
-POST   /api/agents/:id/turn         { text }                    -> 202; 409 { code: 'agent-busy' } while a turn runs; 503 { code: 'agent-unavailable' } if the session's output cannot be attached
+POST   /api/agents/:id/turn         { text, steer? }            -> 202 { mode: 'sent' | 'steered' | 'queued' }; without `steer`, 409 { code: 'agent-busy' } while a turn runs (with it, the message is steered into the turn or queued for the next one; still 409 while starting or waiting on a permission); 503 { code: 'agent-unavailable' } if the session's output cannot be attached
 POST   /api/agents/:id/permission { requestId, option }       -> answers a pending permission request with one of the options the item offered; 404 if none is pending
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)

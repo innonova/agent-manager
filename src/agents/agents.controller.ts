@@ -89,10 +89,12 @@ export class AgentsController {
   async turn(
     @Req() req: Request & { user?: User },
     @Param('id') id: string,
-    @Body() body: { text?: unknown },
-  ): Promise<{ ok: true }> {
-    await this.agents.turn(id, body?.text, req.user?.id);
-    return { ok: true };
+    @Body() body: { text?: unknown; steer?: unknown },
+  ): Promise<{ ok: true; mode: 'sent' | 'steered' | 'queued' }> {
+    const mode = await this.agents.turn(id, body?.text, req.user?.id, {
+      steer: body?.steer === true,
+    });
+    return { ok: true, mode };
   }
 
   @Post('agents/:id/permission')

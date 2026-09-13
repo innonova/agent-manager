@@ -70,6 +70,8 @@ export interface AgentStatus {
   background: number;
   /** The model the vendor reports as active in the current session, once it has said. */
   model: string | null;
+  /** Messages held for the next turn because the vendor could not take one mid-turn. */
+  queued: number;
 }
 
 export interface StoredItem {
@@ -164,6 +166,8 @@ interface Live {
   adoptionNeeded: boolean;
   /** User ids of turns sent and not yet seen back as input records, in order. */
   pendingAuthors: string[];
+  /** Messages sent while a turn ran that the vendor could not take then; sent as turns when idle. In memory only. */
+  queued: { text: string; userId?: string }[];
   /** When the watchdog last asked about background jobs. */
   lastPokeAt: number;
   /**
@@ -579,12 +583,23 @@ export class AgentsService
    * not attached (`agent-unavailable`). Starts or resumes a session first
    * if none is live.
    */
-  async turn(id: string, text: unknown, userId?: string): Promise<void> {
+  /**
+   * Sends a turn. With `steer`, a turn already running is not a refusal:
+   * the message goes to the agent mid-turn where the vendor can take one
+   * (Claude, Codex once the turn id is known) and is queued for the next
+   * turn otherwise. Returns how it went.
+   */
+  async turn(
+    id: string,
+    text: unknown,
+    userId?: string,
+    opts: { steer?: boolean } = {},
+  ): Promise<'sent' | 'steered' | 'queued'> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
     const live = this.ensureLive(this.get(id));
     await this.awaitSynced(live);
-    await this.withLock(live, async () => {
+    return await this.withLock(live, async () => {
       let agent = this.get(id);
       if (agent.archivedAt) throw new ConflictException('agent is archived');
       if (this.deleting.has(agent.projectId))
@@ -611,13 +626,38 @@ export class AgentsService
       await this.awaitStarting(live);
       const sl = live.sessions.get(agent.currentSessionId!);
       if (!sl) throw unavailable('session not tracked');
+      const running =
+        live.status.state === 'working' || sl.adapter.turnInProgress?.();
       if (
-        live.status.state === 'working' ||
+        running ||
         live.status.state === 'starting' ||
-        live.status.state === 'waiting-permission' ||
-        sl.adapter.turnInProgress?.()
-      )
-        throw busy();
+        live.status.state === 'waiting-permission'
+      ) {
+        if (
+          !opts.steer ||
+          !running ||
+          live.status.state === 'waiting-permission'
+        )
+          throw busy();
+        const lines = sl.adapter.steer?.(text) ?? [];
+        if (lines.length === 0) {
+          live.queued.push({ text, userId });
+          live.status = { ...live.status, queued: live.queued.length };
+          this.emit('state', agent.id, agent.projectId, live.status);
+          return 'queued';
+        }
+        if (userId) live.pendingAuthors.push(userId);
+        try {
+          for (const line of lines)
+            await this.daemon.input(agent.currentSessionId!, line);
+        } catch (err) {
+          const uncertain =
+            err instanceof DaemonError && err.code === 'disconnected';
+          if (userId && !uncertain) live.pendingAuthors.pop();
+          throw asHttp(err);
+        }
+        return 'steered';
+      }
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
       const lines = sl.adapter.turn(text);
@@ -642,7 +682,32 @@ export class AgentsService
           this.setState(agent, live, before.state, before.error);
         throw asHttp(err);
       }
+      return 'sent';
     });
+  }
+
+  /** Sends the oldest queued message as a turn; a refusal keeps it for the next idle. */
+  private async flushQueued(id: string): Promise<void> {
+    const live = this.live.get(id);
+    const agent = this.find(id);
+    if (!live || !agent || !live.queued.length) return;
+    const next = live.queued.shift()!;
+    live.status = { ...live.status, queued: live.queued.length };
+    this.emit('state', agent.id, agent.projectId, live.status);
+    try {
+      await this.turn(id, next.text, next.userId);
+    } catch (err) {
+      const e = err as HttpException;
+      if (e instanceof HttpException && e.getStatus() === 409) {
+        live.queued.unshift(next);
+        live.status = { ...live.status, queued: live.queued.length };
+        this.emit('state', agent.id, agent.projectId, live.status);
+        return;
+      }
+      this.logger.warn(
+        `agent ${id}: a queued message could not be sent and was dropped: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -714,6 +779,8 @@ export class AgentsService
   /** Ends the current session politely; the agent stays resumable. */
   async stop(id: string): Promise<void> {
     const live = this.ensureLive(this.get(id));
+    live.queued.length = 0; // a stop is the human's say: nothing held goes out after it
+    live.status = { ...live.status, queued: 0 };
     await this.withLockOrForce(live, id, () =>
       this.stopLocked(this.get(id), true),
     );
@@ -1749,6 +1816,7 @@ export class AgentsService
           lastActivityAt: agent.createdAt,
           background: 0,
           model: null,
+          queued: 0,
         },
         items: [],
         itemBase: 0,
@@ -1769,6 +1837,7 @@ export class AgentsService
         adoptionNeeded: true,
         stateHeld: false,
         pendingAuthors: [],
+        queued: [],
         lastPokeAt: 0,
       };
       this.live.set(agent.id, live);
@@ -1872,7 +1941,11 @@ export class AgentsService
       // background jobs belong to the process; none survive its exit
       background: state === 'exited' ? 0 : live.status.background,
       model: state === 'exited' ? null : live.status.model,
+      queued: live.status.queued,
     };
+    // A message held for the next turn goes as soon as the agent can take one.
+    if (state === 'idle' && live.queued.length)
+      setImmediate(() => void this.flushQueued(agent.id));
     if (quiet) {
       live.stateHeld = true;
       return;

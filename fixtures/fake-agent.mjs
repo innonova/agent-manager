@@ -19,6 +19,9 @@ const conversationId =
   resumeIdx >= 0 ? process.argv[resumeIdx + 1] : randomUUID();
 let turns = 0;
 let interrupted = false;
+/** A turn is being handled; a user line arriving now steers it instead of starting another. */
+let inFlight = false;
+const steers = [];
 const ask = process.argv.includes('--ask');
 /** Resolvers for permission answers, by request id. */
 const awaiting = new Map();
@@ -38,6 +41,16 @@ async function stream(text, delay = 15) {
 }
 
 async function handle(text) {
+  inFlight = true;
+  try {
+    await turn(text);
+  } finally {
+    inFlight = false;
+    steers.length = 0;
+  }
+}
+
+async function turn(text) {
   turns++;
   const t0 = Date.now();
   interrupted = false;
@@ -110,6 +123,7 @@ async function handle(text) {
       : `You said: ${text}. Turn ${turns} done.`,
     text.includes('slow') ? 60 : 15,
   );
+  if (steers.length) await stream(`Also noted: ${steers.join(' / ')}.`, 15);
   out({ type: 'result', durationMs: Date.now() - t0 });
   if (text.includes('exit')) {
     // answer first, then leave: "please exit" is quick, "slow then exit" streams first
@@ -136,6 +150,9 @@ rl.on('line', (line) => {
     awaiting.delete(String(msg.id));
     return;
   }
-  if (msg.type === 'user') chain = chain.then(() => handle(String(msg.text)));
+  if (msg.type === 'user') {
+    if (inFlight) steers.push(String(msg.text));
+    else chain = chain.then(() => handle(String(msg.text)));
+  }
 });
 rl.on('close', () => process.exit(0));

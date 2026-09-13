@@ -123,6 +123,13 @@ export interface AgentAdapter {
     permissions?: Permissions;
   }): unknown[];
   /**
+   * The stdin line(s) for a message the agent should see during the turn
+   * under way, at its next step, without interrupting it. Absent, or an
+   * empty list, means the vendor cannot take one now; the manager queues
+   * the message for the next turn instead.
+   */
+  steer?(text: string): unknown[];
+  /**
    * Cross-turn parsing state at a quiescent point (a turn end), as plain
    * JSON, so a restart can continue from a cached transcript without
    * replaying the whole log; `restore` is the inverse on a fresh adapter.

@@ -124,6 +124,11 @@ export class ClaudeAdapter implements AgentAdapter {
     return [{ type: 'user', message: { role: 'user', content: text } }];
   }
 
+  /** Claude Code takes a user message during a turn and reads it after the running tool. */
+  steer(text: string): unknown[] {
+    return this.turn(text);
+  }
+
   interrupt(): unknown[] {
     return [
       {

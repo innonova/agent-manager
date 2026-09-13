@@ -379,6 +379,93 @@ describe('permission delivery', () => {
   });
 });
 
+describe('steering', () => {
+  it('steers the active Codex turn, and queues a message sent before the turn id is known', async () => {
+    // a script that answers turn/start but only reports turn/started when told
+    let startedFor: { sid: string; id: number } | null = null;
+    daemon.on('input', (sid, line: any) => {
+      if (line?.method === 'initialize')
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { userAgent: 'scripted' },
+        });
+      if (line?.method === 'thread/start') {
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { thread: { id: 'thread-1' } },
+        });
+        daemon.out(sid, {
+          method: 'thread/started',
+          params: { thread: { id: 'thread-1', model: 'scripted-1' } },
+        });
+      }
+      if (line?.method === 'turn/start') {
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { turn: { id: 'turn-1' } },
+        });
+        startedFor = { sid, id: line.id };
+      }
+      if (line?.method === 'turn/steer')
+        daemon.out(sid, {
+          jsonrpc: '2.0',
+          id: line.id,
+          result: { turnId: 'turn-1' },
+        });
+    });
+    const id = await newAgent('s1');
+    const sid = await sessionOf(id);
+    let mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'one' });
+    await stateOf(id, 'working', mark);
+    // no turn/started yet: the adapter has no turn id, so the message is queued
+    const early = await api.post(`/api/agents/${id}/turn`, {
+      text: 'early',
+      steer: true,
+    });
+    expect(early.body.mode).toBe('queued');
+    expect((await api.get(`/api/agents/${id}`)).body.status.queued).toBe(1);
+    expect(
+      (await api.post(`/api/agents/${id}/turn`, { text: 'plain' })).status,
+    ).toBe(409);
+    daemon.out(sid, {
+      method: 'turn/started',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1' } },
+    });
+    await sleep(100);
+    const mid = await api.post(`/api/agents/${id}/turn`, {
+      text: 'mid',
+      steer: true,
+    });
+    expect(mid.body.mode).toBe('steered');
+    const steer = daemon
+      .inputs(sid)
+      .find((l: any) => l.method === 'turn/steer') as any;
+    expect(steer.params).toEqual({
+      threadId: 'thread-1',
+      expectedTurnId: 'turn-1',
+      input: [{ type: 'text', text: 'mid' }],
+    });
+    // the turn ends: the queued message goes out as the next turn, by its author
+    mark = events.mark();
+    finishTurn(daemon, sid);
+    await itemOf(id, (i) => i.kind === 'user' && i.text === 'early', mark);
+    await sleep(100);
+    expect((await api.get(`/api/agents/${id}`)).body.status.queued).toBe(0);
+    expect(methods(sid).filter((m) => m === 'turn/start')).toHaveLength(2);
+    const users = (await api.get(`/api/agents/${id}/items`)).body.items
+      .map((i: any) => i.item)
+      .filter((i: any) => i.kind === 'user')
+      .map((i: any) => `${i.by}:${i.text}`);
+    expect(users).toEqual(['admin:one', 'admin:mid', 'admin:early']);
+    void startedFor;
+    daemon.removeAllListeners('input');
+  }, 30000);
+});
+
 describe('interrupts and attribution', () => {
   it('a rejected interrupt leaves the turn open; another turn is refused', async () => {
     let approve = false;

@@ -84,6 +84,10 @@ export class FakeAdapter implements AgentAdapter {
     return [{ type: 'user', text }];
   }
 
+  steer(text: string): unknown[] {
+    return this.turn(text);
+  }
+
   interrupt(): unknown[] {
     return [{ type: 'interrupt' }];
   }

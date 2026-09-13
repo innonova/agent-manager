@@ -328,6 +328,58 @@ describe('projects', () => {
 });
 
 describe('agents', () => {
+  it('a message during a turn is refused without steer and taken mid-turn with it', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'steered');
+    const mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'slow please' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'working',
+      10000,
+      mark,
+    );
+    const plain = await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'and this',
+    });
+    expect(plain.status).toBe(409);
+    expect(plain.body.code).toBe('agent-busy');
+    const steered = await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'and this',
+      steer: true,
+    });
+    expect(steered.status).toBe(202);
+    expect(steered.body.mode).toBe('steered');
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      15000,
+      mark,
+    );
+    const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as any[];
+    const kinds = items.map((i) => i.item.kind);
+    // one turn: user, text (streamed), the steering message, the noted text, one turn end
+    expect(kinds.filter((k) => k === 'turn_end')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'user')).toHaveLength(2);
+    expect(
+      items.find((i) => i.item.kind === 'user' && i.item.text === 'and this')
+        .item.by,
+    ).toBe('admin');
+    const texts = items
+      .filter((i) => i.item.kind === 'text')
+      .map((i) => i.item.text);
+    expect(texts.some((t) => /Also noted: and this/.test(t))).toBe(true);
+    expect(kinds.indexOf('user')).toBeLessThan(kinds.lastIndexOf('user'));
+    expect(kinds.lastIndexOf('user')).toBeLessThan(
+      kinds.lastIndexOf('turn_end'),
+    );
+  }, 30000);
+
   it('creates an agent with a live session and streams a turn as items', async () => {
     const p = await createProject();
     events.clear();

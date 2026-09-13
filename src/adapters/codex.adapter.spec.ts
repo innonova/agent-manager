@@ -3,6 +3,72 @@ import { CodexAdapter } from './codex.adapter.js';
 import { loadFixture, replay } from './replay-harness.js';
 
 describe('CodexAdapter', () => {
+  it('steers the active turn with turn/steer, and only once the turn id is known', () => {
+    const a = new CodexAdapter();
+    const rec = (s: 'in' | 'out', d: unknown, seq: number) => ({
+      seq,
+      t: 0,
+      s,
+      d: JSON.stringify(d),
+    });
+    a.startLines({ cwd: '/w', resume: null });
+    replay(a, loadFixture('codex', 'tool-and-text.ndjson')); // ends idle
+    expect(a.turnInProgress()).toBe(false);
+    expect(a.steer('wait')).toEqual([]); // no turn running
+    const [turn] = a.turn('go') as any[];
+    a.ingest(rec('in', turn, 100));
+    expect(a.steer('wait')).toEqual([]); // running, but the id is not known yet
+    a.ingest(
+      rec(
+        'out',
+        {
+          method: 'turn/started',
+          params: { threadId: turn.params.threadId, turn: { id: 'turn-7' } },
+        },
+        101,
+      ),
+    );
+    const [steer] = a.steer('also do this') as any[];
+    expect(steer).toMatchObject({
+      method: 'turn/steer',
+      params: {
+        threadId: turn.params.threadId,
+        expectedTurnId: 'turn-7',
+        input: [{ type: 'text', text: 'also do this' }],
+      },
+    });
+    // logged as our input: a user item, the turn still open
+    const echoed = a.ingest(rec('in', steer, 102));
+    expect(echoed.ops).toEqual([
+      { op: 'append', item: { kind: 'user', text: 'also do this' } },
+    ]);
+    expect(a.turnInProgress()).toBe(true);
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          { jsonrpc: '2.0', id: steer.id, result: { turnId: 'turn-7' } },
+          103,
+        ),
+      ),
+    ).toEqual({});
+    // a refused steer is a note, not an error state
+    const [late] = a.steer('too late') as any[];
+    a.ingest(rec('in', late, 104));
+    const refused = a.ingest(
+      rec(
+        'out',
+        { jsonrpc: '2.0', id: late.id, error: { message: 'turn is over' } },
+        105,
+      ),
+    );
+    expect(refused.state).toBeUndefined();
+    expect(refused.ops?.[0]?.item).toMatchObject({
+      kind: 'system',
+      text: /message not taken/,
+    });
+  });
+
   it('drives the handshake from the replies', () => {
     const a = new CodexAdapter();
     const start = a.startLines({ cwd: '/w', resume: null }) as any[];

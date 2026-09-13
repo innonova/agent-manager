@@ -32,7 +32,7 @@ export class CodexAdapter implements AgentAdapter {
   /** JSON-RPC ids we sent and what they were for. */
   private pending = new Map<
     number,
-    'initialize' | 'thread' | 'turn' | 'interrupt'
+    'initialize' | 'thread' | 'turn' | 'interrupt' | 'steer'
   >();
   /** Streaming agent message items by item id; a new message id starts a new text item. */
   private textKeys = new Map<string, string>();
@@ -108,7 +108,10 @@ export class CodexAdapter implements AgentAdapter {
       threadId: string | null;
       resume: string | null;
       nextId: number;
-      pending: [number, 'initialize' | 'thread' | 'turn' | 'interrupt'][];
+      pending: [
+        number,
+        'initialize' | 'thread' | 'turn' | 'interrupt' | 'steer',
+      ][];
       sentKinds: string[];
       initReplied: boolean;
       permissionsMode: Permissions;
@@ -181,6 +184,18 @@ export class CodexAdapter implements AgentAdapter {
     ];
   }
 
+  /** `turn/steer`: input the model sees at its next step of the active turn; nothing before the turn id is known. */
+  steer(text: string): unknown[] {
+    if (!this.threadId || !this.turnId) return [];
+    return [
+      this.rpc('steer', 'turn/steer', {
+        threadId: this.threadId,
+        expectedTurnId: this.turnId,
+        input: [{ type: 'text', text }],
+      }),
+    ];
+  }
+
   interrupt(): unknown[] {
     if (!this.threadId || !this.turnId) return [];
     return [
@@ -194,7 +209,7 @@ export class CodexAdapter implements AgentAdapter {
   private resume: string | null = null;
 
   private rpc(
-    kind: 'initialize' | 'thread' | 'turn' | 'interrupt',
+    kind: 'initialize' | 'thread' | 'turn' | 'interrupt' | 'steer',
     method: string,
     params: unknown,
   ): unknown {
@@ -343,7 +358,9 @@ export class CodexAdapter implements AgentAdapter {
               ? 'turn'
               : line.method === 'turn/interrupt'
                 ? 'interrupt'
-                : null;
+                : line.method === 'turn/steer'
+                  ? 'steer'
+                  : null;
       if (kind) this.pending.set(line.id, kind);
       if (kind) this.sentKinds.add(kind);
       if (line.method === 'thread/resume' && line.params?.threadId)
@@ -361,6 +378,13 @@ export class CodexAdapter implements AgentAdapter {
         return {
           ops: [append({ kind: 'system', text: 'interrupt requested' })],
         };
+      if (kind === 'steer') {
+        const text = (line.params?.input ?? [])
+          .filter((b: any) => b.type === 'text')
+          .map((b: any) => b.text)
+          .join('');
+        return { ops: [append({ kind: 'user', text })] };
+      }
     }
     return {};
   }
@@ -469,6 +493,13 @@ export class CodexAdapter implements AgentAdapter {
             append({ kind: 'system', text: `interrupt refused: ${message}` }),
           ],
         };
+      if (kind === 'steer')
+        // the turn had moved on (or ended) before the message landed
+        return {
+          ops: [
+            append({ kind: 'system', text: `message not taken: ${message}` }),
+          ],
+        };
       if (kind === 'turn') {
         this.turnOpen = false;
         this.approvals.clear();
@@ -480,6 +511,8 @@ export class CodexAdapter implements AgentAdapter {
       };
     }
     switch (kind) {
+      case 'steer':
+        return {};
       case 'initialize':
         this.initReplied = true;
         return {
