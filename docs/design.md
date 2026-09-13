@@ -139,12 +139,18 @@ and `-c model_reasoning_effort=`); the manager does not know which
 values are valid, the vendor rejects a bad one at start.
 
 The status also carries `usage`, what the vendor last said about its
-account's limits through this agent: rolling windows (Claude's 5-hour
-and 7-day from `rate_limit_event`; Codex's primary and secondary from
-`account/rateLimits/updated`, named by their length) with used percent
-and reset time, a verdict when the vendor gives one, the plan, and for
-Copilot only the session's context use, since ACP exposes no account
-quota. The manager keeps the latest report per profile, the account on
+account's limits through this agent: rolling windows (every window
+Claude's `rate_limit_event` carries: the 5-hour and 7-day ones, the
+7-day including overage, and any per-model family window it adds;
+Codex's primary and secondary from `account/rateLimits/updated`, named
+by their length) with used percent and reset time, a verdict when the
+vendor gives one, the plan; the session's `spend` (tokens in and out,
+turns, and dollars when the vendor prices them: Claude's `result`,
+Codex's `thread/tokenUsage/updated`); the `provider` when Claude says
+(firstParty, bedrock, vertex); and the context window's use (Codex,
+Copilot). On Bedrock or Vertex there are no account windows, so spend
+and provider are the usage there is. Copilot exposes no account quota
+over ACP. The manager keeps the latest report per profile, the account on
 this machine, and `GET /api/usage` lists them per host (a hub merges its
 spokes'). Nothing polls the vendors: usage is what agents report while
 they work.

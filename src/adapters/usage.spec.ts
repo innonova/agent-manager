@@ -32,8 +32,51 @@ describe('account usage from the vendors', () => {
     expect(u.windows).toEqual([
       { name: '5h', usedPercent: 33, resetsAt: 1789318800000 },
       { name: '7d', usedPercent: 41, resetsAt: 1789840800000 },
+      { name: '7d+overage', usedPercent: 66, resetsAt: 1789840800000 },
     ]);
     expect(u.status).toBe('warning');
+  });
+  it('claude: per-model windows keep their family name; a result adds to the spend and names the provider', () => {
+    const a = new ClaudeAdapter();
+    const w = a.ingest(
+      rec({
+        type: 'rate_limit_event',
+        rate_limit_info: {
+          status: 'allowed',
+          unifiedWindows: {
+            seven_day_opus: { utilization: 0.12 },
+            seven_day_fable: { utilization: 0.5 },
+          },
+        },
+      }),
+    ).usage!;
+    expect(w.windows.map((x) => x.name)).toEqual(['7d opus', '7d fable']);
+    const r = a.ingest(
+      rec(
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'ok',
+          total_cost_usd: 1.21,
+          usage: {
+            input_tokens: 258,
+            cache_creation_input_tokens: 48837,
+            cache_read_input_tokens: 315683,
+            output_tokens: 3027,
+          },
+          modelUsage: { 'claude-fable-5-1': { provider: 'bedrock' } },
+        },
+        2,
+      ),
+    ).usage!;
+    expect(r.spend).toEqual({
+      inputTokens: 364778,
+      outputTokens: 3027,
+      turns: 1,
+      costUsd: 1.21,
+    });
+    expect(r.provider).toBe('bedrock');
+    expect(r.windows.map((x) => x.name)).toEqual(['7d opus', '7d fable']); // kept alongside
   });
   it('codex: account/rateLimits/updated gives the windows named by their length and the plan', () => {
     const u = new CodexAdapter().ingest(
@@ -62,6 +105,43 @@ describe('account usage from the vendors', () => {
       { name: '5h', usedPercent: 40, resetsAt: null },
     ]);
     expect(u).toMatchObject({ status: 'ok', plan: 'prolite' });
+  });
+  it('codex: thread/tokenUsage/updated gives the spend and the context, beside the windows', () => {
+    const a = new CodexAdapter();
+    a.ingest(
+      rec({
+        method: 'account/rateLimits/updated',
+        params: {
+          rateLimits: {
+            primary: { usedPercent: 6, windowDurationMins: 10080 },
+          },
+        },
+      }),
+    );
+    const u = a.ingest(
+      rec(
+        {
+          method: 'thread/tokenUsage/updated',
+          params: {
+            threadId: 't',
+            turnId: 'u',
+            tokenUsage: {
+              total: {
+                totalTokens: 30983,
+                inputTokens: 30925,
+                outputTokens: 58,
+              },
+              last: { totalTokens: 15523 },
+              modelContextWindow: 258400,
+            },
+          },
+        },
+        2,
+      ),
+    ).usage!;
+    expect(u.spend).toMatchObject({ inputTokens: 30925, outputTokens: 58 });
+    expect(u.context).toEqual({ used: 15523, size: 258400 });
+    expect(u.windows.map((w) => w.name)).toEqual(['7d']);
   });
   it('copilot: usage_update is the context window only', () => {
     const a = new CopilotAdapter();

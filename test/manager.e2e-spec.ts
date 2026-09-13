@@ -456,10 +456,10 @@ describe('agents', () => {
       status: 'warning',
     });
     const u = (await api.get('/api/usage')).body;
-    expect(u.hosts).toHaveLength(1);
-    expect(
-      u.hosts[0].accounts.find((a: any) => a.profile === 'fake'),
-    ).toMatchObject({
+    const fake = u.hosts
+      .flatMap((h: any) => h.accounts)
+      .find((a: any) => a.profile === 'fake');
+    expect(fake).toMatchObject({
       agentId: agent.id,
       usage: { status: 'warning' },
     });

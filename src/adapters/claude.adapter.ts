@@ -1,5 +1,6 @@
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
+  AccountUsage,
   AgentAdapter,
   TurnImage,
   AdapterFactory,
@@ -79,12 +80,16 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   snapshot(): unknown {
-    return { backgrounded: [...this.backgrounded] };
+    return { backgrounded: [...this.backgrounded], usage: this.usage };
   }
 
   restore(state: unknown): void {
-    const st = (state ?? {}) as { backgrounded?: string[] };
+    const st = (state ?? {}) as {
+      backgrounded?: string[];
+      usage?: UsageState;
+    };
     this.backgrounded = new Set(st.backgrounded ?? []);
+    if (st.usage) this.usage = st.usage;
     this.turnOpen = false;
     this.streaming = null;
     this.permissions.clear();
@@ -273,7 +278,29 @@ export class ClaudeAdapter implements AgentAdapter {
     };
   }
 
-  /** `rate_limit_event`: the account's rolling windows and the vendor's verdict. */
+  /** The last usage reported, so windows, spend and provider can be re-emitted together as either changes. */
+  private usage: UsageState = {
+    windows: [],
+    spend: { inputTokens: 0, outputTokens: 0, turns: 0 },
+  };
+
+  private usageNow(): AccountUsage {
+    const { windows, status, spend, provider } = this.usage;
+    return {
+      windows,
+      ...(status ? { status } : {}),
+      ...(spend.turns ? { spend: { ...spend } } : {}),
+      ...(provider ? { provider } : {}),
+      at: Date.now(),
+    };
+  }
+
+  /**
+   * `rate_limit_event`: the account's rolling windows and the vendor's
+   * verdict. Every window the event carries is kept, named for people:
+   * the 5-hour and 7-day ones, the 7-day including overage, and any
+   * per-model window Claude adds (a Sonnet, Opus or other family limit).
+   */
   private ingestRateLimit(line: any): Ingest {
     const info = line.rate_limit_info ?? {};
     const windows = Object.entries(
@@ -281,20 +308,20 @@ export class ClaudeAdapter implements AgentAdapter {
         string,
         { utilization?: number; resetsAt?: number }
       >,
-    )
-      .filter(([k]) => k === 'five_hour' || k === 'seven_day')
-      .map(([k, w]) => ({
-        name: k === 'five_hour' ? '5h' : '7d',
-        usedPercent: Math.round(Number(w.utilization ?? 0) * 100),
-        resetsAt: w.resetsAt ? Number(w.resetsAt) * 1000 : null,
-      }));
-    const status =
+    ).map(([k, w]) => ({
+      name: windowName(k),
+      usedPercent: Math.round(Number(w.utilization ?? 0) * 100),
+      resetsAt: w.resetsAt ? Number(w.resetsAt) * 1000 : null,
+    }));
+    if (!windows.length) return {};
+    this.usage.windows = windows;
+    this.usage.status =
       info.status === 'rejected'
-        ? ('rejected' as const)
+        ? 'rejected'
         : info.status === 'allowed_warning'
-          ? ('warning' as const)
-          : ('ok' as const);
-    return windows.length ? { usage: { windows, status, at: Date.now() } } : {};
+          ? 'warning'
+          : 'ok';
+    return { usage: this.usageNow() };
   }
 
   private ingestInput(line: any): Ingest {
@@ -542,6 +569,31 @@ export class ClaudeAdapter implements AgentAdapter {
     this.turnOpen = false;
     this.streaming = null;
     this.permissions.clear(); // a request from an ended turn cannot be answered
+    // What the turn cost, added to the session's tally; on Bedrock or Vertex
+    // there are no account windows, so this is the usage there is.
+    const u = line.usage ?? {};
+    const inTok =
+      Number(u.input_tokens ?? 0) +
+      Number(u.cache_creation_input_tokens ?? 0) +
+      Number(u.cache_read_input_tokens ?? 0);
+    this.usage.spend = {
+      inputTokens: this.usage.spend.inputTokens + inTok,
+      outputTokens:
+        this.usage.spend.outputTokens + Number(u.output_tokens ?? 0),
+      turns: this.usage.spend.turns + 1,
+      ...(typeof line.total_cost_usd === 'number' ||
+      this.usage.spend.costUsd !== undefined
+        ? {
+            costUsd:
+              (this.usage.spend.costUsd ?? 0) +
+              Number(line.total_cost_usd ?? 0),
+          }
+        : {}),
+    };
+    const provider = Object.values(
+      (line.modelUsage ?? {}) as Record<string, { provider?: string }>,
+    ).find((m) => m?.provider)?.provider;
+    if (provider) this.usage.provider = String(provider);
     const end: Item = {
       kind: 'turn_end',
       usage: line.usage,
@@ -557,6 +609,7 @@ export class ClaudeAdapter implements AgentAdapter {
             ? line.result
             : String(line.subtype ?? 'error');
       return {
+        usage: this.usageNow(),
         state: 'error',
         error: message,
         ops: [append({ kind: 'error', message }), append(end)],
@@ -564,6 +617,7 @@ export class ClaudeAdapter implements AgentAdapter {
       };
     }
     return {
+      usage: this.usageNow(),
       state: 'idle',
       ops: [append(end)],
       conversationId: line.session_id,
@@ -577,3 +631,22 @@ export const claudeAdapterFactory: AdapterFactory = {
   profile: 'claude',
   create: () => new ClaudeAdapter(),
 };
+
+/** A person's name for one of Claude's rate-limit windows. */
+function windowName(key: string): string {
+  if (key === 'five_hour') return '5h';
+  if (key === 'seven_day') return '7d';
+  if (key === 'seven_day_overage_included') return '7d+overage';
+  const m = /^(five_hour|seven_day)_(.+)$/.exec(key);
+  if (m)
+    return `${m[1] === 'five_hour' ? '5h' : '7d'} ${m[2]!.replace(/_/g, ' ')}`;
+  return key;
+}
+
+/** What the adapter remembers of the account's usage between reports. */
+interface UsageState {
+  windows: AccountUsage['windows'];
+  status?: AccountUsage['status'];
+  spend: NonNullable<AccountUsage['spend']>;
+  provider?: string;
+}

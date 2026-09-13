@@ -81,6 +81,15 @@ export interface AccountUsage {
   plan?: string;
   /** The session's context window: tokens used of the size. */
   context?: { used: number; size: number };
+  /** What this session has consumed so far: tokens (input includes cache reads and writes) and, when the vendor prices it, dollars. */
+  spend?: {
+    inputTokens: number;
+    outputTokens: number;
+    costUsd?: number;
+    turns: number;
+  };
+  /** Who serves the model, when the vendor says (Claude: firstParty, bedrock, vertex). */
+  provider?: string;
   /** When it was reported, unix ms. */
   at: number;
 }

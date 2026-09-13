@@ -1,5 +1,6 @@
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
+  AccountUsage,
   AgentAdapter,
   TurnImage,
   AdapterFactory,
@@ -91,8 +92,27 @@ export class CodexAdapter implements AgentAdapter {
       : this.rpc('thread', 'thread/start', this.policy());
   }
 
+  /** The last usage reported, so windows, spend and context are re-emitted together as either changes. */
+  private usage: UsageState = {
+    windows: [],
+    spend: { inputTokens: 0, outputTokens: 0, turns: 0 },
+  };
+
+  private usageNow(): AccountUsage {
+    const { windows, status, plan, spend, context } = this.usage;
+    return {
+      windows,
+      ...(status ? { status } : {}),
+      ...(plan ? { plan } : {}),
+      ...(spend.turns ? { spend: { ...spend } } : {}),
+      ...(context ? { context } : {}),
+      at: Date.now(),
+    };
+  }
+
   snapshot(): unknown {
     return {
+      usage: this.usage,
       threadId: this.threadId,
       resume: this.resume,
       nextId: this.nextId,
@@ -120,6 +140,8 @@ export class CodexAdapter implements AgentAdapter {
     }>;
     this.threadId = st.threadId ?? null;
     this.resume = st.resume ?? null;
+    if ((st as { usage?: UsageState }).usage)
+      this.usage = (st as { usage: UsageState }).usage;
     this.nextId = st.nextId ?? this.nextId;
     this.pending = new Map(st.pending ?? []);
     this.sentKinds = new Set(st.sentKinds ?? []);
@@ -262,14 +284,30 @@ export class CodexAdapter implements AgentAdapter {
           ...win(rl.secondary, 'secondary'),
         ];
         if (!windows.length) return {};
-        return {
-          usage: {
-            windows,
-            status: rl.rateLimitReachedType ? 'rejected' : 'ok',
-            ...(rl.planType ? { plan: String(rl.planType) } : {}),
-            at: record.t,
-          },
-        };
+        this.usage.windows = windows;
+        this.usage.status = rl.rateLimitReachedType ? 'rejected' : 'ok';
+        if (rl.planType) this.usage.plan = String(rl.planType);
+        return { usage: this.usageNow() };
+      }
+      case 'thread/tokenUsage/updated': {
+        const t = line.params?.tokenUsage ?? {};
+        const total = t.total ?? {};
+        if (typeof total.inputTokens === 'number') {
+          this.usage.spend = {
+            inputTokens: Number(total.inputTokens ?? 0),
+            outputTokens: Number(total.outputTokens ?? 0),
+            turns: this.usage.spend.turns + 1,
+          };
+        }
+        if (
+          typeof t.modelContextWindow === 'number' &&
+          t.last?.totalTokens !== undefined
+        )
+          this.usage.context = {
+            used: Number(t.last.totalTokens),
+            size: Number(t.modelContextWindow),
+          };
+        return { usage: this.usageNow() };
       }
       case 'thread/started': {
         const model = line.params?.thread?.model;
@@ -686,4 +724,13 @@ function userItem(input: unknown): Item {
     })
     .filter((x): x is TurnImage => x !== null);
   return { kind: 'user', text, ...(images.length ? { images } : {}) };
+}
+
+/** What the adapter remembers of the account's usage between reports. */
+interface UsageState {
+  windows: AccountUsage['windows'];
+  status?: AccountUsage['status'];
+  plan?: string;
+  spend: NonNullable<AccountUsage['spend']>;
+  context?: { used: number; size: number };
 }
