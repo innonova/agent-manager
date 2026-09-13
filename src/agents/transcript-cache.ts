@@ -149,6 +149,7 @@ export class TranscriptCache {
     const fh = await fs.open(this.itemsPath(agentId), 'r');
     try {
       let rest = '';
+      let scanned = 0; // where the next newline search starts: what came before was searched already
       const decoder = new StringDecoder('utf8');
       const buf = Buffer.alloc(64 * 1024);
       while (index < to && pos < state.bytes) {
@@ -162,12 +163,14 @@ export class TranscriptCache {
         pos += bytesRead;
         rest += decoder.write(buf.subarray(0, bytesRead));
         let nl: number;
-        while (index < to && (nl = rest.indexOf('\n')) >= 0) {
+        while (index < to && (nl = rest.indexOf('\n', scanned)) >= 0) {
           const line = rest.slice(0, nl);
           rest = rest.slice(nl + 1);
+          scanned = 0;
           if (index >= from) out.push(JSON.parse(line) as StoredItem);
           index++;
         }
+        scanned = rest.length; // no newline in what is left: skip it next time
       }
     } finally {
       await fh.close();

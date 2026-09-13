@@ -426,7 +426,9 @@ sent. That is the reason for the limits (four per turn, three megabytes
 each, six per turn): the daemon takes lines up to ten megabytes, and the
 transcript cache and the items pages carry whatever the log carries. A
 pasted screenshot is a few hundred kilobytes; if large images become
-common, storing them beside the log is the change to make.
+common, storing them beside the log is the change to make. Messages
+held for the next turn are bounded too (twenty, and 24 MB of images
+among them), refused as busy beyond that.
 
 ## Uploads and directories
 
@@ -438,9 +440,11 @@ untracked until committed, seen by the changes view and readable by the
 agent with its own tools; the manager keeps nothing about it. A path is
 validated as on the read side (`..` refused, the first segment a
 repository name). An existing file is not replaced without
-`overwrite=1`, a missing parent is not created by an upload (the
-directory route is for that), and a file is at most 25 MB. Uploads
-travel through a hub to a spoke as bytes.
+`overwrite=1` (and then keeps its mode, so a script stays executable
+and a private file private), a new file is linked into place so two
+uploads racing for one name cannot both win, a missing parent is not
+created by an upload (the directory route is for that), and a file is
+at most 25 MB. Uploads travel through a hub to a spoke as bytes.
 
 ## Transcript items
 

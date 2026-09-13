@@ -654,6 +654,24 @@ export class AgentsService
           throw busy();
         const lines = sl.adapter.steer?.(text, images) ?? [];
         if (lines.length === 0) {
+          const heldBytes = live.queued.reduce(
+            (n, q) => n + q.images.reduce((m, i) => m + i.data.length, 0),
+            0,
+          );
+          if (
+            live.queued.length >= QUEUE_LIMITS.messages ||
+            heldBytes + images.reduce((m, i) => m + i.data.length, 0) >
+              QUEUE_LIMITS.imageBytes
+          )
+            throw new HttpException(
+              {
+                statusCode: 409,
+                code: 'agent-busy',
+                message:
+                  'too much is already held for this agent; wait for the turn to end',
+              },
+              409,
+            );
           live.queued.push({
             text,
             userId,
@@ -2047,6 +2065,16 @@ export const IMAGE_LIMITS = {
   types: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
 };
 
+/** Base64 as a vendor accepts it: the alphabet, padding only at the end, whole groups, not empty. Linear, since an image is megabytes. */
+function isBase64(s: string): boolean {
+  if (s.length === 0 || s.length % 4 !== 0) return false;
+  const pad = s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0;
+  const body = s.slice(0, s.length - pad);
+  return /^[A-Za-z0-9+/]*$/.test(body); // no groups: no backtracking on a huge string
+}
+/** What the held-message queue may carry per agent: messages, and bytes of images among them. */
+const QUEUE_LIMITS = { messages: 20, imageBytes: 24 * 1024 * 1024 };
+
 /** `images` from a request: `[{ mediaType, data }]`, base64, within IMAGE_LIMITS. */
 function parseImages(raw: unknown): TurnImage[] {
   if (raw === undefined || raw === null) return [];
@@ -2067,7 +2095,7 @@ function parseImages(raw: unknown): TurnImage[] {
       throw new BadRequestException(
         `image type must be one of ${IMAGE_LIMITS.types.join(', ')}`,
       );
-    if (typeof o.data !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(o.data))
+    if (typeof o.data !== 'string' || !isBase64(o.data))
       throw new BadRequestException('image data must be base64');
     const bytes = Math.floor((o.data.length * 3) / 4);
     if (bytes > IMAGE_LIMITS.bytes)

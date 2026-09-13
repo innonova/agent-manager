@@ -412,6 +412,29 @@ describe('agents', () => {
     expect(
       (await put(`${repo}/big.bin`, Buffer.alloc(26 * 1024 * 1024))).status,
     ).toBe(413);
+    // a replacement keeps the file's mode; a file in the way of a directory is a 409; a long name is fine
+    fs.chmodSync(path.join(p.path, 'notes', 'app.log'), 0o755);
+    expect(
+      (await put(`${repo}/notes/app.log`, '#!/bin/sh\n', true)).status,
+    ).toBe(200);
+    expect(
+      fs.statSync(path.join(p.path, 'notes', 'app.log')).mode & 0o777,
+    ).toBe(0o755);
+    expect(
+      (
+        await api.post(`/api/projects/${p.id}/dir`, {
+          path: `${repo}/notes/app.log/child`,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (await put(`${repo}/notes/${'n'.repeat(250)}.txt`, 'x')).status,
+    ).toBe(200);
+    expect(
+      fs
+        .readdirSync(path.join(p.path, 'notes'))
+        .filter((n) => n.startsWith('.upload-')),
+    ).toEqual([]);
   }, 30000);
 
   it('a turn may carry images, within limits; they show on the user item and reach the agent', async () => {
@@ -450,6 +473,11 @@ describe('agents', () => {
     expect(await bad([{ mediaType: 'image/png', data: 'not base64!' }])).toBe(
       400,
     );
+    expect(await bad([{ mediaType: 'image/png', data: 'A' }])).toBe(400); // not a whole group
+    expect(await bad([{ mediaType: 'image/png', data: 'AAAA=====' }])).toBe(
+      400,
+    ); // padding in the wrong place
+    expect(await bad([{ mediaType: 'image/png', data: '' }])).toBe(400);
     expect(await bad(Array(5).fill(png))).toBe(400);
     expect(
       await bad([

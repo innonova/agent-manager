@@ -249,7 +249,8 @@ export class HubService
     } catch {
       data = { statusCode: res.status, message: text.slice(0, 200) };
     }
-    if (res.status === 401 || res.status === 403)
+    if (res.status === 401 || res.status === 403) {
+      this.noteError(spoke.name, `refused the hub's token (${res.status})`);
       return {
         status: 502,
         body: {
@@ -258,6 +259,8 @@ export class HubService
           message: `${spoke.name} refused the hub's credentials`,
         } as T,
       };
+    }
+    this.noteError(spoke.name, undefined);
     return { status: res.status, body: prefixIds(spoke.name, data) as T };
   }
 

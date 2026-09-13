@@ -7,6 +7,7 @@ import {
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { ProjectsService } from '../projects/projects.service.js';
 import { NotRegularFileError, readRegular } from '../util/read-regular.js';
 
@@ -209,7 +210,7 @@ export class FilesService {
       throw new BadRequestException(
         `a file may be at most ${UPLOAD_LIMIT / 1024 / 1024} MB`,
       );
-    let replaced = false;
+    let existing: number | null = null; // the mode of the file being replaced
     try {
       const st = await fs.lstat(target.abs);
       if (!st.isFile())
@@ -218,7 +219,7 @@ export class FilesService {
         throw new ConflictException(
           `${target.rel} exists; send overwrite=1 to replace it`,
         );
-      replaced = true;
+      existing = st.mode & 0o7777;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
@@ -236,9 +237,33 @@ export class FilesService {
         );
       throw err;
     }
-    const tmp = `${target.abs}.${process.pid}.upload`;
-    await fs.writeFile(tmp, data, { mode: 0o644 });
-    await fs.rename(tmp, target.abs);
+    // Written beside the target under a short unique name, then moved into
+    // place: a replacement keeps the old file's mode, a new file is linked
+    // in so two uploads racing for the same name cannot both win.
+    const tmp = path.join(parent, `.upload-${randomUUID()}`);
+    await fs.writeFile(tmp, data, { mode: existing ?? 0o644 });
+    try {
+      if (existing !== null) {
+        await fs.chmod(tmp, existing);
+        await fs.rename(tmp, target.abs);
+      } else {
+        try {
+          await fs.link(tmp, target.abs);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'EEXIST')
+            throw new ConflictException(
+              `${target.rel} exists; send overwrite=1 to replace it`,
+            );
+          throw err;
+        } finally {
+          await fs.rm(tmp, { force: true });
+        }
+      }
+    } catch (err) {
+      await fs.rm(tmp, { force: true });
+      throw err;
+    }
+    const replaced = existing !== null;
     return { path: target.rel, size: data.length, replaced };
   }
 
@@ -259,9 +284,21 @@ export class FilesService {
         `${target.rel} exists and is not a directory`,
       );
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOTDIR')
+        throw new ConflictException(`a file is in the way of ${target.rel}`);
+      if (code !== 'ENOENT') throw err;
     }
-    await fs.mkdir(target.abs, { recursive: true });
+    try {
+      await fs.mkdir(target.abs, { recursive: true });
+    } catch (err) {
+      if (
+        (err as NodeJS.ErrnoException).code === 'ENOTDIR' ||
+        (err as NodeJS.ErrnoException).code === 'EEXIST'
+      )
+        throw new ConflictException(`a file is in the way of ${target.rel}`);
+      throw err;
+    }
     return { path: target.rel, created: true };
   }
 
