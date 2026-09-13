@@ -305,10 +305,14 @@ the history of every agent ever.
   daemon is replayed from the cached sequence onward; the current
   session starts from the status it had at its last turn end. A missing
   or stale cache (the version bumps when an adapter's output changes)
-  means one full replay for that agent, which then writes the cache. A
-  cache the daemon's log contradicts (a cached sequence past the log's
-  end, or an ended session with records past the cache) is dropped and
-  rebuilt the same way. Archived agents are not touched at start;
+  means one full replay for that agent, which then writes the cache. Because
+  items are cached in index order, every cached session but the last
+  must be there whole: a cache the daemon's log contradicts (a cached
+  sequence past the log's end, a session the daemon no longer has, an
+  earlier session cut short or missing from the cache while a later one
+  is in it, a cached session the database does not know) is dropped and
+  rebuilt the same way. A rebuild bumps a generation so writes and reads
+  started against the old file stand down. Archived agents are not touched at start;
   requesting one loads it, from cache and log.
 - `GET /api/agents/:id/items` takes `tail=N` (the last N), `before=I&limit=N`
   (the N before index I) or the existing `from=I`, and always returns

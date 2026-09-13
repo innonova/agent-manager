@@ -26,6 +26,8 @@ export class ScriptedDaemon extends EventEmitter<{
   readonly attaches: { sessionId: string; fromSeq: number }[] = [];
   private readonly server: WebSocketServer;
   private readonly clients = new Set<WebSocket>();
+  /** The test sets this to refuse attaches (a session whose log cannot be replayed). */
+  onAttach: ((sessionId: string) => 'ok' | 'refuse') | null = null;
   /** The test sets this to shape the answer to the next input (or all inputs). */
   onInput:
     | ((
@@ -185,6 +187,8 @@ export class ScriptedDaemon extends EventEmitter<{
         const from =
           (f.replay as { fromSeq?: number } | undefined)?.fromSeq ?? 1;
         this.attaches.push({ sessionId: id, fromSeq: from });
+        if (this.onAttach?.(id) === 'refuse')
+          return this.error(ws, f, 'log-error', 'refused by the script');
         let last = from - 1;
         for (const r of session.log)
           if (r.seq >= from) {

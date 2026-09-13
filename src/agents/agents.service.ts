@@ -147,6 +147,8 @@ interface Live {
     loaded: boolean;
     /** A write failed: nothing is evicted and nothing more is written until a rebuild. */
     broken: boolean;
+    /** Bumped by a rebuild, so writes and reads started against the old file stand down. */
+    generation: number;
   };
   /** Per session, the settled point last written to the header, to notice a header-only change. */
   cacheHeaders: Map<string, CachedSession>;
@@ -399,6 +401,7 @@ export class AgentsService
     const total = live.itemBase + live.items.length;
     let from = 0;
     let to = total;
+    // (from, to) are fixed by the query; total may move while we read
     if (query.before !== undefined) {
       to = Math.min(query.before, total);
       from = Math.max(0, to - (query.limit ?? this.config.residentItems));
@@ -406,25 +409,42 @@ export class AgentsService
       from = Math.max(0, total - query.tail);
     } else from = query.from ?? 0;
     if (from >= to) return { items: [], total };
-    const base = live.itemBase;
-    const resident =
-      to > base ? live.items.slice(Math.max(from, base) - base, to - base) : [];
-    const cached =
-      from < base
-        ? await this.cache.read(
+    // The resident part is taken now; the cached part is read afterwards.
+    // A rebuild meanwhile replaces the file: read again from scratch.
+    for (let attempt = 0; ; attempt++) {
+      const gen = live.cache.generation;
+      const total = live.itemBase + live.items.length;
+      const base = live.itemBase;
+      const upTo = Math.min(to, total);
+      const resident =
+        upTo > base
+          ? live.items.slice(Math.max(from, base) - base, upTo - base)
+          : [];
+      let cached: StoredItem[] = [];
+      try {
+        if (from < base)
+          cached = await this.cache.read(
             id,
             live.cache.written,
             from,
-            Math.min(to, base),
-          )
-        : [];
-    return { items: [...cached, ...resident], total };
+            Math.min(upTo, base),
+          );
+      } catch (err) {
+        if (gen === live.cache.generation || attempt >= 3) throw err;
+      }
+      if (gen === live.cache.generation || attempt >= 3)
+        return { items: [...cached, ...resident], total };
+    }
   }
 
   /** Brings an archived agent's transcript in (from the cache, and the daemon for what the cache lacks) once per process. */
   private async loadArchived(id: string, live: Live): Promise<void> {
     await this.withLock(live, async () => {
       if (live.loaded) return;
+      const agent = this.find(id);
+      if (!agent) return;
+      await this.loadCache(agent, live); // what the cache has is served even with the daemon down
+      if (!this.daemon.connected) return;
       try {
         await this.resyncAgent(id, this.resyncGeneration, live);
       } catch (err) {
@@ -432,6 +452,9 @@ export class AgentsService
           `agent ${id}: could not load archived transcript: ${(err as Error).message}`,
         );
       }
+      // A session whose replay failed is tried again on the next request.
+      for (const sl of live.sessions.values())
+        if (!sl.complete) live.loaded = false;
     });
   }
 
@@ -1166,11 +1189,12 @@ export class AgentsService
       }
     const header = { version: TRANSCRIPT_CACHE_VERSION, sessions };
     cache.claimed = end; // the next write starts after these items
+    const gen = cache.generation;
     cache.chain = cache.chain
       .then(async () => {
-        if (cache.broken) return;
+        if (cache.broken || gen !== cache.generation) return; // rebuilt meanwhile
         await this.cache.append(agent.id, cache.written, items, header);
-        this.evict(live);
+        if (gen === cache.generation) this.evict(live);
       })
       .catch((err: Error) => {
         cache.broken = true;
@@ -1236,6 +1260,7 @@ export class AgentsService
       const adapter = this.adapters.create(agent.profile);
       adapter.restore?.(cs.adapter);
       const sl = this.trackSession(agent, live, sid, adapter);
+      sl.adapter = adapter; // an exit notice may have tracked it meanwhile, with a blank adapter
       sl.lastSeq = cs.lastSeq;
       sl.complete = true;
       sl.startedBoundary = cs.startedBoundary;
@@ -1258,6 +1283,7 @@ export class AgentsService
     const cache = live.cache;
     cache.claimed = 0;
     cache.broken = false;
+    cache.generation++;
     cache.chain = cache.chain
       .catch(() => undefined)
       .then(async () => {
@@ -1511,14 +1537,28 @@ export class AgentsService
       this.rebuild(agent, live, 'recovered history must keep its order');
     // A cached session the daemon's log contradicts (cut short, or an
     // ended one with records past the cache) cannot be continued.
-    const contradicted = refs.some((ref) => {
-      const s = byId.get(ref.daemonSessionId);
-      const sl = live.sessions.get(ref.daemonSessionId);
-      if (!s || !sl?.fromCache) return false;
-      return (
-        sl.lastSeq > s.lastSeq || (sl.endedBoundary && sl.lastSeq < s.lastSeq)
+    // Items are cached in index order, so every cached session but the
+    // last must be there whole: a session the daemon no longer has, one
+    // cut short or run past, one missing from the cache while a later
+    // one is in it, or one cached that the database does not know, would
+    // all put recovered records after later history.
+    const inRefs = new Set(refs.map((r) => r.daemonSessionId));
+    const contradicted =
+      refs.some((ref, i) => {
+        const s = byId.get(ref.daemonSessionId);
+        const sl = live.sessions.get(ref.daemonSessionId);
+        const last = i === refs.length - 1;
+        if (!sl?.fromCache)
+          return refs
+            .slice(i + 1)
+            .some((r) => live.sessions.get(r.daemonSessionId)?.fromCache);
+        if (!s || sl.lastSeq > s.lastSeq) return true;
+        if (last) return false;
+        return sl.lastSeq !== s.lastSeq || !sl.endedBoundary;
+      }) ||
+      [...live.sessions.values()].some(
+        (sl) => sl.fromCache && !inRefs.has(sl.id),
       );
-    });
     if (contradicted)
       this.rebuild(agent, live, 'the cache disagrees with the daemon log');
     refs = this.sessions(agent.id);
@@ -1652,6 +1692,7 @@ export class AgentsService
           chain: Promise.resolve(),
           loaded: false,
           broken: false,
+          generation: 0,
         },
         cacheHeaders: new Map(),
         loaded: false,

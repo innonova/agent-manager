@@ -61,9 +61,24 @@ describe('TranscriptCache', () => {
     expect(fs.statSync(file).size).toBe(h!.bytes);
     expect(await cache.read('a', h!, 0, 10)).toEqual([item(0), item(1)]);
     fs.truncateSync(file, 10);
-    expect(await cache.load('a')).toBeNull();
+    expect(await cache.load('a')).toBeNull(); // short: rejected, and removed
+    expect(fs.existsSync(file)).toBe(false);
+    await cache.append(
+      'a',
+      { count: 0, bytes: 0, offsets: [] },
+      [item(0)],
+      header,
+    );
     fs.rmSync(file);
     expect(await cache.load('a')).toBeNull();
+  });
+
+  it('refuses to append to a file whose length is not what the state says', async () => {
+    await cache.append('a', state, [item(0)], header);
+    fs.appendFileSync(path.join(dir, 'transcripts/a.ndjson'), 'junk\n');
+    await expect(cache.append('a', state, [item(1)], header)).rejects.toThrow(
+      /bytes/,
+    );
   });
 
   it('ignores a header of another version, a corrupt one, and an absent one', async () => {
@@ -80,6 +95,11 @@ describe('TranscriptCache', () => {
     expect(await cache.load('a')).toBeNull();
     fs.writeFileSync(hp, '{not json');
     expect(await cache.load('a')).toBeNull();
+    // a rejected header takes the items file with it: a rebuild starts clean
+    expect(fs.existsSync(path.join(dir, 'transcripts/a.ndjson'))).toBe(false);
+    const fresh = { count: 0, bytes: 0, offsets: [] };
+    await cache.append('a', fresh, [item(0, 'rebuilt')], header);
+    expect(await cache.read('a', fresh, 0, 1)).toEqual([item(0, 'rebuilt')]);
     await cache.clear('a');
     expect(fs.existsSync(hp)).toBe(false);
   });

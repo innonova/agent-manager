@@ -59,3 +59,26 @@ UI (`agent-manager-ui`):
   paging and the reconnect refetch.
 
 Left as agreed: nothing on disk is trimmed (daemon log or cache).
+
+Review round (same day): Codex deep pass on the manager change, Claude
+light pass on the UI. All findings fixed and covered:
+
+- an earlier session whose replay failed could be cached partially and
+  its recovered records appended after later history on the next start;
+  every cached session but the last must now be whole, or the agent is
+  rebuilt (lifecycle test with a refused attach, then recovery);
+- a write in flight during a rebuild evicted uncached items of the new
+  transcript; writes and reads carry a generation and stand down;
+- an exit notice arriving while the cache loaded left a blank adapter
+  in place of the restored one;
+- a session the daemon no longer has, or one the database does not
+  know, now invalidates the cache instead of lingering;
+- a paged read racing a rebuild could fail or mix generations; it
+  retries;
+- an archived agent whose replay failed was never retried; it is, on
+  the next request, and the cached tail is served with the daemon down;
+- a rejected header left the old items file underneath a rebuild; a
+  rejected header takes the file with it, and an append checks the file
+  length first.
+- UI: items held during a load kept the old numbering across a reset;
+  a reconnect refetch that came back shorter never truncated the list.

@@ -33,7 +33,7 @@ function scriptCodex(
         id: line.id,
         result: { userAgent: 'scripted' },
       });
-    if (line?.method === 'thread/start') {
+    if (line?.method === 'thread/start' || line?.method === 'thread/resume') {
       d.out(sid, {
         jsonrpc: '2.0',
         id: line.id,
@@ -609,6 +609,101 @@ describe('transcript cache', () => {
     expect(daemon.attaches.filter((a) => a.sessionId === sid)).toEqual([
       { sessionId: sid, fromSeq: daemon.sessions.get(sid)!.record.lastSeq + 1 },
     ]);
+    daemon.removeAllListeners('input');
+  }, 30000);
+
+  it('an earlier session whose replay failed does not end up cached out of order', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c6');
+    const s1 = await sessionOf(id);
+    await turn(id, 'one');
+    let mark = events.mark();
+    await api.post(`/api/agents/${id}/stop`);
+    await stateOf(id, 'exited', mark);
+    mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'two' }); // resumes: a second session
+    await stateOf(id, 'idle', mark);
+    const s2 = await sessionOf(id);
+    expect(s2).not.toBe(s1);
+    await sleep(200);
+    const good = await itemsOf(id);
+    const kinds = (r: { items: any[] }) => r.items.map((i) => i.item.kind);
+    expect(kinds(good)).toEqual([
+      'system',
+      'user',
+      'text',
+      'turn_end',
+      'system', // session one, ended
+      'system',
+      'user',
+      'text',
+      'turn_end', // session two
+    ]);
+    // restart with the first session's log unreadable, then again with it back
+    fs.rmSync(path.join(m.dataDir, 'transcripts'), {
+      recursive: true,
+      force: true,
+    });
+    daemon.onAttach = (sid) => (sid === s1 ? 'refuse' : 'ok');
+    await restartManager();
+    await untilState(id, 'idle');
+    await turn(id, 'three'); // history after the gap, settled and cached
+    await sleep(200);
+    const degraded = await itemsOf(id);
+    expect(
+      degraded.items.some((i) => /history unavailable/.test(i.item.text ?? '')),
+    ).toBe(true);
+    daemon.onAttach = null;
+    await restartManager();
+    await untilState(id, 'idle');
+    await sleep(300);
+    const recovered = await itemsOf(id);
+    expect(kinds(recovered)).toEqual([
+      ...kinds(good),
+      'user',
+      'text',
+      'turn_end',
+    ]);
+    expect(recovered.items.map((i) => i.index)).toEqual(
+      recovered.items.map((_, k) => k),
+    );
+    expect(recovered.items.map((i) => i.sessionId)).toEqual([
+      ...Array(5).fill(s1),
+      ...Array(7).fill(s2),
+    ]);
+    daemon.removeAllListeners('input');
+  }, 40000);
+
+  it('an archived agent whose replay failed is tried again on the next request', async () => {
+    scriptCodex(daemon);
+    const id = await newAgent('c7');
+    const sid = await sessionOf(id);
+    await turn(id, 'one');
+    expect((await api.post(`/api/agents/${id}/archive`)).status).toBe(201);
+    await sleep(300);
+    const before = await itemsOf(id);
+    fs.rmSync(path.join(m.dataDir, 'transcripts'), {
+      recursive: true,
+      force: true,
+    });
+    daemon.onAttach = () => 'refuse';
+    await restartManager();
+    const failed = await itemsOf(id);
+    expect(
+      failed.items.some((i) => /history unavailable/.test(i.item.text ?? '')),
+    ).toBe(true);
+    daemon.onAttach = null;
+    const again = await itemsOf(id);
+    // the "history unavailable" note stays as a marker; the history follows it
+    const turns = (r: { items: any[] }) =>
+      r.items.map((i) => i.item.kind).filter((k) => k !== 'system');
+    expect(turns(again)).toEqual(turns(before));
+    expect(again.items[again.items.length - 1].item.text).toMatch(
+      /^session ended/,
+    );
+    expect(
+      daemon.attaches.filter((a) => a.sessionId === sid).length,
+    ).toBeGreaterThanOrEqual(2);
     daemon.removeAllListeners('input');
   }, 30000);
 

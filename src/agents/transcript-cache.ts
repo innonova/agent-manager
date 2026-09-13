@@ -55,8 +55,19 @@ export class TranscriptCache {
     return path.join(this.root, 'transcripts', `${agentId}.json`);
   }
 
-  /** The header, if present and of the current version; the items file is cut to the header's length. */
+  /**
+   * The header, if present and usable; the items file is cut to the
+   * header's length. Anything unusable is removed, so a rebuild starts
+   * from an empty file rather than appending to leftovers.
+   */
   async load(agentId: string): Promise<CacheHeader | null> {
+    const h = await this.readHeader(agentId);
+    if (h) return h;
+    await this.clear(agentId);
+    return null;
+  }
+
+  private async readHeader(agentId: string): Promise<CacheHeader | null> {
     let h: CacheHeader;
     try {
       h = JSON.parse(
@@ -91,6 +102,14 @@ export class TranscriptCache {
     header: Omit<CacheHeader, keyof CacheState>,
   ): Promise<void> {
     await fs.mkdir(path.dirname(this.itemsPath(agentId)), { recursive: true });
+    const size = await fs
+      .stat(this.itemsPath(agentId))
+      .then((st) => st.size)
+      .catch(() => 0);
+    if (size !== state.bytes)
+      throw new Error(
+        `cache file for ${agentId} is ${size} bytes, expected ${state.bytes}`,
+      );
     const offsets = [...state.offsets];
     let bytes = state.bytes;
     const lines: string[] = [];
