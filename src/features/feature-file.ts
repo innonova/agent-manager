@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
+import { NotRegularFileError, readRegular } from '../util/read-regular.js';
 
 export const FEATURE_STATUSES = [
   'planned',
@@ -29,6 +30,8 @@ export interface FeatureFile {
 }
 
 export const FEATURES_DIR = 'features';
+/** A feature file larger than this is not a feature file. */
+export const MAX_FEATURE_BYTES = 2 * 1024 * 1024;
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 
 export function isSlug(s: unknown): s is string {
@@ -130,21 +133,19 @@ export async function readFeatures(repo: {
     if (!isSlug(slug)) continue;
     const p = path.join(dir, name);
     try {
-      const [text, st] = await Promise.all([
-        fs.readFile(p, 'utf8'),
-        fs.stat(p),
-      ]);
+      const read = await readRegular(p, MAX_FEATURE_BYTES);
+      if (!read || read.truncated) continue;
       out.push(
         parseFeature(
           slug,
           repo.name,
           path.posix.join(repo.name, FEATURES_DIR, name),
-          text,
-          st.mtimeMs,
+          read.buf.toString('utf8'),
+          read.mtimeAfter,
         ),
       );
     } catch {
-      /* vanished or unreadable: skip */
+      /* vanished, unreadable or not a regular file: skip */
     }
   }
   return out;
@@ -157,13 +158,14 @@ export async function readFeature(
   if (!isSlug(slug)) return null;
   const p = path.join(repo.path, FEATURES_DIR, `${slug}.md`);
   try {
-    const [text, st] = await Promise.all([fs.readFile(p, 'utf8'), fs.stat(p)]);
+    const read = await readRegular(p, MAX_FEATURE_BYTES);
+    if (!read || read.truncated) return null;
     return parseFeature(
       slug,
       repo.name,
       path.posix.join(repo.name, FEATURES_DIR, `${slug}.md`),
-      text,
-      st.mtimeMs,
+      read.buf.toString('utf8'),
+      read.mtimeAfter,
     );
   } catch {
     return null;
@@ -196,27 +198,23 @@ export async function modifyFeature(
 ): Promise<FeatureFile | null> {
   const p = path.join(repo.path, FEATURES_DIR, `${slug}.md`);
   for (let attempt = 0; attempt < 5; attempt++) {
-    // Content and mtime from one open descriptor: a replacement renamed
-    // in between leaves the descriptor on the old inode, so the two agree.
-    let text: string;
-    let mtime: number;
+    // One coherent version: the descriptor's mtime must be the same before
+    // and after the read, or something wrote meanwhile and we read again.
+    let read: Awaited<ReturnType<typeof readRegular>>;
     try {
-      const fh = await fs.open(p, 'r');
-      try {
-        text = await fh.readFile('utf8');
-        mtime = (await fh.stat()).mtimeMs;
-      } finally {
-        await fh.close();
-      }
+      read = await readRegular(p, MAX_FEATURE_BYTES);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if (err instanceof NotRegularFileError) return null;
       throw err;
     }
+    if (!read || read.truncated) return null;
+    if (read.mtimeBefore !== read.mtimeAfter) continue;
+    const mtime = read.mtimeAfter;
     const current = parseFeature(
       slug,
       repo.name,
       path.posix.join(repo.name, FEATURES_DIR, `${slug}.md`),
-      text,
+      read.buf.toString('utf8'),
       mtime,
     );
     const next = await fn(current);

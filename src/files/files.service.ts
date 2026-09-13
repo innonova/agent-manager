@@ -5,9 +5,9 @@ import {
 } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { constants as fsc } from 'node:fs';
 import path from 'node:path';
 import { ProjectsService } from '../projects/projects.service.js';
+import { NotRegularFileError, readRegular } from '../util/read-regular.js';
 
 export interface DirEntry {
   name: string;
@@ -207,7 +207,14 @@ export class FilesService {
     const base = { path: clean, size: st.size, mtime: st.mtimeMs };
     if (st.size > MAX_FILE_BYTES)
       return { ...base, content: '', binary: false, truncated: true };
-    const read = await readRegular(abs, MAX_FILE_BYTES);
+    let read: Awaited<ReturnType<typeof readRegular>>;
+    try {
+      read = await readRegular(abs, MAX_FILE_BYTES);
+    } catch (err) {
+      if (err instanceof NotRegularFileError)
+        throw new BadRequestException(`not a regular file: ${clean}`);
+      throw err;
+    }
     if (read === null) throw new NotFoundException(`no such file: ${clean}`);
     if (read.truncated)
       return { ...base, content: '', binary: false, truncated: true };
@@ -333,46 +340,4 @@ export function gitStatus(
       );
     });
   });
-}
-
-/**
- * Reads a regular file, at most `max` bytes (+1 to know it overflowed).
- * The descriptor is checked after opening so a FIFO or a device cannot
- * block a worker, and a file that grew since it was stat'ed cannot exceed
- * the cap. Null when the file is gone.
- */
-export async function readRegular(
-  abs: string,
-  max: number,
-): Promise<{ buf: Buffer; truncated: boolean } | null> {
-  let fh: import('node:fs/promises').FileHandle;
-  try {
-    // O_NONBLOCK: opening a FIFO that appeared here must not block a worker
-    fh = await fs.open(abs, fsc.O_RDONLY | fsc.O_NONBLOCK);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
-  }
-  try {
-    const st = await fh.stat();
-    if (!st.isFile()) throw new BadRequestException('not a regular file');
-    // Read to EOF or one byte past the cap; the size reported by stat is
-    // only a hint (procfs says 0, a file may grow under us).
-    const chunks: Buffer[] = [];
-    let total = 0;
-    while (total <= max) {
-      const chunk = Buffer.alloc(Math.min(65536, max + 1 - total));
-      const { bytesRead } = await fh.read(chunk, 0, chunk.length, total);
-      if (bytesRead === 0) break;
-      chunks.push(chunk.subarray(0, bytesRead));
-      total += bytesRead;
-    }
-    const all = Buffer.concat(chunks);
-    return {
-      buf: all.subarray(0, Math.min(all.length, max)),
-      truncated: all.length > max,
-    };
-  } finally {
-    await fh.close();
-  }
 }

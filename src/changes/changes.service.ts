@@ -6,7 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DbService } from '../db/db.service.js';
-import { MAX_FILE_BYTES, readRegular } from '../files/files.service.js';
+import { MAX_FILE_BYTES } from '../files/files.service.js';
+import { NotRegularFileError, readRegular } from '../util/read-regular.js';
 import { FeaturesService } from '../features/features.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { isSlug } from '../features/feature-file.js';
@@ -196,10 +197,14 @@ export class ChangesService {
     let afterBuf: Buffer | null = null;
     if (afterSize !== null) {
       // bounded and regular-file-only; a failure other than "gone" is an error, not a deletion
-      const read = await readRegular(
-        path.join(repo.path, ...rest),
-        MAX_FILE_BYTES,
-      );
+      let read: Awaited<ReturnType<typeof readRegular>>;
+      try {
+        read = await readRegular(path.join(repo.path, ...rest), MAX_FILE_BYTES);
+      } catch (err) {
+        if (err instanceof NotRegularFileError)
+          throw new BadRequestException(`not a regular file: ${rel}`);
+        throw err;
+      }
       if (read?.truncated)
         return {
           path: rel,
