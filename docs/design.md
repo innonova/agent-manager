@@ -218,17 +218,30 @@ Copilot's `agent_thought_chunk`), `writing` is an output text delta
 `agent_message_chunk`), `tool` is a tool call under way, `detail` naming
 what runs (a shell tool's command, first line trimmed to ~80 chars; a
 read or edit's path; otherwise the tool's name), and `waiting` is a
-permission request or an `ask` left open. Claude's `tool_progress`
+permission request or an `ask` left open. For Claude the `tool`
+activity begins when the call's `tool_use` block starts streaming,
+named by the tool alone, and is refined with the input once the block
+is complete: the adapter's hint carries the call's `id`, and the
+service keeps `since` across a hint with the same id (a refinement of
+one call is not a new call). Until the block starts, the stretch after
+a tool's result is `requesting`; a model that goes straight to its next
+call without thinking spends most of a quick step there, so a client
+needs words for it. Claude's `tool_progress`
 heartbeats (every 30 s of a long call) re-report the call as it stands,
 so `since` keeps saying when it began; a heartbeat for any other call is
 ignored. `tokens` is how much the agent has produced, as the vendor
 reports it while streaming, reset per turn: one running number that
 only grows within the turn. For Claude it is the settled output of the
-turn's messages so far plus the live estimate of the stretch under way
-(`thinking_tokens` records, or a `thinking_delta`'s own
-`estimated_tokens` when those do not arrive), which ticks every few
-hundred ms and folds into the settled total when its message ends (a
-count that started over at each stretch read as noise). The settled
+turn's messages so far plus a live estimate of the message under way:
+Claude's own for a thinking stretch (`thinking_tokens` records, or a
+`thinking_delta`'s own `estimated_tokens` when those do not arrive,
+every few hundred ms), and about a token per four characters streamed
+for text and tool input, which Claude does not count live. The
+estimate folds into the settled total when its message ends, and the
+number never drops within a turn (the settled figure can come in under
+the estimate; the higher one stands until the total passes it). Before
+this the count moved only on thinking ticks and at message ends, and
+started over at each stretch, which read as noise. The settled
 part is the turn's output:
 Claude's cumulative `usage.output_tokens` summed across a turn's
 `message_delta` events (a tool-use turn is several Claude messages,

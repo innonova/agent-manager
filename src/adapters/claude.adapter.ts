@@ -39,6 +39,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private currentActivity: {
     kind: 'requesting' | 'thinking' | 'writing' | 'tool';
     detail?: string;
+    id?: string;
   } | null = null;
   /** The turn's output tokens so far, summed across a turn's `message_delta` events (a tool-use turn is several Claude messages). */
   private turnOutputTokens = 0;
@@ -50,6 +51,18 @@ export class ClaudeAdapter implements AgentAdapter {
    * thinks instead of standing still until the message ends.
    */
   private thinkingTokens = 0;
+  /**
+   * Characters of the current message streamed so far as text or tool
+   * input, standing in for the tokens Claude does not count live (about
+   * four characters each): the number keeps rising while a reply or a
+   * tool call is composed instead of standing still until the message
+   * settles, when the real count replaces it.
+   */
+  private streamedChars = 0;
+  /** The highest count reported this turn: a settled figure can come in under the estimate, and a number that dropped read as noise. */
+  private shownTokens = 0;
+  /** The stream index of the tool_use block being composed, so its input deltas are the ones counted. */
+  private toolBlockIndex: number | null = null;
   /** The tool call the current `tool` activity is about, so its heartbeats can be told from another call's. */
   private currentToolUseId: string | null = null;
 
@@ -479,6 +492,21 @@ export class ClaudeAdapter implements AgentAdapter {
             ],
           };
         }
+        if (block?.type === 'tool_use') {
+          // The call is being composed: its activity starts here, named
+          // by the tool, and is refined with the input once the block is
+          // complete (`ingestAssistant`); the id ties the two together so
+          // the refinement does not restart the activity's clock.
+          this.toolBlockIndex = ev.index;
+          this.currentToolUseId = String(block.id);
+          return {
+            activity: this.activityHint(
+              'tool',
+              toolActivityDetail(String(block.name ?? 'tool'), undefined),
+              this.currentToolUseId,
+            ),
+          };
+        }
         if (block?.type === 'thinking') {
           // Becomes an item only once there is text; some models emit signature-only thinking.
           this.thinkingTokens = 0; // a fresh stretch, counted from zero
@@ -493,10 +521,21 @@ export class ClaudeAdapter implements AgentAdapter {
         return {};
       }
       case 'content_block_delta': {
+        if (
+          ev.delta?.type === 'input_json_delta' &&
+          ev.index === this.toolBlockIndex
+        ) {
+          this.streamedChars += String(ev.delta.partial_json ?? '').length;
+          const cur = this.currentActivity;
+          return cur
+            ? { activity: this.activityHint(cur.kind, cur.detail, cur.id) }
+            : {};
+        }
         const s = this.streaming;
         if (!s || ev.index !== s.index) return {};
         if (s.kind === 'text' && ev.delta?.type === 'text_delta') {
           s.text += ev.delta.text;
+          this.streamedChars += ev.delta.text.length;
           return {
             activity: this.activityHint('writing'),
             ops: [
@@ -531,6 +570,7 @@ export class ClaudeAdapter implements AgentAdapter {
         return {};
       }
       case 'content_block_stop': {
+        if (ev.index === this.toolBlockIndex) this.toolBlockIndex = null;
         const s = this.streaming;
         if (s && ev.index === s.index) {
           this.streaming = null;
@@ -552,13 +592,15 @@ export class ClaudeAdapter implements AgentAdapter {
         // messages, so the count sums across each one's message_delta.
         const out = ev.usage?.output_tokens;
         if (typeof out === 'number') this.turnOutputTokens += out;
-        // the message is settled: its thinking is inside the total now
+        // the message is settled: its thinking and streamed text are inside the total now
         this.thinkingTokens = 0;
+        this.streamedChars = 0;
         return this.currentActivity
           ? {
               activity: this.activityHint(
                 this.currentActivity.kind,
                 this.currentActivity.detail,
+                this.currentActivity.id,
               ),
             }
           : {};
@@ -574,6 +616,9 @@ export class ClaudeAdapter implements AgentAdapter {
     this.currentActivity = null;
     this.turnOutputTokens = 0;
     this.thinkingTokens = 0;
+    this.streamedChars = 0;
+    this.shownTokens = 0;
+    this.toolBlockIndex = null;
     this.currentToolUseId = null;
   }
 
@@ -581,14 +626,21 @@ export class ClaudeAdapter implements AgentAdapter {
   private activityHint(
     kind: 'requesting' | 'thinking' | 'writing' | 'tool',
     detail?: string,
+    id?: string,
   ): NonNullable<Ingest['activity']> {
-    this.currentActivity = detail === undefined ? { kind } : { kind, detail };
+    this.currentActivity = { kind };
+    if (detail !== undefined) this.currentActivity.detail = detail;
+    if (id !== undefined) this.currentActivity.id = id;
     // One running number for the turn: the settled output of the messages
-    // so far plus Claude's live estimate of the stretch under way, which
-    // folds into the total when the message settles. It only ever grows
-    // within a turn; a count that started over at each stretch read as
-    // noise (the person's note, 2026-09-20).
-    const tokens = this.turnOutputTokens + this.thinkingTokens;
+    // so far, plus the live estimate of the message under way (Claude's
+    // own for a thinking stretch, the streamed characters for text and
+    // tool input), which folds into the total when the message settles.
+    // It only ever grows within a turn: a count that started over at
+    // each stretch, or moved only at message ends, read as noise (the
+    // person's notes, 2026-09-20).
+    const estimate = this.thinkingTokens + Math.round(this.streamedChars / 4);
+    const tokens = Math.max(this.shownTokens, this.turnOutputTokens + estimate);
+    this.shownTokens = tokens;
     return { ...this.currentActivity, tokens };
   }
 
@@ -603,7 +655,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const id = String(line.parent_tool_use_id ?? line.tool_use_id ?? '');
     const cur = this.currentActivity;
     if (cur?.kind !== 'tool' || !id || id !== this.currentToolUseId) return {};
-    return { activity: this.activityHint('tool', cur.detail) };
+    return { activity: this.activityHint('tool', cur.detail, cur.id) };
   }
 
   /** The complete block: authoritative. Replaces the streamed item under its key, or is appended. */
@@ -643,6 +695,7 @@ export class ClaudeAdapter implements AgentAdapter {
           activity = this.activityHint(
             'tool',
             toolActivityDetail(block.name, block.input),
+            this.currentToolUseId,
           );
           ops.push(
             append({

@@ -203,6 +203,8 @@ interface Live {
   lastActivityEmitAt: number;
   /** A coalesced `activity` change waiting out the throttle window; picks up the latest value when it fires. */
   activityFlush: NodeJS.Timeout | null;
+  /** What the current activity is about (an adapter's `id`), so a refinement of the same tool call keeps its `since`. */
+  activityId: string | null;
   /**
    * The status changed while a replay was in flight and has not been
    * announced: states derived from history are applied silently and only
@@ -2276,6 +2278,7 @@ export class AgentsService
         lastPokeAt: 0,
         lastActivityEmitAt: 0,
         activityFlush: null,
+        activityId: null,
       };
       this.live.set(agent.id, live);
     }
@@ -2429,23 +2432,31 @@ export class AgentsService
       kind: Exclude<ActivityKind, 'waiting'>;
       detail?: string;
       tokens?: number;
+      id?: string;
     } | null,
     quiet: boolean,
     at: number,
   ): void {
     const cur = live.status.activity;
+    const sameDetail =
+      (cur?.detail ?? undefined) === (hint?.detail ?? undefined);
+    // The same activity: the same kind about the same thing. A tool call
+    // is named by its id when the adapter gives one (its detail is
+    // refined as the call is composed, and that is not a new call).
     const sameActivity =
       (cur?.kind ?? null) === (hint?.kind ?? null) &&
-      (cur?.detail ?? undefined) === (hint?.detail ?? undefined);
+      (live.activityId && hint?.id ? live.activityId === hint.id : sameDetail);
     // A token count that grows within the same activity is still a change
     // worth announcing, but does not restart `since`: the activity itself
     // has not changed, only how much of it has been produced so far.
     if (
       sameActivity &&
+      sameDetail &&
       (cur?.tokens ?? undefined) === (hint?.tokens ?? undefined)
     )
       return;
     const since = sameActivity && cur ? cur.since : at;
+    live.activityId = hint?.id ?? null;
     live.status = {
       ...live.status,
       activity: hint

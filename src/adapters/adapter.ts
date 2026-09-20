@@ -196,6 +196,13 @@ export interface Ingest {
     kind: Exclude<ActivityKind, 'waiting'>;
     detail?: string;
     tokens?: number;
+    /**
+     * What the activity is about (a tool call's id), when the adapter
+     * reports the same one twice with different detail: first named by
+     * the tool as the call is composed, then by its input once complete.
+     * The service keeps `since` across the two.
+     */
+    id?: string;
   } | null;
   /**
    * The agent committed, when the vendor says so (Claude's

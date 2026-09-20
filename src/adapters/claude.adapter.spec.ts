@@ -144,18 +144,26 @@ describe('ClaudeAdapter', () => {
       'working',
       'idle',
     ]);
-    // the tool call is seen as a `tool` activity, naming the file read;
-    // the reply that follows it is `writing`
+    // the tool call is seen as a `tool` activity from the moment its block
+    // starts (named by the tool), then naming the file read once the call
+    // is complete; the reply that follows it is `writing`
     const toolActivityAt = activities.findIndex((a) => a?.kind === 'tool');
+    const namedActivityAt = activities.findIndex(
+      (a) => a?.kind === 'tool' && (a.detail ?? '').endsWith('example.txt'),
+    );
     const writingActivityAt = activities.findIndex(
       (a) => a?.kind === 'writing',
     );
     expect(toolActivityAt).toBeGreaterThanOrEqual(0);
-    expect(writingActivityAt).toBeGreaterThan(toolActivityAt);
     expect(activities[toolActivityAt]).toMatchObject({
       kind: 'tool',
-      detail: expect.stringMatching(/example\.txt$/),
+      detail: 'Read',
     });
+    expect(namedActivityAt).toBeGreaterThan(toolActivityAt);
+    expect(activities[namedActivityAt]?.id).toBe(
+      activities[toolActivityAt]?.id,
+    );
+    expect(writingActivityAt).toBeGreaterThan(namedActivityAt);
   });
 
   it('reports one running number: the settled total plus the stretch under way', () => {
@@ -226,6 +234,115 @@ describe('ClaudeAdapter', () => {
     ).toEqual({ activity: { kind: 'thinking', tokens: 72 } });
   });
 
+  it('counts a tool call as it is composed, named by the tool first, and never lets the number drop', () => {
+    const a = new ClaudeAdapter();
+    a.ingest(
+      rec('in', { type: 'user', message: { role: 'user', content: 'go' } }, 0),
+    );
+    a.ingest(rec('out', ev({ type: 'message_start' }), 1));
+    // the block starts: a tool activity at once, named by the tool, tied to the call's id
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'toolu_9', name: 'Bash' },
+          }),
+          2,
+        ),
+      ),
+    ).toEqual({
+      activity: { kind: 'tool', detail: 'Bash', id: 'toolu_9', tokens: 0 },
+    });
+    // its input streams: about a token per four characters, live
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: '{"command": "ls -la"}',
+            },
+          }),
+          3,
+        ),
+      ),
+    ).toEqual({
+      activity: { kind: 'tool', detail: 'Bash', id: 'toolu_9', tokens: 5 },
+    });
+    a.ingest(rec('out', ev({ type: 'content_block_stop', index: 0 }), 4));
+    // the complete call: the same activity (same id), now naming the command
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_9',
+                  name: 'Bash',
+                  input: { command: 'ls -la' },
+                },
+              ],
+            },
+          },
+          5,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'tool', detail: 'ls -la', id: 'toolu_9', tokens: 5 });
+    // the message settles under the estimate: the number holds rather than drops
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({ type: 'message_delta', usage: { output_tokens: 3 } }),
+          6,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'tool', detail: 'ls -la', id: 'toolu_9', tokens: 5 });
+    // and the next message's estimate rides on the settled 3, shown once it passes 5
+    a.ingest(
+      rec(
+        'out',
+        { type: 'system', subtype: 'status', status: 'requesting' },
+        7,
+      ),
+    );
+    a.ingest(rec('out', ev({ type: 'message_start' }), 8));
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+        9,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Twenty characters..' },
+          }),
+          10,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'writing', tokens: 8 }); // 3 settled + 19 chars ≈ 5
+  });
+
   it("sums output tokens across a turn's message_delta events and resets them per turn", () => {
     const a = new ClaudeAdapter();
     a.ingest(rec('out', ev({ type: 'message_start' }), 0));
@@ -247,12 +364,12 @@ describe('ClaudeAdapter', () => {
           ev({
             type: 'content_block_delta',
             index: 0,
-            delta: { type: 'text_delta', text: 'Hi' },
+            delta: { type: 'text_delta', text: 'Hi there' },
           }),
           2,
         ),
       ).activity,
-    ).toEqual({ kind: 'writing', tokens: 0 });
+    ).toEqual({ kind: 'writing', tokens: 2 }); // eight characters streamed: about two tokens, until the message says
     // the message's own count, from message_delta right after it stops streaming
     expect(
       a.ingest(
@@ -284,7 +401,7 @@ describe('ClaudeAdapter', () => {
           4,
         ),
       ).activity,
-    ).toEqual({ kind: 'tool', detail: 'ls', tokens: 12 });
+    ).toEqual({ kind: 'tool', detail: 'ls', id: 't1', tokens: 12 });
     expect(
       a.ingest(
         rec(
@@ -293,7 +410,9 @@ describe('ClaudeAdapter', () => {
           5,
         ),
       ),
-    ).toEqual({ activity: { kind: 'tool', detail: 'ls', tokens: 17 } });
+    ).toEqual({
+      activity: { kind: 'tool', detail: 'ls', id: 't1', tokens: 17 },
+    });
     // the turn ends; a fresh turn starts the count over
     a.ingest(rec('out', { type: 'result', usage: {}, subtype: 'success' }, 6));
     a.ingest(
@@ -327,7 +446,7 @@ describe('ClaudeAdapter', () => {
           10,
         ),
       ).activity,
-    ).toEqual({ kind: 'writing', tokens: 0 });
+    ).toEqual({ kind: 'writing', tokens: 2 }); // the new turn's own estimate, from zero
   });
 
   it("reports the thinking estimate live, and the turn's settled output otherwise", () => {
@@ -525,7 +644,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'tool', detail: 'npm test', tokens: 0 },
+      activity: { kind: 'tool', detail: 'npm test', id: 'toolu_1', tokens: 0 },
     });
     // a sub-agent's call, or one already finished: not what is on show
     expect(
