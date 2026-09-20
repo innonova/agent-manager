@@ -138,6 +138,16 @@ session exits. An agent is created with an optional `model` and
 and `-c model_reasoning_effort=`); the manager does not know which
 values are valid, the vendor rejects a bad one at start.
 
+What the headless stream does not carry: the thinking itself. Measured
+across the first day's sessions, every `thinking_delta` from Opus 5,
+Opus 4.8 and Sonnet 5 had an empty `thinking` string and every
+assistant thinking block zero characters, with only the signature and
+the `estimated_tokens` count; Fable 5.1 sent a few short summaries
+(247 characters over a long session), which are the thinking items the
+transcript shows. So `activity.tokens` during thinking is the whole of
+what there is to show, and a live thinking box is mostly empty by the
+vendor's choice, not the manager's (learnings #44).
+
 The status also carries `usage`, what the vendor last said about its
 account's limits through this agent: rolling windows (every window
 Claude's `rate_limit_event` carries: the 5-hour and 7-day ones, the
