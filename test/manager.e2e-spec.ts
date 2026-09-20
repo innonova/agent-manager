@@ -865,7 +865,7 @@ describe('agents', () => {
     await api.post(`/api/agents/${agent.id}/turn`, {
       text: 'please use a tool',
     });
-    // the fake agent sleeps 50ms between the tool call and its result, long
+    // the fake agent sleeps between the tool call and its result, long
     // enough to see the activity mid-flight
     await events.waitFor(
       (f) =>

@@ -130,6 +130,10 @@ async function turn(text) {
   }
   if (text.includes('tool')) {
     out({ type: 'thinking', text: 'I should look at the file first.' });
+    // Held long enough for each activity (thinking, then tool) to outlast
+    // the manager's one-announcement-per-second throttle on its own, so a
+    // client watching the socket sees both rather than only the last.
+    await sleep(1500);
     const id = `toolu_${turns}`;
     out({
       type: 'tool_use',
@@ -137,7 +141,7 @@ async function turn(text) {
       name: 'Read',
       input: { file_path: '/tmp/example.txt' },
     });
-    await sleep(50);
+    await sleep(1500);
     out({
       type: 'tool_result',
       id,
