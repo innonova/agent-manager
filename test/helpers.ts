@@ -103,6 +103,7 @@ export async function startManager(
       adminPassword: ADMIN_PASSWORD,
       uiDir: null,
       loginAttemptsPerMinute: 1000,
+      harnessFile: path.join(dataDir, 'harness.md'), // never the developer's own ~/.config file
       ...overrides,
     },
     { quiet: !process.env.TEST_VERBOSE },
@@ -150,6 +151,7 @@ export class Api {
   get = (p: string) => this.call('GET', p);
   post = (p: string, body?: unknown) => this.call('POST', p, body ?? {});
   patch = (p: string, body: unknown) => this.call('PATCH', p, body);
+  put = (p: string, body: unknown) => this.call('PUT', p, body);
   delete = (p: string) => this.call('DELETE', p);
 
   async login(name = 'admin', password = ADMIN_PASSWORD) {

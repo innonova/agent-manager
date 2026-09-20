@@ -260,7 +260,9 @@ project's "save and restart agents", or `am project restart`):
 
 The note as rendered at the last session start is kept on the agent
 (`harnessNote`), so the UI can show what the agent was told. A spoke
-renders its own notes from its own template.
+renders its own notes from its own template; `GET`/`PUT /api/harness`
+read and write the template per machine (the hub forwards by host
+name), which is how the UI edits it without a shell.
 
 ## Adapters
 
@@ -728,6 +730,8 @@ POST   /api/agents/:id/archive
 
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
+GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
+PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null removes it (back to the built-in one); `host` names a spoke to write there
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository

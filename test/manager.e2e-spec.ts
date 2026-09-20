@@ -521,6 +521,39 @@ describe('agents', () => {
     }
   }, 30000);
 
+  it('the harness template is read and written per host through the API', async () => {
+    const before = (await api.get('/api/harness')).body.hosts;
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ source: 'built-in' });
+    expect(before[0].template).toBe(before[0].builtIn);
+    const custom = await api.put('/api/harness', {
+      template: 'Custom note for {{agent}}.',
+    });
+    expect(custom.status).toBe(200);
+    expect(custom.body).toMatchObject({
+      source: 'custom',
+      template: 'Custom note for {{agent}}.',
+    });
+    expect(fs.readFileSync(custom.body.file, 'utf8')).toBe(
+      'Custom note for {{agent}}.',
+    );
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'noted');
+    expect(agent).toMatchObject({ harnessNote: 'Custom note for noted.' });
+    expect((await api.put('/api/harness', { template: '' })).body.source).toBe(
+      'off',
+    );
+    expect(
+      (await api.put('/api/harness', { template: null })).body.source,
+    ).toBe('built-in');
+    expect(fs.existsSync(custom.body.file)).toBe(false);
+    expect((await api.put('/api/harness', { template: 42 })).status).toBe(400);
+    expect(
+      (await api.put('/api/harness', { host: 'nowhere', template: 'x' }))
+        .status,
+    ).toBe(404);
+  });
+
   it('a restart starts the vendor spend over; the status carries the total across the sessions', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'spender');
