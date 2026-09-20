@@ -398,12 +398,15 @@ export class AuthService
         q.get('project') === scope.projectId
       );
     }
-    const run = /^\/api\/runs\/([^/]+)$/.exec(p);
+    const run = /^\/api\/runs\/([^/]+)(\/review)?$/.exec(p);
     if (run) {
       const row = this.db
         .prepare('SELECT project_id FROM runs WHERE id = ?')
         .get(decodeURIComponent(run[1]!)) as { project_id: string } | undefined;
-      return method === 'GET' && row?.project_id === scope.projectId;
+      if (row?.project_id !== scope.projectId) return false;
+      // reading a run of its project, and recording a review on one: the
+      // delegating agent is the usual reviewer
+      return method === 'GET' || (method === 'PUT' && run[2] === '/review');
     }
     const m = /^\/api\/agents\/([^/]+)(\/|$)/.exec(p);
     if (m) {

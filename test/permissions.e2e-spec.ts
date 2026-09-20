@@ -104,7 +104,9 @@ describe('background watchdog', () => {
         10000,
         mark,
       );
-      expect(poke.item.item.by).toBeUndefined(); // the manager asked, not a user
+      // the manager asked, not a person, and the transcript says so; the
+      // run log reads the same marker to keep a poke off a run's idle clock
+      expect(poke.item.item.by).toBe('manager');
       await ev.waitFor(
         (f) =>
           f.type === 'agent.state' &&

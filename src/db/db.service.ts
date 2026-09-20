@@ -116,7 +116,13 @@ CREATE TABLE IF NOT EXISTS runs (
   -- report the difference after a restart of the manager
   start_spend TEXT,
   report TEXT,
-  transcript_file TEXT
+  transcript_file TEXT,
+  -- how the reviewer judged the work, and when sent back, whose gap it was
+  review_outcome TEXT,
+  review_cause TEXT,
+  review_note TEXT,
+  reviewed_by TEXT,
+  reviewed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_project ON runs (project_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS runs_open ON runs (agent_id) WHERE ended_at IS NULL;
@@ -152,6 +158,19 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec('ALTER TABLE agents ADD COLUMN harness_note TEXT');
     if (!agentCols.includes('created_by'))
       this.db.exec('ALTER TABLE agents ADD COLUMN created_by TEXT');
+    // The review of a run, added after the runs table shipped.
+    const runCols = (
+      this.db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]
+    ).map((c) => c.name);
+    for (const [name, type] of [
+      ['review_outcome', 'TEXT'],
+      ['review_cause', 'TEXT'],
+      ['review_note', 'TEXT'],
+      ['reviewed_by', 'TEXT'],
+      ['reviewed_at', 'INTEGER'],
+    ])
+      if (!runCols.includes(name!))
+        this.db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${type}`);
     if (!agentCols.includes('permissions'))
       this.db.exec(
         "ALTER TABLE agents ADD COLUMN permissions TEXT NOT NULL DEFAULT 'bypass'",

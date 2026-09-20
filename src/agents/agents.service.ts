@@ -223,6 +223,12 @@ export interface AgentEvents {
 }
 
 export const LABEL_PREFIX = 'agent-manager:';
+/**
+ * The author of a turn the manager sent by itself (the background poke).
+ * Recorded like any other author, so the transcript says who asked and a
+ * replay keeps it; it is not a user, so it never joins `users`.
+ */
+export const MANAGER_AUTHOR = 'manager';
 /** How long a command waits for a resync in progress before giving up. */
 const SYNC_WAIT_MS = 10_000;
 const STARTING_GRACE_MS = 5000;
@@ -341,7 +347,13 @@ export class AgentsService
    * turn asking it to check on them, at most once per interval.
    */
   private startWatchdog(): void {
-    this.watchdog = setInterval(() => void this.pokeStalled(), 60_000);
+    // A minute is the right cadence for the half-hour default; a test that
+    // shortens the interval needs the check to keep up with it.
+    const every = Math.max(
+      1000,
+      Math.min(60_000, (this.config.backgroundPokeMs || 60_000) / 2),
+    );
+    this.watchdog = setInterval(() => void this.pokeStalled(), every);
     this.watchdog.unref();
   }
 
@@ -362,6 +374,7 @@ export class AgentsService
         await this.turn(
           id,
           `You have had ${jobs} pending for ${minutes} minutes with no news. Check whether they are still running; if one has finished or died, act on it or report it. If all is well and still running, say so briefly.`,
+          MANAGER_AUTHOR, // the transcript says the manager asked, not a person
         );
       } catch (err) {
         this.logger.warn(
@@ -1827,22 +1840,29 @@ export class AgentsService
     seq: number,
     item: Extract<Item, { kind: 'user' }>,
   ): void {
-    let row = this.db
-      .prepare(
-        'SELECT u.name FROM turn_authors a JOIN users u ON u.id = a.user_id WHERE a.daemon_session_id = ? AND a.seq = ?',
-      )
-      .get(sl.id, seq) as { name: string } | undefined;
-    if (!row && live.pendingAuthors.length) {
-      const userId = live.pendingAuthors.shift()!;
+    let author = (
+      this.db
+        .prepare(
+          'SELECT user_id FROM turn_authors WHERE daemon_session_id = ? AND seq = ?',
+        )
+        .get(sl.id, seq) as { user_id: string } | undefined
+    )?.user_id;
+    if (!author && live.pendingAuthors.length) {
+      author = live.pendingAuthors.shift()!;
       this.db
         .prepare(
           'INSERT OR IGNORE INTO turn_authors (daemon_session_id, seq, user_id) VALUES (?, ?, ?)',
         )
-        .run(sl.id, seq, userId);
-      row = this.db
-        .prepare('SELECT name FROM users WHERE id = ?')
-        .get(userId) as { name: string } | undefined;
+        .run(sl.id, seq, author);
     }
+    if (!author) return;
+    if (author === MANAGER_AUTHOR) {
+      item.by = MANAGER_AUTHOR; // the manager's own turn; there is no such user
+      return;
+    }
+    const row = this.db
+      .prepare('SELECT name FROM users WHERE id = ?')
+      .get(author) as { name: string } | undefined;
     if (row) item.by = row.name;
   }
 

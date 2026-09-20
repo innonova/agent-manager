@@ -1,8 +1,10 @@
 import {
+  Body,
   Controller,
   Get,
   HttpException,
   Param,
+  Put,
   Query,
   Req,
 } from '@nestjs/common';
@@ -99,6 +101,38 @@ export class RunsController {
         404,
       );
     return { run, transcript: await this.runs.transcript(id) };
+  }
+
+  /**
+   * The reviewer's verdict on the run: accepted, or sent back with a
+   * cause. Written by whoever reviewed the commit range — usually the
+   * agent that delegated the work, which is why an agent's own token
+   * reaches this route for a run of its project.
+   */
+  @Put(':id/review')
+  async review(
+    @Req() req: Request & { user?: User },
+    @Param('id') id: string,
+    @Body() body: { outcome?: unknown; cause?: unknown; note?: unknown },
+  ): Promise<{ run: Run }> {
+    const by = req.user?.name ?? 'hub';
+    const remote = this.hub.split(id);
+    if (remote) {
+      const r = await this.hub.call<{ run: Run }>(
+        remote.spoke,
+        'PUT',
+        `/api/runs/${encodeURIComponent(remote.id)}/review`,
+        by,
+        body,
+      );
+      if (r.status >= 400)
+        throw new HttpException(
+          r.body ?? { statusCode: r.status, message: 'spoke refused' },
+          r.status,
+        );
+      return { run: prefix(r.body.run, remote.spoke.name) };
+    }
+    return { run: this.runs.review(id, body ?? {}, by) };
   }
 }
 

@@ -18,6 +18,8 @@ let repo: string;
 let projectId: string;
 /** A single-path project names its repository after the directory. */
 let repoName: string;
+/** The closed run of the first test, reviewed by the second. */
+let closedRunId = '';
 
 const git = (...args: string[]) =>
   execFileSync(
@@ -53,6 +55,21 @@ async function until<T>(
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await sleep(200);
   }
+}
+
+/** An agent's own token, which it reads from its environment and says out loud. */
+async function agentToken(project: string, name: string): Promise<string> {
+  const agent = (await api.post(`/api/projects/${project}/agents`, { name }))
+    .body.agent as { id: string };
+  await api.post(`/api/agents/${agent.id}/turn`, { text: 'token please' });
+  return await until('the agent to say its token', async () => {
+    const { items } = (await api.get(`/api/agents/${agent.id}/items`)).body;
+    const text = items
+      .filter((i: any) => i.item.kind === 'text')
+      .map((i: any) => i.item.text)
+      .join('\n');
+    return /token ([0-9a-f]{64})/.exec(text)?.[1] ?? null;
+  });
 }
 
 const runsOf = async (slug: string) =>
@@ -205,10 +222,97 @@ describe('run log', () => {
       ),
     ).toBe(true);
 
+    closedRunId = done.id;
     // and it outlives the agent, transcript and all
     expect((await api.delete(`/api/agents/${agent.id}`)).status).toBe(200);
     const after = await api.get(`/api/runs/${done.id}`);
     expect(after.body.run).toMatchObject({ agentName: 'worker' });
     expect(after.body.transcript.length).toBe(one.body.transcript.length);
+  }, 60000);
+
+  it('records the reviewer\u2019s verdict, with a cause when sent back', async () => {
+    expect(closedRunId).not.toBe(''); // the run of the test above
+    const url = `/api/runs/${closedRunId}/review`;
+    // a verdict without a cause is fine when the work was accepted
+    const accepted = await api.put(url, { outcome: 'accepted' });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.run.review).toMatchObject({
+      outcome: 'accepted',
+      cause: null,
+      by: 'admin',
+    });
+    expect(accepted.body.run.review.at).toBeGreaterThan(0);
+
+    // sending back needs one: which gap it was is the point of the log
+    const noCause = await api.put(url, { outcome: 'sent-back' });
+    expect(noCause.status).toBe(400);
+    expect(noCause.body.message).toContain('cause');
+    expect((await api.put(url, { outcome: 'maybe' })).status).toBe(400);
+    expect(
+      (await api.put(url, { outcome: 'sent-back', cause: 'weather' })).status,
+    ).toBe(400);
+    expect(
+      (await api.put(url, { outcome: 'accepted', cause: 'model' })).status,
+    ).toBe(400);
+    expect(
+      (await api.put(url, { outcome: 'accepted', note: 'x'.repeat(9000) }))
+        .status,
+    ).toBe(400);
+
+    // a verdict replaces the one before it
+    const back = await api.put(url, {
+      outcome: 'sent-back',
+      cause: 'doc',
+      note: 'The poller\u2019s first-sight rule was in no document.',
+    });
+    expect(back.status).toBe(200);
+    expect(back.body.run.review).toMatchObject({
+      outcome: 'sent-back',
+      cause: 'doc',
+      note: 'The poller\u2019s first-sight rule was in no document.',
+    });
+    expect(
+      (await api.get(`/api/runs/${closedRunId}`)).body.run.review,
+    ).toMatchObject({ outcome: 'sent-back', cause: 'doc' });
+    expect(
+      (await api.put(`/api/runs/nosuch/review`, { outcome: 'accepted' }))
+        .status,
+    ).toBe(404);
+  }, 60000);
+
+  it('lets the agent that delegated the work review it, and no one else\u2019s', async () => {
+    const token = await agentToken(projectId, 'delegator');
+    const own = new Api(m.url);
+    own.bearer = token;
+    const mine = await own.put(`/api/runs/${closedRunId}/review`, {
+      outcome: 'sent-back',
+      cause: 'brief',
+      note: 'The brief left the end condition open.',
+    });
+    expect(mine.status).toBe(200);
+    expect(mine.body.run.review).toMatchObject({
+      outcome: 'sent-back',
+      cause: 'brief',
+      by: 'agent-delegator', // an agent reviewing is visibly an agent
+    });
+
+    // an agent of another project has no business with this run
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'am-runs-other-'));
+    const p2 = (
+      await api.post('/api/projects', {
+        name: 'other',
+        path: other,
+        defaultProfile: 'fake',
+      })
+    ).body.project;
+    const stranger = new Api(m.url);
+    stranger.bearer = await agentToken(p2.id, 'stranger');
+    expect(
+      (
+        await stranger.put(`/api/runs/${closedRunId}/review`, {
+          outcome: 'accepted',
+        })
+      ).status,
+    ).toBe(403);
   }, 60000);
 });

@@ -788,10 +788,29 @@ belong to nobody are worse than none.
 Three safety nets close a run that never sees its feature move: the
 agent exits, the agent is forgotten (a hook that runs before its
 transcript is deleted, so the export still has something to read), or
-nothing happens for `AGENT_MANAGER_RUN_IDLE_MS` and the run is closed
-as `abandoned`. `outcome` says which of the four it was. A run closed
-because the agent's process exited does not reopen when the agent
-resumes: the next round of the feature is the next run.
+the agent does nothing of its own for `AGENT_MANAGER_RUN_IDLE_MS` and
+the run is closed as `abandoned`. `outcome` says which of the four it
+was. A run closed because the agent's process exited does not reopen
+when the agent resumes: the next round of the feature is the next run.
+
+What counts as the agent doing something of its own is the whole of the
+idle rule, because the obvious reading of it is wrong. The manager
+pokes an idle agent with background jobs pending every
+`AGENT_MANAGER_BACKGROUND_POKE_MS`, and the agent answers; read as
+plain activity, that keeps a run open for as long as the jobs stay
+pending, which is forever. So the idle clock reads the agent's
+transcript rather than its last activity: its text, its thinking, its
+tool calls and their results, an error, a permission it asked for, and
+the end of a turn it took, all count — while a message anyone sent it,
+the manager's own lines about sessions beginning and ending, and
+everything inside a turn the manager's poke opened do not. The poke is
+recognisable because it is recorded as an author like any other, under
+the reserved id `manager` (there is no such user; the transcript simply
+says the manager asked), so a replay keeps the distinction. With
+nothing of its own since the run began, the run's own start is the
+clock. The clock does not run at all while the agent is `working` — it
+is not idle — or `waiting-permission`, where it is blocked on a human
+rather than idle, and abandoning it would charge the wait to the agent.
 
 What a run records, in the `runs` table (no foreign keys, the agent's
 identity copied in: the log is the point after the agent and even the
@@ -816,15 +835,27 @@ project are gone) and one NDJSON file per run under `<dataDir>/runs/`:
   run was open — a person talking to it meanwhile is in there too, and
   that is the honest record rather than a filtered one;
 - the report the agent appended to the feature (its last `## Report`
-  section), as text.
+  section), as text;
+- the review: how whoever looked at the work judged it. `accepted`, or
+  `sent-back` with a cause of `model` (it did the work wrong), `brief`
+  (the brief was wrong or thin) or `doc` (a fact the repository's docs
+  should have carried was missing), plus a free-text note and who
+  reviewed. The cause is the point: without it a briefing gap is
+  charged to the model, and the models file, which is written from this
+  log, confirms itself (`method.md`, Closing the loop). A later review
+  replaces an earlier one — a verdict can be corrected — and re-stamps
+  the time.
 
 Run files are kept indefinitely. They are small, and outliving the
 agent is the whole point; nothing prunes them.
 
-The routes are a human's, like the harness and models files: an agent's
-token is refused them. There is no UI page in this round — a block on
-the projects page can follow once we know what we want to look at — and
-`am runs` belongs to `agent-manager-cli`.
+The reviewer is usually the agent that delegated the work, so an
+agent's token reaches the run log of its own project: the list filtered
+to it, a run of it, and `PUT` of a review on one. Nothing else — the
+unfiltered list is a human's. There is no UI page in this round — a
+block on the projects page can follow once we know what we want to look
+at — and `am runs`, with its `review` verb, belongs to
+`agent-manager-cli`.
 
 ## Daemon integration
 
@@ -937,6 +968,7 @@ GET    /api/models                                              -> { hosts: [...
 PUT    /api/models                  { host?, template: string | null } -> the host's row; as /api/harness, capped at 8 KB because the text goes into every agent's note
 GET    /api/runs?project=&feature=&model=&since=&limit=         -> { runs: [...] }; the run log, newest first (see Runs); `project` may name a spoke's project (`<spoke>:<id>`), which forwards and prefixes the ids it returns
 GET    /api/runs/:id                                            -> { run, transcript: [StoredItem] }; the run and the transcript exported when it closed (empty when there is none); a prefixed id forwards to its spoke
+PUT    /api/runs/:id/review         { outcome: accepted | sent-back, cause?: model | brief | doc, note? } -> { run }; the reviewer's verdict (a cause is required when sending back and refused otherwise, note at most 8 KB); replaces an earlier verdict; an agent's token may review a run of its own project; a prefixed id forwards to its spoke
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
@@ -1030,8 +1062,9 @@ swept once a minute.
   environment; only its hash is kept, in `agent_tokens`), so `am` in the
   process is logged in as a user named `agent-<name>`. The token is
   scoped to the agent's project: its agents, features, files and
-  profiles, the project list, and its project's run log; not users, the
-  harness template,
+  profiles, the project list, and its project's run log, including the
+  review of a run of it (the delegating agent is the usual reviewer);
+  not users, the harness template,
   other projects, or the project's own settings and bulk restart. A
   guardrail against a helper wandering, not a security boundary (the
   process runs as the manager's own user). Replaced at each session
@@ -1064,7 +1097,7 @@ swept once a minute.
 | `AGENT_MANAGER_SESSION_TTL_MS` | `2592000000` (30 days) | how long a login (browser cookie or `am login`) lasts |
 | `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
 | `AGENT_MANAGER_BACKGROUND_POKE_MS` | `1800000` | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables |
-| `AGENT_MANAGER_RUN_IDLE_MS` | `7200000` (2 h) | an open run whose agent has done nothing for this long is closed as `abandoned`; 0 disables |
+| `AGENT_MANAGER_RUN_IDLE_MS` | `7200000` (2 h) | an open run whose agent has done nothing **of its own** for this long is closed as `abandoned` (see Runs: the manager's own poke does not count, and the clock stops while the agent works or waits on a permission); 0 disables |
 | `AGENT_MANAGER_RESIDENT_ITEMS` | `500` | transcript items kept in memory per agent beyond what the transcript cache holds |
 | `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |

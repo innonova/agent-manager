@@ -1,4 +1,11 @@
-import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { OnModuleInit } from '@nestjs/common';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -12,10 +19,24 @@ import { lastReport, readFeature } from '../features/feature-file.js';
 import type { FeatureStatus } from '../features/feature-file.js';
 import { ProjectsService, type Repo } from '../projects/projects.service.js';
 import type { Project } from '../projects/projects.service.js';
+import { lastOwnActivity } from './run-activity.js';
 
 /** How a run ended. `feature` is the ordinary one: the feature left `in-progress`. */
 export type RunOutcome =
   'feature' | 'agent-exited' | 'agent-removed' | 'abandoned';
+
+/** How the work was judged, and when sent back, whose gap it was. */
+export type ReviewOutcome = 'accepted' | 'sent-back';
+export type ReviewCause = 'model' | 'brief' | 'doc';
+
+export interface RunReview {
+  outcome: ReviewOutcome;
+  /** Only when sent back: the model did it wrong, the brief was thin, or a doc did not carry a fact it should have. */
+  cause: ReviewCause | null;
+  note: string | null;
+  by: string | null;
+  at: number;
+}
 
 /** What the vendor says a stretch of work cost; every field is absent when it said nothing. */
 export interface RunSpend {
@@ -50,6 +71,8 @@ export interface Run extends RunSpend {
   itemTo: number | null;
   /** The report the agent appended to the feature, as text. */
   report: string | null;
+  /** How the reviewer judged it; null until someone says. */
+  review: RunReview | null;
 }
 
 interface RunRow {
@@ -80,10 +103,19 @@ interface RunRow {
   report: string | null;
   transcript_file: string | null;
   start_spend: string | null;
+  review_outcome: string | null;
+  review_cause: string | null;
+  review_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: number | null;
 }
 
-/** How often open runs are checked against the idle timeout. */
+/** How often open runs are checked against the idle timeout, at most. */
 const SWEEP_MS = 60_000;
+/** How much of an agent's transcript the idle check reads. */
+const TAIL = 200;
+/** A review note is a sentence or two, not a document. */
+const MAX_NOTE_BYTES = 8 * 1024;
 
 /**
  * The log of feature runs: one agent's work on one feature, kept so that
@@ -127,11 +159,17 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(`run close after exit: ${err.message}`),
       );
     });
+    // A minute suits the two-hour default; a shorter timeout (a test's)
+    // needs the sweep to keep up with it.
+    const every = Math.max(
+      1000,
+      Math.min(SWEEP_MS, (this.config.runIdleMs || SWEEP_MS) / 4),
+    );
     this.timer = setInterval(() => {
       void this.sweep().catch((err: Error) =>
         this.logger.warn(`run sweep failed: ${err.message}`),
       );
-    }, SWEEP_MS);
+    }, every);
     this.timer.unref();
     // A run left open by a restart belongs to an agent that may be gone.
     void this.sweep().catch(() => undefined);
@@ -458,19 +496,91 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
       .prepare('SELECT * FROM runs WHERE ended_at IS NULL')
       .all() as RunRow[];
     for (const row of rows) {
-      let last: number;
+      let state: string;
       try {
-        last = this.agents.status(row.agent_id).lastActivityAt;
+        state = this.agents.status(row.agent_id).state;
       } catch {
         await this.close(row, 'agent-removed', null);
         continue;
       }
-      if (
-        this.config.runIdleMs > 0 &&
-        Date.now() - last > this.config.runIdleMs
-      )
+      if (!this.config.runIdleMs) continue;
+      // An agent mid-turn is not idle, and one waiting on a permission is
+      // blocked on a human rather than idle: the clock runs when it is.
+      if (state === 'working' || state === 'waiting-permission') continue;
+      const since = await this.ownActivitySince(row);
+      if (Date.now() - since > this.config.runIdleMs)
         await this.close(row, 'abandoned', null);
     }
+  }
+
+  /**
+   * When the run last saw the agent do something of its own. The
+   * manager's own poke of a stalled agent, and the agent's answer to it,
+   * are not that (see `lastOwnActivity`), or a run of an agent with a
+   * background job pending would never grow old. With nothing of its own
+   * since it began, the run's own start is the clock.
+   */
+  private async ownActivitySince(row: RunRow): Promise<number> {
+    try {
+      const { items } = await this.agents.items(row.agent_id, { tail: TAIL });
+      return (
+        lastOwnActivity(items.filter((i) => i.index >= row.item_from)) ??
+        row.started_at
+      );
+    } catch {
+      return row.started_at;
+    }
+  }
+
+  // ---- the review -----------------------------------------------------------
+
+  /**
+   * How the work was judged, by whoever reviewed the commit range: the
+   * column a comparison of models needs most, since cost and output say
+   * nothing about whether the work was any good. A second review replaces
+   * the first (a verdict can be corrected) and re-stamps the time.
+   */
+  review(
+    id: string,
+    input: { outcome?: unknown; cause?: unknown; note?: unknown },
+    by: string,
+  ): Run {
+    const run = this.get(id);
+    if (!run) throw new NotFoundException(`no run ${id}`);
+    const outcome = input.outcome;
+    if (outcome !== 'accepted' && outcome !== 'sent-back')
+      throw new BadRequestException(
+        '"outcome" must be "accepted" or "sent-back"',
+      );
+    let cause: ReviewCause | null = null;
+    if (outcome === 'sent-back') {
+      if (
+        input.cause !== 'model' &&
+        input.cause !== 'brief' &&
+        input.cause !== 'doc'
+      )
+        throw new BadRequestException(
+          'sending back needs a "cause": "model" (it did the work wrong), "brief" (the brief was wrong or thin) or "doc" (a fact the repository\u2019s docs should have carried was missing)',
+        );
+      cause = input.cause;
+    } else if (input.cause !== undefined && input.cause !== null)
+      throw new BadRequestException('"cause" belongs to a run sent back');
+    if (
+      input.note !== undefined &&
+      input.note !== null &&
+      typeof input.note !== 'string'
+    )
+      throw new BadRequestException('"note" must be a string');
+    const note = typeof input.note === 'string' ? input.note.trim() : '';
+    if (Buffer.byteLength(note) > MAX_NOTE_BYTES)
+      throw new BadRequestException('"note" is over 8 KB');
+    this.db
+      .prepare(
+        `UPDATE runs SET review_outcome = ?, review_cause = ?, review_note = ?,
+           reviewed_by = ?, reviewed_at = ? WHERE id = ?`,
+      )
+      .run(outcome, cause, note || null, by, Date.now(), id);
+    return this.get(id)!;
   }
 }
 
@@ -525,5 +635,14 @@ function toRun(r: RunRow): Run {
     itemFrom: r.item_from,
     itemTo: r.item_to,
     report: r.report,
+    review: r.review_outcome
+      ? {
+          outcome: r.review_outcome as ReviewOutcome,
+          cause: (r.review_cause as ReviewCause | null) ?? null,
+          note: r.review_note,
+          by: r.reviewed_by,
+          at: r.reviewed_at ?? 0,
+        }
+      : null,
   };
 }
