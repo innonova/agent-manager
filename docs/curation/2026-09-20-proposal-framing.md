@@ -1,117 +1,125 @@
-# Framing work: how to write a feature and a brief (proposal)
+# Framing work: features, briefs and orientation (proposal, second draft)
 
-The companion to the method. The method is the steps; this is what is
-said at each of them. Drafted 2026-09-20 from the two curation readings
-and the first day's log; the evidence stands beside each rule, because
-this is the document the log argues with. Nothing here is applied until
-a person says so.
+The companion to the method: the method is the steps, this is what is
+said at each of them. Written for a colleague who did not sit in the
+conversation, which is the one thing an agent started here lacks. The
+evidence stands beside each rule because this is the document the log
+argues with.
 
-## One rule under all of it
+## The rule under all of it
 
-Say the purpose. What should the reader of the result be able to see,
-do or conclude? Every failed brief on the first day was a mechanism
-without its purpose: "sum the output tokens from message_delta" without
-"so that the count moves while the model thinks"; "reserve the height
-while a turn runs" without "the reader must not lose their place". The
-helper implemented the sentence and the sentence was wrong (learnings
-#4, #5, #19, #25).
+Say the purpose. What should the reader of the result see, do or
+conclude? Every failed brief on the first day was a mechanism without
+its purpose: "sum the output tokens" without "so the count moves while
+it thinks"; "reserve the height" without "the reader must not lose
+their place". The agent did the sentence, and the sentence was wrong
+(learnings #4, #5, #19, #25). An agent that knows the purpose can
+correct the sentence; one that only has the sentence cannot.
 
-## Three kinds of sentence, kept apart
+## Where intent lives
 
-A feature or a brief contains three kinds of statement, and the helper
-has to know which is which:
+An agent arriving cold gets the intent of the project from the docs
+and the intent of the work from the feature. Both have to be good
+enough to carry it, and the day showed where they were not.
 
-- **Requirements**: what must be true of the result. The shape of it, a
-  field's type, a table's columns, a screen's behaviour in a named
-  state. These are the map; the run log's column list helped, the
-  measurements of the overlay helped (learnings #3).
-- **Facts**: what is known and verified, with where it was found. A
-  measured layout, the record types in a vendor's stream, a poller's
-  behaviour. A fact that belongs to the repository goes into its docs
-  as well, or instead (learnings #25).
-- **Suggestions**: a route the writer has in mind, offered for the
-  helper to challenge. A route stated as a requirement caps the result
-  at the writer's foresight, and the writer's foresight had a hole
-  each time it was tried (#4, #5, the overlay covering the newest row).
+- **The project's purpose** is the design doc's first sections and,
+  once written, the person's own statement of what this system is for
+  and what a good result looks like. That statement is the first thing
+  a new agent reads. It does not exist yet.
+- **Facts an agent needed and did not have** go into the docs of the
+  repository they belong to, at once. Two poller facts and the location
+  of the daemon's logs cost rounds before they were written down
+  (learnings #2, #25). A fact that stays in a brief is lost with it.
+- **Decisions** go into the design doc when they are made, not into a
+  report that nobody reopens.
 
-Prescription is right when the writer already holds the complete
-solution, the change is mechanical, and the helper is a model that
-does not fill gaps; that is a small share of work and often a sign the
-writer should do it in the session instead.
+## Three kinds of sentence
+
+A feature or a brief says three kinds of thing, and the agent has to
+know which is which:
+
+- **Requirements**: what must be true of the result. The shape of it:
+  a field's type, a table's columns, a screen's behaviour in a named
+  state. These help; the run log's column list and the measured layout
+  were the two best things in any brief (learnings #3).
+- **Facts**: what is known and verified, and where it was found.
+- **Suggestions**: a route the writer has in mind, offered to be
+  challenged. A route stated as a requirement caps the result at the
+  writer's foresight, which had a hole each time (#4, #5, the covered
+  row). Prescribe a route only when you hold the whole solution and
+  want it typed, and then consider typing it yourself.
 
 ## Writing a feature
 
-A feature file is the durable form of a brief: it is read by whoever
-picks the work up later, a person included, so it carries its own
-context.
+The durable form of a brief, read later by people and agents who have
+nothing else.
 
-- **Title and first paragraph**: the purpose and the observable result,
-  before any mechanism.
-- **Requirements**, as above, including what the result must not do.
-- **What will be hard to verify**, named, and how it should be
-  verified. This is where the hours go (learnings #17, #28); saying it
-  in the feature lets the plan turn start from it.
-- **Facts and pointers**: where the relevant code, docs and patterns
-  are; which sibling repositories the work touches and who owns those
-  parts.
-- **The gate**: worked alone or as part of a batch, and who owns
-  acceptance.
-- **History**: the Reports and Responses that follow are the feature's
-  memory. A Response is a brief for the next round and follows every
-  rule here; the two costliest rounds on record were Responses that
-  named a route (#4, #5). Name the latest agreed scope when a Response
-  changes the original.
-- **Not in the file**: the model or effort it should run on (that is
-  the delegating agent's choice at the time), and anything that only
-  the current conversation explains. If the feature cannot be written
-  without that, it is not ready to delegate.
+- Purpose and observable result first, before any mechanism.
+- Requirements, including what the result must not do.
+- What will be hard to verify, and how. Naming it here lets the plan
+  start from it; the hours went there every time (#17, #28).
+- Facts and pointers: the code, docs and patterns that matter, across
+  every repository the outcome touches. The feature names the outcome,
+  never a repository as its boundary.
+- Roughly what the work is worth, so an agent past it stops and says
+  so rather than grinds. No brief on the first day said this and no
+  agent stopped.
+- Its history: the Reports and Responses that follow are its memory. A
+  Response is a brief for the next round and is written like one; the
+  two costliest rounds on record were Responses that prescribed a
+  route (#4, #5).
+- Not in the file: the model it should run on, and anything only the
+  conversation explains. If it cannot be written without that, it is
+  not ready to hand over.
 
 ## Writing a brief
 
-A brief is the turn that gives a helper a feature, or answers its plan.
-It is short, because the feature carries the substance.
+The turn that hands a feature over or answers a plan. Short, because
+the feature carries the substance; warm, because it is to a colleague.
 
-- **Which feature, and what to read first**: the file, its history,
-  the repository's docs, and anything the delegating agent changed in
-  the repository since the helper's last turn (learnings #18).
-- **The purpose in one sentence**, even though the feature has it:
-  the helper reads the brief last.
-- **The three scopes, every time**: act within the feature; look
-  anywhere; say anything. A helper told only the first collapses the
-  other two into it (#6).
-- **What the round is worth**: an order of magnitude of time or cost,
-  so a helper past it stops and reports rather than grinds. No brief
-  on the first day said this, and no helper stopped.
-- **The gate and the owner**: cheap checks or the full suite, commit or
-  not, who pushes and deploys. Ambiguity here produced repeated full
-  runs for no new evidence (#29).
-- **For UI work, the state to look at**: which transcript length,
-  which activity, which viewport, and what to measure. A helper's own
-  screenshot proved what it showed and not what mattered because the
-  brief did not say (#23).
-- **Answers to a plan** are substantive or they stop coming: each point
-  gets a yes, a no with the reason, or a decision recorded where the
-  next agent will read it (the design doc, not the report).
+- Which feature, what to read first, and what changed in the
+  repositories since the agent's last turn (#18).
+- The purpose in one sentence, even though the feature has it.
+- That the agent works under the same rule as everyone here: do what
+  the work needs, fix what you find in your own work, say what you did,
+  ask first for the short list. Not a scope.
+- What the round is worth, and the gate: alone or in a batch, who
+  pushes and deploys.
+- For UI work, the state to look at and what to measure; an agent's
+  own screenshot showed what it showed and not what mattered because
+  nobody said (#23).
+- Answers to a plan are on the merits, every point. An agent told "as
+  specified" once stops pushing back.
+
+## Orientation
+
+The first turn, and the one that decides how much context the agent
+has for everything after. It asks for a reading of the project's
+purpose, the repository's `CLAUDE.md`, the design doc and `features/`,
+and for an answer in two parts: what it understood, and what it would
+question. The second part is read as carefully as the first; on the
+first day it changed a size cap, a hub decision and an empty-file rule
+before any code existed, and it is where an agent tells you what the
+docs failed to carry.
 
 ## What not to write
 
-- Imperatives about how to work ("never", "always", "do not"), when
-  the fact behind them would do. The harness note learned this first
-  (#13); briefs have the same failure.
-- A route through the code or the vendor's protocol as a requirement.
-- Praise or blame of the helper's model. It reads the brief, and the
-  cause of a failure is recorded on the review, with the reason, not in
-  the next brief.
-- A relayed note from the person, verbatim. Turn it into purpose,
-  requirements and facts first; the relayed version got the four
-  sentences it contained and nothing between them (#3).
+- Imperatives about how to work, where the fact behind them would do.
+  The harness note learned this first (#13).
+- A route as a requirement.
+- Praise or blame of a model. The cause of a failure is recorded on the
+  review with its reason, not in the next brief.
+- A person's notes relayed verbatim. Turned into purpose, requirements
+  and facts first; relayed, they got the four sentences they contained
+  and nothing between them (#3).
+- "Act only within". The first draft said it, and it was the authority
+  gradient written down.
 
-## Reading the answers
+## Reading what comes back
 
-- A report's "noticed, left alone" part is read as carefully as its
-  first part; it is where the next round's first item has come from
-  every time so far.
-- A plan's pushback is answered on its merits. A helper that is told
-  "as specified" once stops pushing back.
-- The summary the delegating agent writes of a helper's answer is not
-  the answer. The raw text is kept beside it, and read (#6).
+- The report's last part, what was noticed, is where the next round's
+  first item has come from every time.
+- The summary a delegating agent writes of an answer is not the answer.
+  The raw text stays beside it and is read (#6).
+- A defect an agent found in its own work and fixed on its own
+  judgement is the method working, not a scope breach.
