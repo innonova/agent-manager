@@ -106,6 +106,7 @@ export async function startManager(
       harnessFile: path.join(dataDir, 'harness.md'), // never the developer's own ~/.config file
       modelsFile: path.join(dataDir, 'models.md'), // nor their models file
       methodFile: path.join(dataDir, 'method.md'), // nor their method
+      framingFile: path.join(dataDir, 'framing.md'), // nor their framing
       spokesFile: path.join(dataDir, 'spokes.json'), // nor their spokes: a test manager must not front for a real machine
       ...overrides,
     },

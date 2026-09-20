@@ -82,3 +82,29 @@ export class MethodController {
     return this.notes.save('method', req.user?.name ?? 'hub', body);
   }
 }
+
+/**
+ * The framing: how to write the feature and the brief the method's steps
+ * hand around. Shipped, seeded and edited exactly like the method, and
+ * read by an agent with `am framing` — which is why an agent's token
+ * reaches this route too, and why it may not write it.
+ */
+@Controller('api/framing')
+export class FramingController {
+  constructor(private readonly notes: NoteFileService) {}
+
+  @Get()
+  list(
+    @Req() req: Request & { user?: User },
+  ): Promise<{ hosts: NoteFileRow[] }> {
+    return this.notes.list('framing', req.user?.name ?? 'hub');
+  }
+
+  @Put()
+  save(
+    @Req() req: Request & { user?: User },
+    @Body() body: { host?: unknown; template?: unknown },
+  ): Promise<NoteFileRow> {
+    return this.notes.save('framing', req.user?.name ?? 'hub', body);
+  }
+}

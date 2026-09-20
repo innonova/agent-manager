@@ -58,8 +58,8 @@ describe('harness note', () => {
       path.resolve(import.meta.dirname, '..', '..', 'method.md'),
       'utf8',
     );
-    expect(method).toContain('## The gate');
-    expect(note).not.toContain('## The gate');
+    expect(method).toContain('## Bringing an agent in');
+    expect(note).not.toContain('## Bringing an agent in');
     expect(note.length).toBeLessThan(method.length);
   });
 

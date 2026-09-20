@@ -151,13 +151,20 @@ describe('the learnings log', () => {
     expect(mine.body.entry.by).toBe('agent-learner');
     expect((await own.get('/api/learnings')).status).toBe(200);
 
-    // the method it may read; rewriting it is a person's
+    // the method and its framing it may read; rewriting them is a person's
     expect((await own.get('/api/method')).status).toBe(200);
     expect((await own.get('/api/method')).body.hosts[0].template).toContain(
-      'The gate',
+      'Bringing an agent in',
     );
     expect(
       (await own.put('/api/method', { template: 'mine now' })).status,
+    ).toBe(403);
+    expect((await own.get('/api/framing')).status).toBe(200);
+    expect((await own.get('/api/framing')).body.hosts[0].template).toContain(
+      'Writing a feature',
+    );
+    expect(
+      (await own.put('/api/framing', { template: 'mine now' })).status,
     ).toBe(403);
     // and the other operator files stay a person's, as before
     expect((await own.get('/api/harness')).status).toBe(403);

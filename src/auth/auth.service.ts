@@ -391,9 +391,9 @@ export class AuthService
     }
     // What was learned working here, and how work is run here: neither is
     // a property of a project, and an agent mid-work is the usual author
-    // of a learning. The method it may read, not rewrite.
+    // of a learning. The method and its framing it may read, not rewrite.
     if (p === '/api/learnings') return method === 'GET' || method === 'POST';
-    if (p === '/api/method') return method === 'GET';
+    if (p === '/api/method' || p === '/api/framing') return method === 'GET';
     // the run log of its own project: the list filtered to it, and a run of it
     if (p === '/api/runs') {
       const q = new URLSearchParams(path.slice(path.indexOf('?') + 1));

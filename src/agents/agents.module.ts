@@ -3,6 +3,7 @@ import { ProjectsController } from '../projects/projects.controller.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
 import {
+  FramingController,
   HarnessController,
   MethodController,
   ModelsController,
@@ -17,6 +18,7 @@ import { NoteFileService } from './note-files.js';
     HarnessController,
     ModelsController,
     MethodController,
+    FramingController,
   ],
   providers: [AgentsService, NoteFileService],
   exports: [AgentsService],

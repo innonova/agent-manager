@@ -45,6 +45,10 @@ export interface ManagerConfig {
   methodFile: string;
   /** The method as shipped: `method.md` next to `dist/`. */
   shippedMethodFile: string;
+  /** The framing: how to write a feature and a brief, the method's companion. */
+  framingFile: string;
+  /** The framing as shipped: `framing.md` next to `dist/`. */
+  shippedFramingFile: string;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -138,6 +142,15 @@ export function loadConfig(
       '..',
       '..',
       'method.md',
+    ),
+    framingFile:
+      env.AGENT_MANAGER_FRAMING_FILE ??
+      path.join(xdgConfig, 'agent-manager', 'framing.md'),
+    shippedFramingFile: path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'framing.md',
     ),
   };
 }

@@ -367,7 +367,15 @@ describe('hub', () => {
     // since all three are one implementation
     const hosts = (await api.get('/api/method')).body.hosts;
     expect(hosts.map((h: any) => h.host).sort()).toEqual(['main', 'vibe']);
-    expect(hosts.every((h: any) => h.template.includes('The gate'))).toBe(true);
+    expect(
+      hosts.every((h: any) => h.template.includes('Bringing an agent in')),
+    ).toBe(true);
+    // the framing is a second file of the same kind, forwarded the same way
+    const framing = (await api.get('/api/framing')).body.hosts;
+    expect(framing.map((h: any) => h.host).sort()).toEqual(['main', 'vibe']);
+    expect(
+      framing.every((h: any) => h.template.includes('Writing a brief')),
+    ).toBe(true);
     const written = await api.put('/api/method', {
       host: 'vibe',
       template: '# How we work over there\n',
@@ -386,6 +394,22 @@ describe('hub', () => {
     expect(
       (await api.put('/api/method', { host: 'nowhere', template: 'x' })).status,
     ).toBe(404);
+    const framingThere = await api.put('/api/framing', {
+      host: 'vibe',
+      template: '# How we write it over there\n',
+    });
+    expect(framingThere).toMatchObject({
+      status: 200,
+      body: { host: 'vibe', source: 'custom' },
+    });
+    expect((await spokeApi.get('/api/framing')).body.hosts[0].template).toBe(
+      '# How we write it over there\n',
+    );
+    expect(
+      (await api.get('/api/framing')).body.hosts.find(
+        (h: any) => h.host === 'main',
+      ).source,
+    ).toBe('built-in');
 
     // the learnings log is per install: each machine keeps its own
     await api.post('/api/learnings', { text: 'Learned on the hub.' });

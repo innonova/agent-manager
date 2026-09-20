@@ -739,6 +739,16 @@ harness note — it is pages, not lines — so the note says instead that
 though not write it. What the method is built from is the learnings log
 below.
 
+`framing.md` is the method's companion — the method is the steps, the
+framing is what is said at each of them, which is how a feature and a
+brief are written — and it is a second operator file of exactly the
+same kind: shipped at the root, seeded as
+`~/.config/agent-manager/framing.md` (`AGENT_MANAGER_FRAMING_FILE`),
+`GET`/`PUT /api/framing`, `am framing`, readable by an agent's token
+and writable only by a person. Two files rather than one because they
+are read at different moments: the steps when the work is run, the
+framing when the words are written.
+
 A feature's work spans a range of commits per repository: the manager
 records HEAD as the base when it first sees the feature in progress
 (the agent sets that; the poller notices within seconds, before any
@@ -1045,6 +1055,8 @@ PUT    /api/harness                 { host?, template: string | null } -> the ho
 GET    /api/models                                              -> { hosts: [...] }; the models file per machine, same row shape as /api/harness (its `template` field is the file's text; it has no placeholders)
 GET    /api/method                                              -> { hosts: [...] }; the method per machine, same row shape; an agent's token may read this one
 PUT    /api/method                  { host?, template: string | null } -> the host's row; as /api/harness (64 KB); a person's, not an agent's
+GET    /api/framing                                             -> { hosts: [...] }; the framing per machine, the method's companion, on the same terms as /api/method
+PUT    /api/framing                 { host?, template: string | null } -> the host's row; as /api/method
 PUT    /api/models                  { host?, template: string | null } -> the host's row; as /api/harness, capped at 8 KB because the text goes into every agent's note
 GET    /api/runs?project=&feature=&model=&since=&limit=         -> { runs: [...] }; the run log, newest first (see Runs); `project` may name a spoke's project (`<spoke>:<id>`), which forwards and prefixes the ids it returns
 GET    /api/runs/:id                                            -> { run, transcript: [StoredItem] }; the run and the transcript exported when it closed (empty when there is none); a prefixed id forwards to its spoke
@@ -1148,7 +1160,7 @@ swept once a minute.
   profiles, the project list, and its project's run log, including the
   review of a run of it (the delegating agent is the usual reviewer).
   Two routes are outside any project, deliberately: the method it may
-  read (`am method`) but not write, and the learnings log it may read
+  read (`am method`, `am framing`) but not write, and the learnings log it may read
   and append to (`am learn`), because what is learned about working
   here belongs to the install and a helper mid-work is the usual
   author. Not users, the harness template,
@@ -1193,6 +1205,7 @@ swept once a minute.
 | `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
 | `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none |
 | `AGENT_MANAGER_METHOD_FILE` | `~/.config/agent-manager/method.md` | how work is run here, for every project on the machine (see the method paragraph under Features); seeded from the shipped `method.md`, absent falls back to it |
+| `AGENT_MANAGER_FRAMING_FILE` | `~/.config/agent-manager/framing.md` | how a feature and a brief are written, the method's companion; seeded from the shipped `framing.md`, absent falls back to it |
 | `AGENT_MANAGER_MODELS_FILE` | `~/.config/agent-manager/models.md` | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section |
 
 The built UI's static assets and the SPA fallback are served without

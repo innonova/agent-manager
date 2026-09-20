@@ -31,13 +31,15 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager"
 HARNESS="${AGENT_MANAGER_HARNESS_FILE:-$CONFIG_DIR/harness.md}"
 MODELS="${AGENT_MANAGER_MODELS_FILE:-$CONFIG_DIR/models.md}"
 METHOD="${AGENT_MANAGER_METHOD_FILE:-$CONFIG_DIR/method.md}"
+FRAMING="${AGENT_MANAGER_FRAMING_FILE:-$CONFIG_DIR/framing.md}"
 seed_config_file "harness note" "$ROOT/harness.md" "$HARNESS" "$INSTALL_DIR"
 seed_config_file "models file" "$ROOT/models.md" "$MODELS" "$INSTALL_DIR"
 seed_config_file "method" "$ROOT/method.md" "$METHOD" "$INSTALL_DIR"
+seed_config_file "framing" "$ROOT/framing.md" "$FRAMING" "$INSTALL_DIR"
 
 rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/fixtures"
 cp -r "$ROOT/dist" "$ROOT/fixtures" "$ROOT/package.json" "$ROOT/package-lock.json" \
-  "$ROOT/harness.md" "$ROOT/models.md" "$ROOT/method.md" "$INSTALL_DIR/"
+  "$ROOT/harness.md" "$ROOT/models.md" "$ROOT/method.md" "$ROOT/framing.md" "$INSTALL_DIR/"
 (cd "$INSTALL_DIR" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 && npm rebuild better-sqlite3 argon2 >/dev/null 2>&1)
 if [ -e "$UI_DIST/index.html" ]; then
   rm -rf "$INSTALL_DIR/ui"

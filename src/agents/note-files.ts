@@ -14,7 +14,7 @@ import { shippedHarnessNote } from './harness.js';
  * no restart, an empty file turning the thing off — so one implementation
  * serves both, and the UI edits them with one editor.
  */
-export type NoteFileKind = 'harness' | 'models' | 'method';
+export type NoteFileKind = 'harness' | 'models' | 'method' | 'framing';
 
 /** The file's state on one machine: the shipped text (no file, or a file equal to it), the operator's, or turned off (an empty file). */
 export interface NoteFileRow {
@@ -30,7 +30,7 @@ export interface NoteFileRow {
   file: string;
 }
 
-/** What tells the three apart: where they live and how much text is reasonable in one. */
+/** What tells them apart: where they live and how much text is reasonable in one. */
 const KINDS: Record<
   NoteFileKind,
   { apiPath: string; maxBytes: number; limit: string }
@@ -41,6 +41,8 @@ const KINDS: Record<
   models: { apiPath: '/api/models', maxBytes: 8 * 1024, limit: '8 KB' },
   // the method is a few pages and is read on request, not pasted anywhere
   method: { apiPath: '/api/method', maxBytes: 64 * 1024, limit: '64 KB' },
+  // the framing is the method's companion, read the same way
+  framing: { apiPath: '/api/framing', maxBytes: 64 * 1024, limit: '64 KB' },
 };
 
 @Injectable()
@@ -67,6 +69,11 @@ export class NoteFileService {
         return {
           file: this.config.methodFile,
           shipped: this.config.shippedMethodFile,
+        };
+      case 'framing':
+        return {
+          file: this.config.framingFile,
+          shipped: this.config.shippedFramingFile,
         };
     }
   }
