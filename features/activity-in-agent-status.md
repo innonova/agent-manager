@@ -1,6 +1,6 @@
 ---
 title: what the agent is doing right now, on its status
-status: review
+status: done
 priority: 50
 ---
 

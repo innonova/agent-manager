@@ -1,6 +1,6 @@
 ---
 title: a log of feature runs, for comparing models
-status: review
+status: done
 priority: 60
 ---
 

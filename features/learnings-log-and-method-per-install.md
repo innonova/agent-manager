@@ -1,6 +1,6 @@
 ---
 title: the method and a learnings log, per install, for every project
-status: review
+status: done
 priority: 55
 ---
 

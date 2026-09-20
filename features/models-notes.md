@@ -1,6 +1,6 @@
 ---
 title: a list of models, and what each is good at, for every project
-status: review
+status: done
 priority: 55
 ---
 
