@@ -197,29 +197,46 @@ Copilot's result text; if Copilot sees real use here, rerun the probe
 
 The status also carries `activity`, a compact read of the last thing on
 the stream: `{ kind: 'thinking' | 'writing' | 'tool' | 'waiting';
-detail?: string; since: number } | null`. `thinking` is a reasoning
-delta (Claude's `thinking` blocks, Codex's `reasoning` item, Copilot's
-`agent_thought_chunk`), `writing` is an output text delta (Claude's
-`text` blocks, Codex's `item/agentMessage/delta`, Copilot's
+detail?: string; tokens?: number; since: number } | null`. `thinking` is
+a reasoning delta (Claude's `thinking` blocks, Codex's `reasoning` item,
+Copilot's `agent_thought_chunk`), `writing` is an output text delta
+(Claude's `text` blocks, Codex's `item/agentMessage/delta`, Copilot's
 `agent_message_chunk`), `tool` is a tool call under way, `detail` naming
 what runs (a shell tool's command, first line trimmed to ~80 chars; a
 read or edit's path; otherwise the tool's name), and `waiting` is a
-permission request or an `ask` left open. `since` is the record time the
-current activity began, so a client can say "thinking for 12 s"; `null`
-outside a turn. The split follows the adapter/service line everywhere
-else: an adapter's `ingest` returns a bare `{ kind, detail? } | null`
-hint on `thinking`, `writing` and `tool` records only (`undefined` when
-a record says nothing about it), and the service turns that into the
-full value, adds `since`, derives `waiting` from the `waiting-permission`
-state and clears it (to `null`) at every other state transition — a
-turn beginning or ending has nothing to show yet, so an adapter never
+permission request or an `ask` left open. `tokens` is the turn's output
+so far, as the vendor reports it while streaming, reset per turn:
+Claude's cumulative `usage.output_tokens` summed across a turn's
+`message_delta` events (a tool-use turn is several Claude messages,
+each ending with its own), Codex's summed from `thread/tokenUsage/updated`'s
+`last.outputTokens`, always accumulated regardless of timing but shown
+only when attached to an item still open when the report arrives: an
+item completing clears the adapter's notion of "current", so a report
+landing in the gap after one closes and before the next opens is kept
+(the sum is right) but not displayed until something is open to show it
+against, and a just-finished call is never redisplayed with a fresher
+count as if still running. Absent, not a misleading 0, before either
+vendor has said anything, and always absent for Copilot, which reports
+nothing usable mid-turn. `since` is the record time the current activity began, so a
+client can say "thinking for 12 s"; `null` outside a turn. The split
+follows the adapter/service line everywhere else: an adapter's `ingest`
+returns a bare `{ kind, detail?, tokens? } | null` hint on `thinking`,
+`writing` and `tool` records only (`undefined` when a record says
+nothing about it), and the service turns that into the full value, adds
+`since`, derives `waiting` from the `waiting-permission` state and
+clears it (to `null`) at every other state transition — a turn
+beginning or ending has nothing to show yet, so an adapter never
 reports `waiting` or a clear itself. Announced as part of `agent.state`
-on change like the rest of the status, except a hint that only changes
-`activity` (the state itself unchanged) is coalesced to at most one
-announcement a second, so a burst of small tool calls does not flood the
-socket; a state transition's own `activity` (`waiting`, or a clear) is
-never throttled. The fake agent's `thinking` and `tool_use` outputs
-carry the same hints, so tests can see `activity` change mid-turn and
+on change (a `tokens` change with the same `kind` and `detail` counts,
+but does not restart `since`) like the rest of the status, except a
+hint that only changes `activity` (the state itself unchanged) is
+coalesced to at most one announcement a second, so a burst of small
+tool calls or token ticks does not flood the socket; a state
+transition's own `activity` (`waiting`, or a clear) is never throttled.
+The fake agent's `thinking` and `tool_use` outputs carry the same
+hints, and its streamed text carries a `tokens` count too (one per word,
+reset per turn, its own stand-in for a vendor's running total), so
+tests can see `activity` change mid-turn, its `tokens` grow, and both
 clear at the turn's end.
 
 A command (turn, decision, interrupt) waits at most ten seconds for a
@@ -334,7 +351,7 @@ interface AgentAdapter {
   snapshot?(): unknown;
   restore?(state: unknown): void;
   /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
-  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; activity?: { kind: 'thinking' | 'writing' | 'tool'; detail?: string } | null; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
+  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; activity?: { kind: 'thinking' | 'writing' | 'tool'; detail?: string; tokens?: number } | null; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
 }
 type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
 ```

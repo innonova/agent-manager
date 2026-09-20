@@ -42,6 +42,15 @@ export class CodexAdapter implements AgentAdapter {
   /** Streaming agent message items by item id; a new message id starts a new text item. */
   private textKeys = new Map<string, string>();
   private texts = new Map<string, string>();
+  /** The activity last reported, so a mid-turn token report can be attached to it without a kind of its own. */
+  private currentActivity: {
+    kind: 'thinking' | 'writing' | 'tool';
+    detail?: string;
+  } | null = null;
+  /** The turn's output tokens so far, from `thread/tokenUsage/updated`'s `last.outputTokens`, summed across the turn's model calls. */
+  private turnOutputTokens = 0;
+  /** Whether `thread/tokenUsage/updated` has said anything yet this turn; `tokens` stays absent, not a misleading 0, until it has. */
+  private hasTurnTokens = false;
 
   startArgs({
     model,
@@ -160,6 +169,9 @@ export class CodexAdapter implements AgentAdapter {
     this.openCommands = new Set(st.openCommands ?? []);
     this.turnOpen = false;
     this.turnId = null;
+    this.currentActivity = null;
+    this.turnOutputTokens = 0;
+    this.hasTurnTokens = false;
     this.approvals.clear();
     this.textKeys.clear();
     this.texts.clear();
@@ -323,7 +335,24 @@ export class CodexAdapter implements AgentAdapter {
             used: Number(t.last.totalTokens),
             size: Number(t.modelContextWindow),
           };
-        return { usage: this.usageNow(record.t) };
+        // The turn's own output so far: each model call inside the turn
+        // (a tool loop is several) reports its own tokens in `last`, summed
+        // here into the turn's running count. Only means anything mid-turn.
+        if (this.turnOpen && typeof t.last?.outputTokens === 'number') {
+          this.turnOutputTokens += Number(t.last.outputTokens);
+          this.hasTurnTokens = true;
+        }
+        return {
+          usage: this.usageNow(record.t),
+          ...(this.turnOpen && this.currentActivity
+            ? {
+                activity: this.activityHint(
+                  this.currentActivity.kind,
+                  this.currentActivity.detail,
+                ),
+              }
+            : {}),
+        };
       }
       case 'thread/started': {
         const model = line.params?.thread?.model;
@@ -332,6 +361,9 @@ export class CodexAdapter implements AgentAdapter {
       case 'turn/started':
         this.turnId = line.params?.turn?.id ?? null;
         this.turnOpen = true;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
+        this.hasTurnTokens = false;
         return { state: 'working' };
       case 'item/started':
         return this.ingestItem(line.params?.item, false);
@@ -350,7 +382,7 @@ export class CodexAdapter implements AgentAdapter {
           (this.texts.get(id) ?? '') + String(line.params?.delta ?? '');
         this.texts.set(id, text);
         return {
-          activity: { kind: 'writing' },
+          activity: this.activityHint('writing'),
           ops: [
             {
               op: 'update',
@@ -363,6 +395,9 @@ export class CodexAdapter implements AgentAdapter {
       case 'turn/completed': {
         this.turnOpen = false;
         this.turnId = null;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
+        this.hasTurnTokens = false;
         this.approvals.clear(); // a request from an ended turn cannot be answered
         const turn = line.params?.turn;
         const end: Item = {
@@ -395,6 +430,9 @@ export class CodexAdapter implements AgentAdapter {
             ops: [append({ kind: 'system', text: `retrying: ${message}` })],
           };
         this.turnOpen = false;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
+        this.hasTurnTokens = false;
         this.approvals.clear();
         return {
           state: 'error',
@@ -454,6 +492,9 @@ export class CodexAdapter implements AgentAdapter {
       if (line.id >= this.nextId) this.nextId = line.id + 1;
       if (kind === 'turn') {
         this.turnOpen = true;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
+        this.hasTurnTokens = false;
         return {
           state: 'working',
           ops: [append(userItem(line.params?.input))],
@@ -582,6 +623,9 @@ export class CodexAdapter implements AgentAdapter {
         };
       if (kind === 'turn') {
         this.turnOpen = false;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
+        this.hasTurnTokens = false;
         this.approvals.clear();
       }
       return {
@@ -610,8 +654,29 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
+  /**
+   * Builds an activity hint and remembers it, so a later token report
+   * (`thread/tokenUsage/updated`) can be attached without knowing the kind
+   * again. `tokens` stays absent until that event has said something this
+   * turn, rather than claiming a misleading 0.
+   */
+  private activityHint(
+    kind: 'thinking' | 'writing' | 'tool',
+    detail?: string,
+  ): NonNullable<Ingest['activity']> {
+    this.currentActivity = detail === undefined ? { kind } : { kind, detail };
+    return {
+      ...this.currentActivity,
+      ...(this.hasTurnTokens ? { tokens: this.turnOutputTokens } : {}),
+    };
+  }
+
   private ingestItem(item: any, completed: boolean): Ingest {
     if (!item) return {};
+    // An item ending clears what a later token report would otherwise
+    // reattach itself to: a stale "still running" tool call once its
+    // result has already come back.
+    if (completed) this.currentActivity = null;
     switch (item.type) {
       case 'agentMessage': {
         const id = String(item.id);
@@ -620,7 +685,7 @@ export class CodexAdapter implements AgentAdapter {
           this.textKeys.set(id, key);
           this.texts.set(id, item.text ?? '');
           return {
-            activity: { kind: 'writing' },
+            activity: this.activityHint('writing'),
             ops: [
               {
                 op: 'append',
@@ -647,7 +712,7 @@ export class CodexAdapter implements AgentAdapter {
           : { ops: [append({ kind: 'text', text, streaming: false })] };
       }
       case 'reasoning':
-        if (!completed) return { activity: { kind: 'thinking' } };
+        if (!completed) return { activity: this.activityHint('thinking') };
         return item.text
           ? { ops: [append({ kind: 'thinking', text: String(item.text) })] }
           : {};
@@ -656,10 +721,10 @@ export class CodexAdapter implements AgentAdapter {
         else this.openCommands.add(String(item.id));
         if (!completed)
           return {
-            activity: {
-              kind: 'tool',
-              detail: toolActivityDetail('shell', { command: item.command }),
-            },
+            activity: this.activityHint(
+              'tool',
+              toolActivityDetail('shell', { command: item.command }),
+            ),
             ops: [
               append({
                 kind: 'tool_use',
@@ -684,12 +749,12 @@ export class CodexAdapter implements AgentAdapter {
       case 'fileChange':
         if (!completed)
           return {
-            activity: {
-              kind: 'tool',
-              detail: toolActivityDetail('edit', {
+            activity: this.activityHint(
+              'tool',
+              toolActivityDetail('edit', {
                 path: fileChangePath(item.changes ?? item),
               }),
-            },
+            ),
             ops: [
               append({
                 kind: 'tool_use',

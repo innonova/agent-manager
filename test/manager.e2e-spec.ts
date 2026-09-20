@@ -888,6 +888,45 @@ describe('agents', () => {
     expect(status.activity).toBeNull();
   });
 
+  it("reports the turn's output tokens growing while it writes", async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'tokens');
+    const mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'slow please' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'text',
+      10000,
+      mark,
+    );
+    await sleep(300);
+    const first = (await api.get(`/api/agents/${agent.id}`)).body.status;
+    expect(first.activity).toMatchObject({ kind: 'writing' });
+    expect(first.activity.tokens).toBeGreaterThan(0);
+
+    await sleep(500);
+    const second = (await api.get(`/api/agents/${agent.id}`)).body.status;
+    expect(second.activity.tokens).toBeGreaterThan(first.activity.tokens);
+
+    // cut the stream short rather than waiting out its several seconds; a
+    // fresh mark, since the agent's own ready-idle (on creation) would
+    // otherwise satisfy this wait at once
+    const cutMark = events.mark();
+    await api.post(`/api/agents/${agent.id}/interrupt`);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'idle',
+      10000,
+      cutMark,
+    );
+    const after = (await api.get(`/api/agents/${agent.id}`)).body.status;
+    expect(after.activity).toBeNull();
+  });
+
   it('survives a session exit and resumes on the next turn', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id);

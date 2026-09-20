@@ -18,6 +18,14 @@ export interface ActivityInfo {
   detail?: string;
   /** The record time the activity started, so a client can say "thinking for 12 s". */
   since: number;
+  /**
+   * The turn's output tokens so far, as the vendor reports them while
+   * streaming, reset per turn: Claude's cumulative `usage.output_tokens`
+   * across a turn's `message_delta` events, Codex's from
+   * `thread/tokenUsage/updated` when it arrives mid-turn. Absent when the
+   * vendor gives nothing usable (Copilot, or before either has said).
+   */
+  tokens?: number;
 }
 
 /** Null outside a turn. */
@@ -173,12 +181,18 @@ export interface Ingest {
   /**
    * A hint of what the stream is doing right now, for the status's
    * `activity`: `thinking` while reasoning text arrives, `writing` while
-   * output text arrives, `tool` with `detail` naming what runs. Absent
-   * means no change; an explicit `null` clears it. The service adds
-   * `since`, derives `waiting` from the `waiting-permission` state and
-   * clears it at a turn's end, so an adapter never reports those itself.
+   * output text arrives, `tool` with `detail` naming what runs, plus
+   * `tokens` when the vendor has said how much output the turn has
+   * produced so far. Absent means no change; an explicit `null` clears
+   * it. The service adds `since`, derives `waiting` from the
+   * `waiting-permission` state and clears it at a turn's end, so an
+   * adapter never reports those itself.
    */
-  activity?: { kind: Exclude<ActivityKind, 'waiting'>; detail?: string } | null;
+  activity?: {
+    kind: Exclude<ActivityKind, 'waiting'>;
+    detail?: string;
+    tokens?: number;
+  } | null;
 }
 
 /**

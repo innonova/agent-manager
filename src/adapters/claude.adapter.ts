@@ -35,6 +35,13 @@ export class ClaudeAdapter implements AgentAdapter {
     text: string;
   } | null = null;
   private turnOpen = false;
+  /** The activity last reported, so a `message_delta`'s token count can be attached to it without a kind of its own. */
+  private currentActivity: {
+    kind: 'thinking' | 'writing' | 'tool';
+    detail?: string;
+  } | null = null;
+  /** The turn's output tokens so far, summed across a turn's `message_delta` events (a tool-use turn is several Claude messages). */
+  private turnOutputTokens = 0;
 
   startArgs({
     resume,
@@ -99,6 +106,8 @@ export class ClaudeAdapter implements AgentAdapter {
     if (st.usage) this.usage = st.usage;
     this.turnOpen = false;
     this.streaming = null;
+    this.currentActivity = null;
+    this.turnOutputTokens = 0;
     this.permissions.clear();
   }
 
@@ -188,6 +197,8 @@ export class ClaudeAdapter implements AgentAdapter {
         return this.ingestResult(line, record.t);
       case 'error': {
         this.turnOpen = false;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
         this.permissions.clear();
         const message = String(line.message ?? line.error ?? record.d);
         return {
@@ -216,6 +227,8 @@ export class ClaudeAdapter implements AgentAdapter {
           return { conversationId: line.session_id, state: 'working', model };
         this.turnOpen = true;
         this.streaming = null;
+        this.currentActivity = null;
+        this.turnOutputTokens = 0;
         return {
           conversationId: line.session_id,
           state: 'working',
@@ -392,6 +405,8 @@ export class ClaudeAdapter implements AgentAdapter {
       }
       this.turnOpen = true;
       this.streaming = null;
+      this.currentActivity = null;
+      this.turnOutputTokens = 0;
       return { state: 'working', ops: [append(item)] };
     }
     if (
@@ -419,7 +434,7 @@ export class ClaudeAdapter implements AgentAdapter {
             text: block.text ?? '',
           };
           return {
-            activity: { kind: 'writing' },
+            activity: this.activityHint('writing'),
             ops: [
               {
                 op: 'append',
@@ -441,7 +456,7 @@ export class ClaudeAdapter implements AgentAdapter {
             kind: 'thinking',
             text: block.thinking ?? '',
           };
-          return { activity: { kind: 'thinking' } };
+          return { activity: this.activityHint('thinking') };
         }
         return {};
       }
@@ -451,7 +466,7 @@ export class ClaudeAdapter implements AgentAdapter {
         if (s.kind === 'text' && ev.delta?.type === 'text_delta') {
           s.text += ev.delta.text;
           return {
-            activity: { kind: 'writing' },
+            activity: this.activityHint('writing'),
             ops: [
               {
                 op: 'update',
@@ -468,7 +483,7 @@ export class ClaudeAdapter implements AgentAdapter {
         ) {
           s.text += ev.delta.thinking;
           return {
-            activity: { kind: 'thinking' },
+            activity: this.activityHint('thinking'),
             ops: [
               {
                 op: 'update',
@@ -497,9 +512,32 @@ export class ClaudeAdapter implements AgentAdapter {
         }
         return {};
       }
+      case 'message_delta': {
+        // The turn's output so far: a tool-use turn is several Claude
+        // messages, so the count sums across each one's message_delta.
+        const out = ev.usage?.output_tokens;
+        if (typeof out === 'number') this.turnOutputTokens += out;
+        return this.currentActivity
+          ? {
+              activity: this.activityHint(
+                this.currentActivity.kind,
+                this.currentActivity.detail,
+              ),
+            }
+          : {};
+      }
       default:
         return {};
     }
+  }
+
+  /** Builds an activity hint and remembers it, so a later token count (`message_delta`) can be attached without knowing the kind again. */
+  private activityHint(
+    kind: 'thinking' | 'writing' | 'tool',
+    detail?: string,
+  ): NonNullable<Ingest['activity']> {
+    this.currentActivity = detail === undefined ? { kind } : { kind, detail };
+    return { ...this.currentActivity, tokens: this.turnOutputTokens };
   }
 
   /** The complete block: authoritative. Replaces the streamed item under its key, or is appended. */
@@ -511,7 +549,7 @@ export class ClaudeAdapter implements AgentAdapter {
       switch (block.type) {
         case 'text':
           if (!block.text) break;
-          activity = { kind: 'writing' };
+          activity = this.activityHint('writing');
           if (s?.kind === 'text')
             ops.push({
               op: 'update',
@@ -525,7 +563,7 @@ export class ClaudeAdapter implements AgentAdapter {
           break;
         case 'thinking':
           if (!block.thinking) break;
-          activity = { kind: 'thinking' };
+          activity = this.activityHint('thinking');
           if (s?.kind === 'thinking' && s.text)
             ops.push({
               op: 'update',
@@ -535,10 +573,10 @@ export class ClaudeAdapter implements AgentAdapter {
           else ops.push(append({ kind: 'thinking', text: block.thinking }));
           break;
         case 'tool_use':
-          activity = {
-            kind: 'tool',
-            detail: toolActivityDetail(block.name, block.input),
-          };
+          activity = this.activityHint(
+            'tool',
+            toolActivityDetail(block.name, block.input),
+          );
           ops.push(
             append({
               kind: 'tool_use',
@@ -588,6 +626,8 @@ export class ClaudeAdapter implements AgentAdapter {
   private ingestResult(line: any, at: number): Ingest {
     this.turnOpen = false;
     this.streaming = null;
+    this.currentActivity = null;
+    this.turnOutputTokens = 0;
     this.permissions.clear(); // a request from an ended turn cannot be answered
     // What the turn cost, added to the session's tally; on Bedrock or Vertex
     // there are no account windows, so this is the usage there is.

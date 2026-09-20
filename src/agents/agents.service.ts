@@ -2306,19 +2306,31 @@ export class AgentsService
   private setActivity(
     agent: Agent,
     live: Live,
-    hint: { kind: Exclude<ActivityKind, 'waiting'>; detail?: string } | null,
+    hint: {
+      kind: Exclude<ActivityKind, 'waiting'>;
+      detail?: string;
+      tokens?: number;
+    } | null,
     quiet: boolean,
     at: number,
   ): void {
     const cur = live.status.activity;
-    const same =
+    const sameActivity =
       (cur?.kind ?? null) === (hint?.kind ?? null) &&
       (cur?.detail ?? undefined) === (hint?.detail ?? undefined);
-    if (same) return;
+    // A token count that grows within the same activity is still a change
+    // worth announcing, but does not restart `since`: the activity itself
+    // has not changed, only how much of it has been produced so far.
+    if (
+      sameActivity &&
+      (cur?.tokens ?? undefined) === (hint?.tokens ?? undefined)
+    )
+      return;
+    const since = sameActivity && cur ? cur.since : at;
     live.status = {
       ...live.status,
       activity: hint
-        ? { kind: hint.kind, detail: hint.detail, since: at }
+        ? { kind: hint.kind, detail: hint.detail, tokens: hint.tokens, since }
         : null,
     };
     if (quiet) {

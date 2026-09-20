@@ -158,6 +158,110 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  it("sums output tokens across a turn's message_delta events and resets them per turn", () => {
+    const a = new ClaudeAdapter();
+    a.ingest(rec('out', ev({ type: 'message_start' }), 0));
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+        1,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Hi' },
+          }),
+          2,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'writing', tokens: 0 });
+    // the message's own count, from message_delta right after it stops streaming
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({ type: 'message_delta', usage: { output_tokens: 12 } }),
+          3,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'writing', tokens: 12 } });
+    // a tool call in the same turn (a second Claude message) keeps the running total
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 't1',
+                  name: 'Bash',
+                  input: { command: 'ls' },
+                },
+              ],
+            },
+          },
+          4,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'tool', detail: 'ls', tokens: 12 });
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({ type: 'message_delta', usage: { output_tokens: 5 } }),
+          5,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'tool', detail: 'ls', tokens: 17 } });
+    // the turn ends; a fresh turn starts the count over
+    a.ingest(rec('out', { type: 'result', usage: {}, subtype: 'success' }, 6));
+    a.ingest(
+      rec(
+        'in',
+        { type: 'user', message: { role: 'user', content: 'again' } },
+        7,
+      ),
+    );
+    a.ingest(rec('out', ev({ type: 'message_start' }), 8));
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+        9,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Hi again' },
+          }),
+          10,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'writing', tokens: 0 });
+  });
+
   it('streams text deltas into one growing item before the full message replaces it', () => {
     const records = load('tool-and-text.ndjson');
     const upTo = run(
@@ -188,7 +292,7 @@ describe('ClaudeAdapter', () => {
           1,
         ),
       ),
-    ).toEqual({ activity: { kind: 'thinking' } });
+    ).toEqual({ activity: { kind: 'thinking', tokens: 0 } });
     expect(
       a.ingest(
         rec(
@@ -202,7 +306,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'thinking' },
+      activity: { kind: 'thinking', tokens: 0 },
       ops: [
         {
           op: 'update',
@@ -224,7 +328,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'thinking' },
+      activity: { kind: 'thinking', tokens: 0 },
       ops: [
         {
           op: 'update',
@@ -249,7 +353,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'thinking' },
+      activity: { kind: 'thinking', tokens: 0 },
       ops: [
         {
           op: 'update',

@@ -165,7 +165,7 @@ export class FakeAdapter implements AgentAdapter {
         this.streamingText = '';
         this.textKey = `t${++this.texts}`;
         return {
-          activity: { kind: 'writing' },
+          activity: { kind: 'writing', tokens: tokensOf(line) },
           ops: [
             {
               op: 'append',
@@ -177,7 +177,7 @@ export class FakeAdapter implements AgentAdapter {
       case 'text_delta':
         this.streamingText += line.text;
         return {
-          activity: { kind: 'writing' },
+          activity: { kind: 'writing', tokens: tokensOf(line) },
           ops: [
             {
               op: 'update',
@@ -324,6 +324,11 @@ export class FakeAdapter implements AgentAdapter {
 }
 
 const append = (item: Item): ItemOp => ({ op: 'append', item });
+
+/** The fake agent's own running token count (one per word streamed), when the line carries one. */
+function tokensOf(line: any): number | undefined {
+  return typeof line.tokens === 'number' ? line.tokens : undefined;
+}
 
 export const fakeAdapterFactory: AdapterFactory = {
   profile: 'fake',

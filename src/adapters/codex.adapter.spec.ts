@@ -185,6 +185,152 @@ describe('CodexAdapter', () => {
     expect(activities[0]).toEqual({ kind: 'writing' });
   });
 
+  it('sums output tokens across thread/tokenUsage/updated while an activity is still open, stays absent until reported, and resets per turn', () => {
+    const a = new CodexAdapter();
+    const rec = (s: 'in' | 'out', d: unknown, seq: number) => ({
+      seq,
+      t: 0,
+      s,
+      d: JSON.stringify(d),
+    });
+    a.startLines({ cwd: '/w', resume: null });
+    a.ingest(
+      rec(
+        'out',
+        {
+          method: 'turn/started',
+          params: { threadId: 't1', turn: { id: 'turn-1' } },
+        },
+        1,
+      ),
+    );
+    // a command still running when the token report arrives: it carries the count
+    a.ingest(
+      rec(
+        'out',
+        {
+          method: 'item/started',
+          params: {
+            item: { type: 'commandExecution', id: 'c1', command: 'ls' },
+          },
+        },
+        2,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            method: 'thread/tokenUsage/updated',
+            params: { tokenUsage: { last: { outputTokens: 10 } } },
+          },
+          3,
+        ),
+      ),
+    ).toMatchObject({ activity: { kind: 'tool', tokens: 10 } });
+    // the command finishes; a token report with nothing open to attach to says nothing about activity
+    a.ingest(
+      rec(
+        'out',
+        {
+          method: 'item/completed',
+          params: {
+            item: { type: 'commandExecution', id: 'c1', status: 'completed' },
+          },
+        },
+        4,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            method: 'thread/tokenUsage/updated',
+            params: { tokenUsage: { last: { outputTokens: 7 } } },
+          },
+          5,
+        ),
+      ).activity,
+    ).toBeUndefined();
+    // a second command opens after: it picks up the running total (17), not a fresh 0
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            method: 'item/started',
+            params: {
+              item: { type: 'commandExecution', id: 'c2', command: 'pwd' },
+            },
+          },
+          6,
+        ),
+      ),
+    ).toMatchObject({ activity: { kind: 'tool', tokens: 17 } });
+    // before any report this turn, tokens is absent, not a misleading 0
+    const b = new CodexAdapter();
+    b.startLines({ cwd: '/w', resume: null });
+    b.ingest(
+      rec(
+        'out',
+        {
+          method: 'turn/started',
+          params: { threadId: 't1', turn: { id: 'turn-x' } },
+        },
+        1,
+      ),
+    );
+    expect(
+      b.ingest(
+        rec(
+          'out',
+          {
+            method: 'item/started',
+            params: { item: { type: 'reasoning', id: 'r1' } },
+          },
+          2,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'thinking' });
+    // the turn ends and a new one starts: the count is not carried over
+    a.ingest(
+      rec(
+        'out',
+        {
+          method: 'turn/completed',
+          params: { turn: { id: 'turn-1', status: 'completed' } },
+        },
+        7,
+      ),
+    );
+    a.ingest(
+      rec(
+        'out',
+        {
+          method: 'turn/started',
+          params: { threadId: 't1', turn: { id: 'turn-2' } },
+        },
+        8,
+      ),
+    );
+    const fresh = a.ingest(
+      rec(
+        'out',
+        {
+          method: 'item/started',
+          params: {
+            item: { type: 'commandExecution', id: 'c3', command: 'pwd' },
+          },
+        },
+        9,
+      ),
+    );
+    expect(fresh.activity).toMatchObject({ kind: 'tool' });
+    expect(fresh.activity).not.toHaveProperty('tokens');
+  });
+
   it('builds turn and interrupt lines once the thread is known', () => {
     const a = new CodexAdapter();
     a.startLines({ cwd: '/w', resume: null });

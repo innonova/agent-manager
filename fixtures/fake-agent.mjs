@@ -19,6 +19,8 @@ const conversationId =
   resumeIdx >= 0 ? process.argv[resumeIdx + 1] : randomUUID();
 let turns = 0;
 let interrupted = false;
+/** The turn's output "tokens" so far: one per word streamed, reset per turn, reported like a vendor's running count. */
+let turnTokens = 0;
 /** A turn is being handled; a user line arriving now steers it instead of starting another. */
 let inFlight = false;
 const steers = [];
@@ -34,10 +36,11 @@ const note = noteIdx >= 0 ? process.argv[noteIdx + 1] : '';
 out({ type: 'init', conversationId, resumed: resumeIdx >= 0, model });
 
 async function stream(text, delay = 15) {
-  out({ type: 'text_start' });
+  out({ type: 'text_start', tokens: turnTokens });
   for (const word of text.split(' ')) {
     if (interrupted) break;
-    out({ type: 'text_delta', text: word + ' ' });
+    turnTokens++;
+    out({ type: 'text_delta', text: word + ' ', tokens: turnTokens });
     await sleep(delay);
   }
   out({ type: 'text_end' });
@@ -66,6 +69,7 @@ async function turn(text) {
   turns++;
   const t0 = Date.now();
   interrupted = false;
+  turnTokens = 0;
   if (text.includes('error')) {
     await stream('Let me try that.');
     out({ type: 'error', message: "You've hit your usage limit (fake)." });
