@@ -106,6 +106,8 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec('ALTER TABLE agents ADD COLUMN model TEXT');
     if (!agentCols.includes('effort'))
       this.db.exec('ALTER TABLE agents ADD COLUMN effort TEXT');
+    if (!agentCols.includes('harness_note'))
+      this.db.exec('ALTER TABLE agents ADD COLUMN harness_note TEXT');
     if (!agentCols.includes('permissions'))
       this.db.exec(
         "ALTER TABLE agents ADD COLUMN permissions TEXT NOT NULL DEFAULT 'bypass'",

@@ -151,12 +151,22 @@ export interface AgentAdapter {
     model?: string | null;
     /** Vendor effort level; undefined leaves the vendor's default. */
     effort?: string | null;
+    /** The harness note, for vendors that take instructions as an argument. */
+    note?: string | null;
   }): string[];
+  /**
+   * For vendors that read instructions from a file: its name. The manager
+   * writes the note there, in a directory of its own per agent, and
+   * `startEnv` names that directory to the process.
+   */
+  readonly noteFile?: string;
+  startEnv?(opts: { noteDir: string }): Record<string, string>;
   /** stdin lines to send once the session is running and attached (protocol handshakes). */
   startLines?(opts: {
     cwd: string;
     resume?: string | null;
     permissions?: Permissions;
+    note?: string | null;
   }): unknown[];
   /**
    * Called once a replay of the session log has caught up. Returns the
@@ -170,6 +180,7 @@ export interface AgentAdapter {
     cwd: string;
     resume?: string | null;
     permissions?: Permissions;
+    note?: string | null;
   }): unknown[];
   /**
    * The stdin line(s) for a message the agent should see during the turn

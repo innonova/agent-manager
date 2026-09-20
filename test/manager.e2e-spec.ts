@@ -465,6 +465,62 @@ describe('agents', () => {
     });
   }, 30000);
 
+  it('an agent is told about the harness at session start, from the operator template when there is one', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'told');
+    let mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'what is your note?',
+    });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      10000,
+      mark,
+    );
+    const said = itemsOf(agent.id)
+      .filter((i) => i.item.kind === 'text')
+      .map((i) => (i.item as { text: string }).text)
+      .join('\n');
+    expect(said).toContain('agent "told" of the project'); // the built-in note, filled in
+    expect(said).toContain('features/<slug>.md');
+    const got = (await api.get(`/api/agents/${agent.id}`)).body.agent;
+    expect(got.harnessNote).toContain('agent "told"'); // what it was told, on the record
+    // an operator template replaces the note; an empty one turns it off
+    const file = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'am-harness-')),
+      'harness.md',
+    );
+    fs.writeFileSync(file, 'Custom note for {{agent}} in {{project}}.');
+    const m2 = await startManager(daemon.url, undefined, { harnessFile: file });
+    try {
+      const api2 = new Api(m2.url);
+      await api2.login();
+      const p2 = (
+        await api2.post('/api/projects', {
+          name: 'custom',
+          path: projectDir,
+          defaultProfile: 'fake',
+        })
+      ).body.project;
+      const a2 = (
+        await api2.post(`/api/projects/${p2.id}/agents`, {
+          name: 'custom-told',
+        })
+      ).body.agent;
+      expect(a2.harnessNote).toBe('Custom note for custom-told in custom.');
+      fs.writeFileSync(file, '');
+      const a3 = (
+        await api2.post(`/api/projects/${p2.id}/agents`, { name: 'untold' })
+      ).body.agent;
+      expect(a3.harnessNote).toBeNull();
+    } finally {
+      await m2.stop();
+    }
+  }, 30000);
+
   it('a restart starts the vendor spend over; the status carries the total across the sessions', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'spender');

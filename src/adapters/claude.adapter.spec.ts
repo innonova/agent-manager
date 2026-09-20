@@ -375,6 +375,14 @@ describe('ClaudeAdapter', () => {
       '--resume',
       'abc',
     ]);
+    // the harness note rides on the system prompt, on a resume too
+    expect(a.startArgs({ resume: 'abc', note: 'You run here.' })).toEqual([
+      '--dangerously-skip-permissions',
+      '--resume',
+      'abc',
+      '--append-system-prompt',
+      'You run here.',
+    ]);
     expect(
       a.startArgs({ resume: null, extraDirs: ['/r/ui', '/r/api'] }),
     ).toEqual([

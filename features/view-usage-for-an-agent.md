@@ -1,6 +1,6 @@
 ---
 title: view usage for an agent
-status: review
+status: done
 priority: 100
 ---
 

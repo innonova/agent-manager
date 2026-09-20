@@ -6,6 +6,11 @@ describe('CopilotAdapter', () => {
   it('drives the ACP handshake from the replies', () => {
     const a = new CopilotAdapter();
     expect(a.startArgs()).toEqual(['--allow-all']);
+    // no instructions over ACP: the note is a file in a directory the environment names
+    expect(a.noteFile).toBe('copilot-instructions.md');
+    expect(a.startEnv({ noteDir: '/d/harness/a1' })).toEqual({
+      COPILOT_CUSTOM_INSTRUCTIONS_DIRS: '/d/harness/a1',
+    });
     expect(a.startArgs({ extraDirs: ['/r/ui'] })).toEqual([
       '--allow-all',
       '--add-dir',

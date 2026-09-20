@@ -24,6 +24,8 @@ export class CodexAdapter implements AgentAdapter {
   private nextId = 1;
   private threadId: string | null = null;
   private turnId: string | null = null;
+  /** The harness note, sent as developerInstructions with the thread line. */
+  private note: string | null = null;
   private turnOpen = false;
   /**
    * Commands started and not yet completed. Codex runs a command the model
@@ -72,9 +74,11 @@ export class CodexAdapter implements AgentAdapter {
     cwd: string;
     resume?: string | null;
     permissions?: Permissions;
+    note?: string | null;
   }): unknown[] {
     this.permissionsMode = opts.permissions ?? this.permissionsMode;
     this.resume = opts.resume ?? this.resume;
+    this.note = opts.note ?? this.note;
     // a reservation whose answer never reached the log is released
     for (const a of this.approvals.values()) a.answered = false;
     if (!this.sentKinds.has('initialize')) return this.startLines(opts);
@@ -84,12 +88,16 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private threadLine(): unknown {
+    // developerInstructions is taken by thread/start and thread/resume
+    // alike, so the harness note reaches a resumed thread too
+    const note = this.note ? { developerInstructions: this.note } : {};
     return this.resume
       ? this.rpc('thread', 'thread/resume', {
           threadId: this.resume,
           ...this.policy(),
+          ...note,
         })
-      : this.rpc('thread', 'thread/start', this.policy());
+      : this.rpc('thread', 'thread/start', { ...this.policy(), ...note });
   }
 
   /** The last usage reported, so windows, spend and context are re-emitted together as either changes. */
@@ -180,9 +188,11 @@ export class CodexAdapter implements AgentAdapter {
     cwd: string;
     resume?: string | null;
     permissions?: Permissions;
+    note?: string | null;
   }): unknown[] {
     this.resume = opts.resume ?? null;
     this.permissionsMode = opts.permissions ?? 'bypass';
+    this.note = opts.note ?? null;
     return [
       this.rpc('initialize', 'initialize', {
         clientInfo: {

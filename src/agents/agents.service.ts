@@ -1,3 +1,5 @@
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import {
   BadRequestException,
   Inject,
@@ -22,6 +24,7 @@ import type {
   TurnImage,
 } from '../adapters/adapter.js';
 import { AdaptersService } from '../adapters/adapters.service.js';
+import { loadHarnessTemplate, renderHarnessNote } from './harness.js';
 import {
   type CachedSession,
   type CacheState,
@@ -55,6 +58,8 @@ export interface Agent {
   model: string | null;
   /** Vendor effort level to start sessions with; null is the vendor's default. */
   effort: string | null;
+  /** What the agent was told about running here at its last session start; null when the note is off. */
+  harnessNote: string | null;
 }
 
 export interface AgentSessionRef {
@@ -101,6 +106,7 @@ interface AgentRow {
   permissions: string | null;
   model: string | null;
   effort: string | null;
+  harness_note: string | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -217,6 +223,7 @@ const toAgent = (r: AgentRow): Agent => ({
   permissions: r.permissions === 'ask' ? 'ask' : 'bypass',
   model: r.model ?? null,
   effort: r.effort ?? null,
+  harnessNote: r.harness_note ?? null,
   currentSessionId: r.current_session_id,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
@@ -607,6 +614,7 @@ export class AgentsService
       permissions,
       model,
       effort,
+      harnessNote: null, // set when the session starts
     };
     this.db
       .prepare(
@@ -880,6 +888,7 @@ export class AgentsService
             cwd: agent.cwd,
             resume: agent.vendorConversationId,
             permissions: agent.permissions,
+            note: agent.harnessNote,
           });
         throw asHttp(err);
       }
@@ -1073,6 +1082,11 @@ export class AgentsService
       .prepare('UPDATE agents SET current_session_id = ? WHERE id = ?')
       .run(id, agent.id);
     agent.currentSessionId = id;
+    const note = this.harnessNote(agent);
+    this.db
+      .prepare('UPDATE agents SET harness_note = ? WHERE id = ?')
+      .run(note, agent.id);
+    agent.harnessNote = note;
     let session: DaemonSession;
     try {
       session = await this.daemon.start({
@@ -1084,8 +1098,10 @@ export class AgentsService
           permissions: agent.permissions,
           model: agent.model,
           effort: agent.effort,
+          note,
         }),
         cwd: agent.cwd,
+        env: await this.noteEnv(agent, adapter, note),
         label: `${LABEL_PREFIX}${agent.id}`,
       });
     } catch (err) {
@@ -1132,9 +1148,53 @@ export class AgentsService
           cwd: agent.cwd,
           resume: agent.vendorConversationId,
           permissions: agent.permissions,
+          note: agent.harnessNote,
         }),
       );
     await this.reconcileCurrent(agent, live);
+  }
+
+  /** The harness note for this agent, from the operator's template or the built-in one; null when turned off. */
+  private harnessNote(agent: Agent): string | null {
+    let repos: { name: string; path: string }[] = [];
+    let project = agent.projectId;
+    try {
+      const p = this.projects.get(agent.projectId);
+      repos = p.repos;
+      project = p.name;
+    } catch {
+      /* deleted meanwhile: the note still says who the agent is */
+    }
+    return renderHarnessNote(loadHarnessTemplate(this.config.harnessFile), {
+      agent: agent.name,
+      project,
+      host: this.config.hostName,
+      profile: agent.profile,
+      cwd: agent.cwd,
+      permissions: agent.permissions,
+      repos,
+    });
+  }
+
+  /**
+   * For a vendor that reads instructions from a file: the note written to
+   * a directory of the agent's own, and the environment naming it. With
+   * the note off, the directory goes so a stale one is not read.
+   */
+  private async noteEnv(
+    agent: Agent,
+    adapter: AgentAdapter,
+    note: string | null,
+  ): Promise<Record<string, string> | undefined> {
+    if (!adapter.noteFile) return undefined;
+    const dir = path.join(this.config.dataDir, 'harness', agent.id);
+    if (!note) {
+      await fs.rm(dir, { recursive: true, force: true });
+      return undefined;
+    }
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, adapter.noteFile), note);
+    return adapter.startEnv?.({ noteDir: dir });
   }
 
   /** The project's other repositories, for agents that need to be told about them. */
@@ -1225,6 +1285,7 @@ export class AgentsService
         cwd: agent.cwd,
         resume: agent.vendorConversationId,
         permissions: agent.permissions,
+        note: agent.harnessNote,
       });
       if (owed.length) this.sendLines(agent, sl, owed);
     }

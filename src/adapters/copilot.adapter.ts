@@ -44,6 +44,12 @@ export class CopilotAdapter implements AgentAdapter {
   private cwd = '';
   private resume: string | null = null;
 
+  /** Copilot takes no instructions over ACP; it reads this file from the directories COPILOT_CUSTOM_INSTRUCTIONS_DIRS names. */
+  readonly noteFile = 'copilot-instructions.md';
+  startEnv({ noteDir }: { noteDir: string }): Record<string, string> {
+    return { COPILOT_CUSTOM_INSTRUCTIONS_DIRS: noteDir };
+  }
+
   startArgs({
     extraDirs = [],
     permissions = 'bypass',

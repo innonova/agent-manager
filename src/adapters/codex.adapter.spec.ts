@@ -112,6 +112,22 @@ describe('CodexAdapter', () => {
       method: 'thread/resume',
       params: { threadId: 'thread-1', approvalPolicy: 'never' },
     });
+    expect(sent[1].line.params).not.toHaveProperty('developerInstructions');
+  });
+
+  it('sends the harness note as developerInstructions with the thread line, started or resumed', () => {
+    for (const resume of [null, 'thread-1']) {
+      const a = new CodexAdapter();
+      a.startLines({ cwd: '/w', resume, note: 'You run here.' });
+      const { sent } = replay(
+        a,
+        loadFixture('codex', 'tool-and-text.ndjson').filter((r) => r.seq <= 2),
+      );
+      expect(sent[1].line).toMatchObject({
+        method: resume ? 'thread/resume' : 'thread/start',
+        params: { developerInstructions: 'You run here.' },
+      });
+    }
   });
 
   it('turns the recorded two-turn session with a command into items', () => {

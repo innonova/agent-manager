@@ -28,6 +28,9 @@ const awaiting = new Map();
 
 const modelIdx = process.argv.indexOf('--model');
 const model = modelIdx >= 0 ? process.argv[modelIdx + 1] : 'fake-1';
+// the harness note, as a real CLI would take a system prompt; "note" repeats it
+const noteIdx = process.argv.indexOf('--note');
+const note = noteIdx >= 0 ? process.argv[noteIdx + 1] : '';
 out({ type: 'init', conversationId, resumed: resumeIdx >= 0, model });
 
 async function stream(text, delay = 15) {
@@ -93,6 +96,11 @@ async function turn(text) {
         : `Removed it (${decision}).`,
     );
     out({ type: 'result', durationMs: Date.now() - t0 });
+    return;
+  }
+  if (text.includes('note')) {
+    await stream(note ? `My note: ${note}` : 'I have no note.');
+    await finish(t0);
     return;
   }
   if (text.includes('usage')) {

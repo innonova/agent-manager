@@ -90,7 +90,7 @@ Copilot's ACP.
 ```
 User      { id, name, passwordHash, createdAt }
 Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }   // path = repos[0].path
-Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, vendorConversationId | null,
+Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, harnessNote | null, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
 Feature   { projectId, repo, slug, title, status, priority, dependsOn[], body, mtime, range? }   // derived from files, not stored
@@ -225,14 +225,54 @@ the `errors` array of an error result, then `result`, then the subtype).
 Daemon connectivity is reported separately (`daemon` frames and the health
 endpoint) and never overwrites a vendor-derived state.
 
+## The harness note
+
+The vendors' CLIs know nothing about the manager. Left alone, an agent
+assumes a person at a terminal, treats a mid-turn message as a new
+prompt, and has never heard of the features convention; the four
+repositories of this system carry that in their `CLAUDE.md` and
+`AGENTS.md`, any other project does not. So the manager tells every
+agent, at every session start, what it is running under: a short note
+naming the agent, the project and host, the repositories and working
+directory, the permission mode, that nobody is at a terminal and a
+question waits for the web UI, what a steered or held message is, the
+features convention, and that a restart is not an error.
+
+The note is built from a template with `{{agent}}`, `{{project}}`,
+`{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}` and `{{repos}}`
+placeholders: the built-in one (`src/agents/harness.ts`), or the
+operator's `~/.config/agent-manager/harness.md` (`AGENT_MANAGER_HARNESS_FILE`)
+when that exists, read at each session start so an edit needs no
+restart of the manager; an empty file turns the note off. Each vendor
+has a per-process channel, so the note is supplied afresh with every
+session and a changed one reaches an agent at its next restart (the
+project's "save and restart agents", or `am project restart`):
+
+- Claude: `--append-system-prompt`, on a resume too;
+- Codex: `developerInstructions` on `thread/start` and `thread/resume`;
+- Copilot: nothing over ACP, but the CLI reads `copilot-instructions.md`
+  from the directories `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names, so the
+  manager writes the note to `<dataDir>/harness/<agentId>/` and names
+  that directory in the session's environment (and removes it when the
+  note is off, so a stale one is not read);
+- the fake agent takes `--note` and repeats it on a "note" turn, which
+  is how the e2e test sees what was told.
+
+The note as rendered at the last session start is kept on the agent
+(`harnessNote`), so the UI can show what the agent was told. A spoke
+renders its own notes from its own template.
+
 ## Adapters
 
 ```ts
 interface AgentAdapter {
   /** state right after the process starts; default 'starting' */
   readonly initialState?: AgentState;
-  /** args to add to the profile for a new conversation, or to resume one; extra repositories, permission mode, model and effort */
-  startArgs(opts: { resume?: string | null; extraDirs?: string[]; permissions?: 'bypass' | 'ask'; model?: string | null; effort?: string | null }): string[];
+  /** args to add to the profile for a new conversation, or to resume one; extra repositories, permission mode, model, effort and the harness note */
+  startArgs(opts: { resume?: string | null; extraDirs?: string[]; permissions?: 'bypass' | 'ask'; model?: string | null; effort?: string | null; note?: string | null }): string[];
+  /** for a vendor that reads instructions from a file: its name, and the environment naming the directory the manager wrote it to */
+  readonly noteFile?: string;
+  startEnv?(opts: { noteDir: string }): Record<string, string>;
   /** the stdin line(s) for a user turn */
   turn(text: string): unknown[];
   /** the stdin line(s) to interrupt the current turn, if the vendor supports it */
@@ -240,9 +280,9 @@ interface AgentAdapter {
   /** the stdin line(s) for a message the agent sees at its next step of the turn under way; absent or empty means queue it */
   steer?(text: string): unknown[];
   /** stdin lines to send once the session is running and attached (protocol handshakes) */
-  startLines?(opts: { cwd: string; resume?: string | null }): unknown[];
+  startLines?(opts: { cwd: string; resume?: string | null; note?: string | null }): unknown[];
   /** after a full replay of the log: the handshake lines still owed, judged from what the log shows was sent and answered */
-  afterReplay?(opts: { cwd: string; resume?: string | null; permissions?: 'bypass' | 'ask' }): unknown[];
+  afterReplay?(opts: { cwd: string; resume?: string | null; permissions?: 'bypass' | 'ask'; note?: string | null }): unknown[];
   /** whether a turn is open as far as the log shows */
   turnInProgress?(): boolean;
   /** permission requests the vendor is waiting on; and the stdin line answering one with an option */
@@ -808,6 +848,7 @@ swept once a minute.
 | `AGENT_MANAGER_HOST_NAME` | the short hostname | how this machine is named in `project.host` and to a hub |
 | `AGENT_MANAGER_HUB_TOKEN` | unset | lets a hub act here with this bearer token (see Hub and spokes) |
 | `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
+| `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); absent means the built-in one, empty means none |
 
 The built UI's static assets and the SPA fallback are served without
 authentication: the login page must load. Everything under `/api` except

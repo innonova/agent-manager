@@ -41,12 +41,14 @@ export class ClaudeAdapter implements AgentAdapter {
     permissions = 'bypass',
     model,
     effort,
+    note,
   }: {
     resume?: string | null;
     extraDirs?: string[];
     permissions?: Permissions;
     model?: string | null;
     effort?: string | null;
+    note?: string | null;
   }): string[] {
     // Ask mode: gated tools produce a control_request on stdout that we
     // answer on stdin; without the flag Claude just denies them.
@@ -58,6 +60,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (model) args.push('--model', model);
     if (effort) args.push('--effort', effort);
     for (const d of extraDirs) args.push('--add-dir', d); // the project's other repositories
+    if (note) args.push('--append-system-prompt', note); // the harness note, per process: a restart carries the current one
     return args;
   }
 

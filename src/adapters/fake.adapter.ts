@@ -35,16 +35,19 @@ export class FakeAdapter implements AgentAdapter {
     resume,
     permissions,
     model,
+    note,
   }: {
     resume?: string | null;
     permissions?: Permissions;
     model?: string | null;
     effort?: string | null;
+    note?: string | null;
   }): string[] {
     return [
       ...(resume ? ['--resume', resume] : []),
       ...(permissions === 'ask' ? ['--ask'] : []),
       ...(model ? ['--model', model] : []),
+      ...(note ? ['--note', note] : []), // a "note" turn repeats it, so tests can see what was told
     ];
   }
 

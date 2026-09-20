@@ -31,6 +31,8 @@ export interface ManagerConfig {
   hubToken: string | null;
   /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
   spokesFile: string;
+  /** The harness note's template, given to every agent at session start; absent means the built-in one, empty means none. */
+  harnessFile: string;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -49,6 +51,10 @@ export function loadConfig(
     env.XDG_STATE_HOME && env.XDG_STATE_HOME.length > 0
       ? env.XDG_STATE_HOME
       : path.join(os.homedir(), '.local/state');
+  const xdgConfig =
+    env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.length > 0
+      ? env.XDG_CONFIG_HOME
+      : path.join(os.homedir(), '.config');
   return {
     host: host || '0.0.0.0',
     port,
@@ -93,5 +99,8 @@ export function loadConfig(
         env.AGENT_MANAGER_DATA_DIR ?? path.join(xdgState, 'agent-manager'),
         'spokes.json',
       ),
+    harnessFile:
+      env.AGENT_MANAGER_HARNESS_FILE ??
+      path.join(xdgConfig, 'agent-manager', 'harness.md'),
   };
 }
