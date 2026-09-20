@@ -132,3 +132,57 @@ Full suite and lint run once at the end of the batch.
 Gated with the batch (with `quiet-turn-returns-the-answer` in
 `agent-manager-cli`): committed per feature with cheap checks, full
 suite and lint once at the end.
+
+## Report (2026-09-20) — the changes view's half
+
+**What changed.** The UI half, in `agent-manager-ui`: each commit row
+names the agent from the manager's attribution, and when a turn made it
+(the commit carries `sessionId` and `item`) the name is a link to that
+agent's transcript at the commit's moment.
+
+- The row's "who" is a focusable link (`role="link"`, `data-test=
+  commit-agent-link`) when `sessionId && item != null`, else the plain
+  name (a run window) or the git author. Clicking it (`@click.stop`, so
+  selecting the row for its diff still works) goes to `{ name: 'agent',
+  agentId, query: { item } }` (`ChangesView.vue`). `Commit` gains
+  `sessionId` and `item` in `api/types.ts`.
+- Scrolling to a given item — the part the spec left to find out — the
+  transcript could not do, so that scroll is part of the work.
+  `ProjectView.vue` reads `?item=<index>`, calls a new
+  `agents.loadUntil(agentId, index)` that pages history back until the
+  item is loaded, and passes a `scrollTo` to `TranscriptView`, which
+  scrolls that item (found by a new `data-index` on each row) to the
+  centre, highlights it for two seconds, and does not follow to the end
+  while a target is pending.
+- Docs: the Changes view row, the agent route's `?item=`, and the
+  testing list in `docs/design.md`.
+
+**What was verified, and how.** A new Playwright case
+(`e2e/app.spec.ts`): a fake agent on a git-repo project is sent a
+"commit" turn (it announces a commit; HEAD is recorded as its turn) and
+one more turn after; the changes tab shows the commit's who as "maker",
+a link; clicking it lands on maker's transcript at the item
+(`?item=<n>`), the "committed" line is in the viewport, and the "latest"
+button shows — proof the view scrolled up to the item rather than
+sitting at the end. UI gate, run alone (the suite owns port 4299):
+`npm run test:unit` 12, `npm run lint` clean, `npm run build` clean,
+`npm run test:e2e` 27.
+
+**What is left open.** Nothing in this half's scope. The manager-half
+limits still stand (Codex/Copilot report no commit; sibling-repo and
+between-turn commits fall back to the run window or git author).
+
+**What I noticed and left alone.**
+- I read "go to that agent's transcript … on click" as the *agent name*
+  linking, not the whole row, so selecting the row still opens the diff
+  the changes view is built around; the two do not fight. Say if you
+  meant the whole row.
+- `loadUntil` pages back a window (300) at a time up to a guard of 500
+  pages; a commit hundreds of thousands of items deep would stop at the
+  guard rather than hang. Far beyond any transcript here.
+- A stale `?item=` in the URL (the agent was rebuilt, the index no
+  longer resolvable) simply does not scroll — the item element is not
+  found and the view stays where it loaded; no error.
+
+Gated alone (the UI's Playwright suite owns port 4299; run once, not
+alongside anything).
