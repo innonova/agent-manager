@@ -262,10 +262,25 @@ export class FakeAdapter implements AgentAdapter {
       }
       case 'background':
         return { background: Number(line.count) || 0 };
+      case 'status':
+        // the request to the model is out, nothing back yet
+        return line.status === 'requesting'
+          ? { activity: { kind: 'requesting' } }
+          : {};
       case 'thinking':
         return {
           activity: { kind: 'thinking' },
           ops: [append({ kind: 'thinking', text: line.text })],
+        };
+      case 'thinking_tokens':
+        // the live estimate of the thinking under way, as Claude reports one
+        return { activity: { kind: 'thinking', tokens: tokensOf(line) } };
+      case 'committed':
+        return {
+          committed: {
+            ...(typeof line.branch === 'string' ? { branch: line.branch } : {}),
+            ...(typeof line.cwd === 'string' ? { cwd: line.cwd } : {}),
+          },
         };
       case 'tool_use':
         return {

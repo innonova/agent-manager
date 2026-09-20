@@ -10,7 +10,8 @@ export type AgentState =
   | 'exited';
 
 /** What the last thing on the stream was doing, for the status's `activity`. */
-export type ActivityKind = 'thinking' | 'writing' | 'tool' | 'waiting';
+export type ActivityKind =
+  'requesting' | 'thinking' | 'writing' | 'tool' | 'waiting';
 
 export interface ActivityInfo {
   kind: ActivityKind;
@@ -19,11 +20,13 @@ export interface ActivityInfo {
   /** The record time the activity started, so a client can say "thinking for 12 s". */
   since: number;
   /**
-   * The turn's output tokens so far, as the vendor reports them while
-   * streaming, reset per turn: Claude's cumulative `usage.output_tokens`
+   * How much the agent has produced, as the vendor reports it while
+   * streaming, reset per turn: while `thinking`, Claude's live estimate of
+   * the thinking stretch under way (`thinking_tokens`), otherwise the
+   * turn's settled output so far (Claude's `usage.output_tokens` summed
    * across a turn's `message_delta` events, Codex's from
-   * `thread/tokenUsage/updated` when it arrives mid-turn. Absent when the
-   * vendor gives nothing usable (Copilot, or before either has said).
+   * `thread/tokenUsage/updated`). Absent when the vendor gives nothing
+   * usable (Copilot, or before either has said).
    */
   tokens?: number;
 }
@@ -180,9 +183,10 @@ export interface Ingest {
   send?: unknown[];
   /**
    * A hint of what the stream is doing right now, for the status's
-   * `activity`: `thinking` while reasoning text arrives, `writing` while
-   * output text arrives, `tool` with `detail` naming what runs, plus
-   * `tokens` when the vendor has said how much output the turn has
+   * `activity`: `requesting` while a request to the model is out and
+   * nothing has come back, `thinking` while reasoning text arrives,
+   * `writing` while output text arrives, `tool` with `detail` naming what
+   * runs, plus `tokens` when the vendor has said how much the turn has
    * produced so far. Absent means no change; an explicit `null` clears
    * it. The service adds `since`, derives `waiting` from the
    * `waiting-permission` state and clears it at a turn's end, so an
@@ -193,6 +197,13 @@ export interface Ingest {
     detail?: string;
     tokens?: number;
   } | null;
+  /**
+   * The agent committed, when the vendor says so (Claude's
+   * `vcs_state_changed` with kind `commit`). The service writes it to the
+   * transcript as a system item; the run log takes it as a signal that
+   * work landed.
+   */
+  committed?: { branch?: string; cwd?: string };
 }
 
 /**

@@ -1507,6 +1507,25 @@ export class AgentsService
       this.applyOp(agent.id, live, sl, record.seq, op, record.t);
       if (op.item.kind === 'turn_end') turnEnded = true;
     }
+    // Work landing is worth a line of its own in the transcript: the
+    // vendor says it happened, nothing else in the stream does.
+    if (ingest.committed)
+      this.applyOp(
+        agent.id,
+        live,
+        sl,
+        record.seq,
+        {
+          op: 'append',
+          item: {
+            kind: 'system',
+            text: ingest.committed.branch
+              ? `committed on ${ingest.committed.branch}`
+              : 'committed',
+          },
+        },
+        record.t,
+      );
     if (ingest.send?.length) {
       if (sl.attaching)
         sl.pendingSends.push({ seq: record.seq, lines: ingest.send });

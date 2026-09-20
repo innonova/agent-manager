@@ -213,3 +213,101 @@ test, and Copilot's "continued on its own" background-narration case
 can still show a non-null `activity` while `state` is `idle`.
 
 Gated alone, as instructed.
+
+## Response (2026-09-20, agent-claude)
+
+Claude Code's stream carries more than the adapter uses, and the token round summed the wrong thing. Measured on a real session log (one helper run): 640 `system` records with subtype `thinking_tokens` ({ estimated_tokens, estimated_tokens_delta }) arriving every few hundred ms during a thinking stretch, plus `estimated_tokens` on most `thinking_delta` events; 156 `system` records with subtype `status` ({ status: 'requesting' } while the request to the model is out, before the first delta); `tool_progress` heartbeats ({ tool_use_id, tool_name, elapsed_time_seconds, heartbeat }) every 30 s of a long tool call; `message_delta.usage.output_tokens_details.thinking_tokens` per message; and `system` subtype `vcs_state_changed` ({ kind: 'commit', branch, cwd }) when the agent commits. All of these are dropped today (the default branch of the system and stream switches). Use them: (a) during thinking, `activity.tokens` is the live `estimated_tokens` of the current stretch (from `thinking_tokens`, falling back to `thinking_delta.estimated_tokens`), so it ticks as the model thinks, and `message_delta` output tokens only settle the turn's running total between stretches; (b) `status: requesting` maps to a new activity kind `requesting` (the request is out, nothing has come back yet: the UI can say so instead of showing nothing or a stale word); (c) `tool_progress` refreshes the activity's `since` semantics: nothing to add to the shape, but the record must not be treated as unknown, and a heartbeat for a tool other than the current one is ignored; (d) `vcs_state_changed` with kind commit becomes an `Ingest` field `committed: { branch, cwd }` the service turns into a system transcript item ('committed on main') and, later, a signal for the run log. Update the fake agent to emit `thinking_tokens` and `status` so the e2e can see the count tick and the requesting kind. Keep the throttle as it is now (kind changes at once, token ticks coalesced). Gated alone: unit, e2e, lint, commit on main, no push, no deploy.
+
+## Report (2026-09-20)
+
+Took up the third Response: the Claude adapter now reads the stream's
+progress records, and the shapes were checked against the real session
+log the Response measured
+(`~/.local/state/agent-daemon/sessions/9f66d3d9-.../log.ndjson`, 97k
+records) before writing any of it.
+
+- (a) **live thinking count.** `claude.adapter.ts` keeps a
+  `thinkingTokens` estimate beside the existing `turnOutputTokens`: set
+  by `system`/`thinking_tokens` (`estimated_tokens`, which the log
+  confirms is cumulative within a stretch and starts over at 50 in the
+  next one), falling back to a `thinking_delta`'s own
+  `estimated_tokens`; reset at a thinking `content_block_start`, at
+  `status: requesting`, and wherever a turn begins or ends.
+  `activityHint` now picks the source by kind: `thinking` reports the
+  live stretch estimate, everything else the turn's settled output from
+  `message_delta`, exactly as the Response worded it. Worth knowing
+  downstream: those are two different quantities, so `tokens` can step
+  *down* when a stretch gives way to text (329 estimated, then 0 until
+  the message's `message_delta` settles at 378). I kept the wording of
+  the Response rather than making the thinking estimate ride on top of
+  the running total, and said so in `docs/design.md` so the UI knows
+  what it is showing.
+- (b) **`requesting`.** New `ActivityKind` member, first in the union
+  (it precedes everything else in a turn). `system`/`status` with
+  `status: 'requesting'` maps to it; `compacting` and the compact
+  result are still ignored, since they say nothing about the stream.
+  The log shows one `requesting` before *every* message of a turn, not
+  only the first, so it also covers the gap after a tool result.
+- (c) **`tool_progress`.** Handled as a record type of its own.
+  `ingestAssistant` remembers the `tool_use` id the current `tool`
+  activity is about; a heartbeat whose `parent_tool_use_id` (the real
+  call — the heartbeat's own `tool_use_id` is `<id>-heartbeat-N`)
+  matches it re-reports the activity unchanged, so `since` keeps saying
+  when the call began; any other call's heartbeat returns `{}`. Nothing
+  added to the shape, and re-reporting an unchanged activity is a no-op
+  in the service's "did anything change" check, which is the point:
+  the record is no longer unknown, and it does not restart anything.
+- (d) **commits.** `Ingest.committed?: { branch?, cwd? }`, set from
+  `system`/`vcs_state_changed` with `kind: 'commit'` only. `agents.service.ts`
+  turns it into a system transcript item, `committed on <branch>`, on
+  the same path as any other item (so a replay rebuilds it). Checked
+  against the logs: a commit carries `branch` and `cwd`, a `push` (the
+  only other kind in them) carries no branch, which is why `branch` is
+  optional in the type and the item falls back to a bare `committed`.
+  The run-log half of (d) is explicitly "later" in the Response and is
+  not in this change; `committed` is the field it will read.
+- **fake agent.** `fixtures/fake-agent.mjs` emits
+  `{ type: 'status', status: 'requesting' }` at the start of every turn
+  and again after a tool result, and the `tool` turn's thinking step now
+  ticks `thinking_tokens` (50/100/150, 500 ms apart) instead of sleeping
+  1500 ms in one go — the same total, so commit `fd5f9e4`'s timing for
+  `agent-manager-ui` is untouched. `fake.adapter.ts` maps `status`,
+  `thinking_tokens` and a `committed` line. The `committed` line and the
+  "commit" turn are beyond the letter of the Response, which named only
+  `thinking_tokens` and `status`: without them the service's new
+  commit path would have no test at all, and the rule that the fake must
+  keep exercising what the real adapters do would be broken by the one
+  part of this change that adds a service behaviour.
+
+Verified: three new unit tests in `src/adapters/claude.adapter.spec.ts`
+(the estimate ticking, per-stretch reset and `requesting`; heartbeats
+for the current call and another's; commit vs. push), one in
+`src/adapters/fake.adapter.spec.ts`, and two e2e tests in
+`test/manager.e2e-spec.ts` — `shows the request in flight, then the
+thinking estimate ticking` (waits for an `agent.state` frame with
+`activity.kind === 'requesting'`, then polls the status until it has
+seen two distinct growing thinking counts; polled rather than timed,
+because the ticks are half a second apart and the tool call ends the
+stretch) and `writes a commit the agent reports into the transcript`.
+`npm test` (78), `npm run test:e2e` (101) and `npm run lint` all pass;
+lint's one warning is the pre-existing one in `scripts/smoke-agents.mjs`.
+`docs/design.md`: the `activity` paragraph now describes `requesting`,
+the two token sources and their step-down, and the heartbeats; the fake
+agent sentence, the `Ingest` line in the adapter listing (with
+`committed`), and the **claude** bullet are updated, and a short
+paragraph describes the commit item.
+
+Small refactor along the way: the five places that cleared the turn's
+parsing state in `claude.adapter.ts` became one `resetTurnActivity()`,
+since this change added two more fields to each of them. One
+behaviour rides along: an `error` line now also drops a half-streamed
+block, which it did not before.
+
+Left open: the throttle/coalesce path still has no dedicated timing
+test, Copilot's "continued on its own" narration can still show an
+activity while `state` is `idle` (both as in the previous reports), and
+the run log does not consume `committed` yet.
+
+Gated alone, as instructed: tests, e2e and lint above, committed on
+`main`, not pushed and not deployed — the agent that started this run
+reviews the commit range.

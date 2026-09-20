@@ -37,11 +37,21 @@ export class ClaudeAdapter implements AgentAdapter {
   private turnOpen = false;
   /** The activity last reported, so a `message_delta`'s token count can be attached to it without a kind of its own. */
   private currentActivity: {
-    kind: 'thinking' | 'writing' | 'tool';
+    kind: 'requesting' | 'thinking' | 'writing' | 'tool';
     detail?: string;
   } | null = null;
   /** The turn's output tokens so far, summed across a turn's `message_delta` events (a tool-use turn is several Claude messages). */
   private turnOutputTokens = 0;
+  /**
+   * The thinking stretch under way, as Claude estimates it live
+   * (`thinking_tokens`, or a `thinking_delta`'s own `estimated_tokens`):
+   * cumulative within the stretch, starting over at the next one. It is
+   * what a `thinking` activity reports, so the count ticks while the model
+   * thinks instead of standing still until the message ends.
+   */
+  private thinkingTokens = 0;
+  /** The tool call the current `tool` activity is about, so its heartbeats can be told from another call's. */
+  private currentToolUseId: string | null = null;
 
   startArgs({
     resume,
@@ -105,9 +115,7 @@ export class ClaudeAdapter implements AgentAdapter {
     this.backgrounded = new Set(st.backgrounded ?? []);
     if (st.usage) this.usage = st.usage;
     this.turnOpen = false;
-    this.streaming = null;
-    this.currentActivity = null;
-    this.turnOutputTokens = 0;
+    this.resetTurnActivity();
     this.permissions.clear();
   }
 
@@ -189,6 +197,8 @@ export class ClaudeAdapter implements AgentAdapter {
         return this.ingestControlRequest(line);
       case 'stream_event':
         return this.ingestStreamEvent(line.event);
+      case 'tool_progress':
+        return this.ingestToolProgress(line);
       case 'assistant':
         return this.ingestAssistant(line.message);
       case 'user':
@@ -197,8 +207,7 @@ export class ClaudeAdapter implements AgentAdapter {
         return this.ingestResult(line, record.t);
       case 'error': {
         this.turnOpen = false;
-        this.currentActivity = null;
-        this.turnOutputTokens = 0;
+        this.resetTurnActivity();
         this.permissions.clear();
         const message = String(line.message ?? line.error ?? record.d);
         return {
@@ -226,14 +235,38 @@ export class ClaudeAdapter implements AgentAdapter {
         if (this.turnOpen)
           return { conversationId: line.session_id, state: 'working', model };
         this.turnOpen = true;
-        this.streaming = null;
-        this.currentActivity = null;
-        this.turnOutputTokens = 0;
+        this.resetTurnActivity();
         return {
           conversationId: line.session_id,
           state: 'working',
           model,
           ops: [append({ kind: 'system', text: 'resumed on its own' })],
+        };
+      }
+      case 'status':
+        // The request to the model is out and nothing has come back yet;
+        // a turn's every message starts with one. Claude's other statuses
+        // (compacting, a compact result) say nothing about the stream.
+        if (line.status !== 'requesting') return {};
+        this.thinkingTokens = 0; // the stretch, if there was one, is over
+        return { activity: this.activityHint('requesting') };
+      case 'thinking_tokens': {
+        // Claude's live estimate of the thinking stretch under way,
+        // cumulative within it, arriving every few hundred ms.
+        const est = line.estimated_tokens;
+        if (typeof est !== 'number') return {};
+        this.thinkingTokens = est;
+        return this.currentActivity?.kind === 'thinking'
+          ? { activity: this.activityHint('thinking') }
+          : {};
+      }
+      case 'vcs_state_changed': {
+        if (line.kind !== 'commit') return {}; // a push or a branch change is not work landing
+        return {
+          committed: {
+            ...(typeof line.branch === 'string' ? { branch: line.branch } : {}),
+            ...(typeof line.cwd === 'string' ? { cwd: line.cwd } : {}),
+          },
         };
       }
       case 'background_tasks_changed':
@@ -404,9 +437,7 @@ export class ClaudeAdapter implements AgentAdapter {
         };
       }
       this.turnOpen = true;
-      this.streaming = null;
-      this.currentActivity = null;
-      this.turnOutputTokens = 0;
+      this.resetTurnActivity();
       return { state: 'working', ops: [append(item)] };
     }
     if (
@@ -450,6 +481,7 @@ export class ClaudeAdapter implements AgentAdapter {
         }
         if (block?.type === 'thinking') {
           // Becomes an item only once there is text; some models emit signature-only thinking.
+          this.thinkingTokens = 0; // a fresh stretch, counted from zero
           this.streaming = {
             key,
             index: ev.index,
@@ -476,11 +508,14 @@ export class ClaudeAdapter implements AgentAdapter {
             ],
           };
         }
-        if (
-          s.kind === 'thinking' &&
-          ev.delta?.type === 'thinking_delta' &&
-          ev.delta.thinking
-        ) {
+        if (s.kind === 'thinking' && ev.delta?.type === 'thinking_delta') {
+          // Most thinking deltas carry the same running estimate as the
+          // `thinking_tokens` records; it is the fallback when they do not
+          // arrive. Signature-only deltas carry no text at all.
+          if (typeof ev.delta.estimated_tokens === 'number')
+            this.thinkingTokens = ev.delta.estimated_tokens;
+          if (!ev.delta.thinking)
+            return { activity: this.activityHint('thinking') };
           s.text += ev.delta.thinking;
           return {
             activity: this.activityHint('thinking'),
@@ -531,13 +566,41 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
+  /** Everything that only means something within one turn, cleared wherever a turn begins or ends. */
+  private resetTurnActivity(): void {
+    this.streaming = null;
+    this.currentActivity = null;
+    this.turnOutputTokens = 0;
+    this.thinkingTokens = 0;
+    this.currentToolUseId = null;
+  }
+
   /** Builds an activity hint and remembers it, so a later token count (`message_delta`) can be attached without knowing the kind again. */
   private activityHint(
-    kind: 'thinking' | 'writing' | 'tool',
+    kind: 'requesting' | 'thinking' | 'writing' | 'tool',
     detail?: string,
   ): NonNullable<Ingest['activity']> {
     this.currentActivity = detail === undefined ? { kind } : { kind, detail };
-    return { ...this.currentActivity, tokens: this.turnOutputTokens };
+    // Thinking is the one stretch Claude counts live; everything else
+    // reports the turn's settled output, which only moves at a
+    // `message_delta` between stretches.
+    const tokens =
+      kind === 'thinking' ? this.thinkingTokens : this.turnOutputTokens;
+    return { ...this.currentActivity, tokens };
+  }
+
+  /**
+   * A heartbeat every 30 s of a long tool call: nothing new to report, but
+   * the call is still running, so the current activity is re-reported as
+   * it stands (`since` keeps saying when the call began). A heartbeat for
+   * any other call — a sub-agent's, or one already finished — is not ours
+   * to show.
+   */
+  private ingestToolProgress(line: any): Ingest {
+    const id = String(line.parent_tool_use_id ?? line.tool_use_id ?? '');
+    const cur = this.currentActivity;
+    if (cur?.kind !== 'tool' || !id || id !== this.currentToolUseId) return {};
+    return { activity: this.activityHint('tool', cur.detail) };
   }
 
   /** The complete block: authoritative. Replaces the streamed item under its key, or is appended. */
@@ -573,6 +636,7 @@ export class ClaudeAdapter implements AgentAdapter {
           else ops.push(append({ kind: 'thinking', text: block.thinking }));
           break;
         case 'tool_use':
+          this.currentToolUseId = String(block.id);
           activity = this.activityHint(
             'tool',
             toolActivityDetail(block.name, block.input),
@@ -625,9 +689,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private ingestResult(line: any, at: number): Ingest {
     this.turnOpen = false;
-    this.streaming = null;
-    this.currentActivity = null;
-    this.turnOutputTokens = 0;
+    this.resetTurnActivity();
     this.permissions.clear(); // a request from an ended turn cannot be answered
     // What the turn cost, added to the session's tally; on Bedrock or Vertex
     // there are no account windows, so this is the usage there is.

@@ -106,6 +106,19 @@ describe('FakeAdapter', () => {
     });
   });
 
+  it('maps a request in flight, a thinking estimate and a commit', () => {
+    const a = new FakeAdapter();
+    expect(
+      a.ingest(rec('out', { type: 'status', status: 'requesting' })),
+    ).toEqual({ activity: { kind: 'requesting' } });
+    expect(
+      a.ingest(rec('out', { type: 'thinking_tokens', tokens: 100 })),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 100 } });
+    expect(
+      a.ingest(rec('out', { type: 'committed', branch: 'main', cwd: '/r' })),
+    ).toEqual({ committed: { branch: 'main', cwd: '/r' } });
+  });
+
   it('builds turn and resume arguments', () => {
     const a = new FakeAdapter();
     expect(a.turn('x')).toEqual([{ type: 'user', text: 'x' }]);

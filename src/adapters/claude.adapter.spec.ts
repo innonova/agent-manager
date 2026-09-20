@@ -262,6 +262,257 @@ describe('ClaudeAdapter', () => {
     ).toEqual({ kind: 'writing', tokens: 0 });
   });
 
+  it("reports the thinking estimate live, and the turn's settled output otherwise", () => {
+    const a = new ClaudeAdapter();
+    a.ingest(
+      rec('in', { type: 'user', message: { role: 'user', content: 'go' } }, 0),
+    );
+    // the request is out, nothing back yet
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          { type: 'system', subtype: 'status', status: 'requesting' },
+          1,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'requesting', tokens: 0 } });
+    // other statuses say nothing about the stream
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          { type: 'system', subtype: 'status', status: 'compacting' },
+          2,
+        ),
+      ),
+    ).toEqual({});
+    a.ingest(rec('out', ev({ type: 'message_start' }), 3));
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        }),
+        4,
+      ),
+    );
+    // the estimate ticks while the model thinks, cumulative within the stretch
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'system',
+            subtype: 'thinking_tokens',
+            estimated_tokens: 50,
+            estimated_tokens_delta: 50,
+          },
+          5,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 50 } });
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'system',
+            subtype: 'thinking_tokens',
+            estimated_tokens: 150,
+            estimated_tokens_delta: 100,
+          },
+          6,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 150 } });
+    // a thinking delta's own estimate does the same, for a stream without
+    // the system records
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'thinking_delta',
+              thinking: 'Let me see.',
+              estimated_tokens: 329,
+            },
+          }),
+          7,
+        ),
+      ).activity,
+    ).toEqual({ kind: 'thinking', tokens: 329 });
+    // text: the turn's settled output, which nothing has reported yet
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'text', text: '' },
+        }),
+        8,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({ type: 'message_delta', usage: { output_tokens: 378 } }),
+          9,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'writing', tokens: 378 } });
+    // the next stretch counts from zero again, without touching the total
+    a.ingest(
+      rec(
+        'out',
+        { type: 'system', subtype: 'status', status: 'requesting' },
+        10,
+      ),
+    );
+    a.ingest(rec('out', ev({ type: 'message_start' }), 11));
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'thinking', thinking: '' },
+          }),
+          12,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 0 } });
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'system',
+            subtype: 'thinking_tokens',
+            estimated_tokens: 50,
+          },
+          13,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 50 } });
+    // a thinking estimate outside a thinking stretch changes nothing on its own
+    a.ingest(rec('out', { type: 'result', usage: {}, subtype: 'success' }, 14));
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 70 },
+          15,
+        ),
+      ),
+    ).toEqual({});
+  });
+
+  it("keeps a long tool call current on its heartbeats, and ignores another call's", () => {
+    const a = new ClaudeAdapter();
+    a.ingest(
+      rec('in', { type: 'user', message: { role: 'user', content: 'go' } }, 0),
+    );
+    a.ingest(
+      rec(
+        'out',
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_1',
+                name: 'Bash',
+                input: { command: 'npm test' },
+              },
+            ],
+          },
+        },
+        1,
+      ),
+    );
+    // 30 s in: the same call, still running
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'tool_progress',
+            tool_use_id: 'toolu_1-heartbeat-0',
+            parent_tool_use_id: 'toolu_1',
+            tool_name: 'Bash',
+            elapsed_time_seconds: 30,
+            heartbeat: true,
+          },
+          2,
+        ),
+      ),
+    ).toEqual({
+      activity: { kind: 'tool', detail: 'npm test', tokens: 0 },
+    });
+    // a sub-agent's call, or one already finished: not what is on show
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'tool_progress',
+            tool_use_id: 'toolu_other-heartbeat-0',
+            parent_tool_use_id: 'toolu_other',
+            tool_name: 'Bash',
+            elapsed_time_seconds: 30,
+            heartbeat: true,
+          },
+          3,
+        ),
+      ),
+    ).toEqual({});
+  });
+
+  it('reports a commit, and only a commit, as work landing', () => {
+    const a = new ClaudeAdapter();
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'commit',
+            branch: 'main',
+            cwd: '/home/inno/projects/agent-manager',
+          },
+          1,
+        ),
+      ),
+    ).toEqual({
+      committed: { branch: 'main', cwd: '/home/inno/projects/agent-manager' },
+    });
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'push',
+            cwd: '/home/inno/projects/agent-manager',
+          },
+          2,
+        ),
+      ),
+    ).toEqual({});
+  });
+
   it('streams text deltas into one growing item before the full message replaces it', () => {
     const records = load('tool-and-text.ndjson');
     const upTo = run(

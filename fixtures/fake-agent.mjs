@@ -3,12 +3,13 @@
 // src/adapters/fake.adapter.ts understands. Never spends tokens.
 //
 // stdin:  {"type":"user","text":"..."}   {"type":"interrupt"}
-// stdout: init, text_start/text_delta/text_end, thinking, tool_use, tool_result, result, error
+// stdout: init, status, text_start/text_delta/text_end, thinking,
+//         thinking_tokens, tool_use, tool_result, committed, result, error
 //
 // The text of a turn steers the script: "error" -> an error turn,
 // "slow" -> a long turn, "tool" -> a tool call, "exit" -> the process exits,
 // "permission" (with --ask) -> asks permission and waits for the answer,
-// anything else -> a short streamed answer.
+// "commit" -> reports a commit, anything else -> a short streamed answer.
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -70,6 +71,9 @@ async function turn(text) {
   const t0 = Date.now();
   interrupted = false;
   turnTokens = 0;
+  // every request to the model is out before anything comes back, as a
+  // real CLI reports it
+  out({ type: 'status', status: 'requesting' });
   if (text.includes('error')) {
     await stream('Let me try that.');
     out({ type: 'error', message: "You've hit your usage limit (fake)." });
@@ -132,12 +136,23 @@ async function turn(text) {
     await finish(t0);
     return;
   }
+  if (text.includes('commit')) {
+    // work landing, as a real CLI announces it
+    out({ type: 'committed', branch: 'main', cwd: process.cwd() });
+    await stream('Committed that.');
+    await finish(t0);
+    return;
+  }
   if (text.includes('tool')) {
     out({ type: 'thinking', text: 'I should look at the file first.' });
     // Held long enough for each activity (thinking, then tool) to outlast
     // the manager's one-announcement-per-second throttle on its own, so a
-    // client watching the socket sees both rather than only the last.
-    await sleep(1500);
+    // client watching the socket sees both rather than only the last;
+    // the estimate ticks while it thinks, as a real CLI reports one.
+    for (let estimate = 50; estimate <= 150; estimate += 50) {
+      await sleep(500);
+      out({ type: 'thinking_tokens', tokens: estimate });
+    }
     const id = `toolu_${turns}`;
     out({
       type: 'tool_use',
@@ -152,6 +167,7 @@ async function turn(text) {
       output: 'line one\nline two',
       isError: false,
     });
+    out({ type: 'status', status: 'requesting' }); // the answer needs another request
   }
   await stream(
     text.includes('slow')

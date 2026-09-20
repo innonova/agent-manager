@@ -196,16 +196,27 @@ Copilot's result text; if Copilot sees real use here, rerun the probe
 (ask it to background `sleep 25` and end its turn) and firm this up.
 
 The status also carries `activity`, a compact read of the last thing on
-the stream: `{ kind: 'thinking' | 'writing' | 'tool' | 'waiting';
-detail?: string; tokens?: number; since: number } | null`. `thinking` is
-a reasoning delta (Claude's `thinking` blocks, Codex's `reasoning` item,
+the stream: `{ kind: 'requesting' | 'thinking' | 'writing' | 'tool' |
+'waiting'; detail?: string; tokens?: number; since: number } | null`.
+`requesting` is a request to the model out with nothing back yet
+(Claude's `system` subtype `status` with `status: 'requesting'`, one
+before every message of a turn), `thinking` is a reasoning delta
+(Claude's `thinking` blocks, Codex's `reasoning` item,
 Copilot's `agent_thought_chunk`), `writing` is an output text delta
 (Claude's `text` blocks, Codex's `item/agentMessage/delta`, Copilot's
 `agent_message_chunk`), `tool` is a tool call under way, `detail` naming
 what runs (a shell tool's command, first line trimmed to ~80 chars; a
 read or edit's path; otherwise the tool's name), and `waiting` is a
-permission request or an `ask` left open. `tokens` is the turn's output
-so far, as the vendor reports it while streaming, reset per turn:
+permission request or an `ask` left open. Claude's `tool_progress`
+heartbeats (every 30 s of a long call) re-report the call as it stands,
+so `since` keeps saying when it began; a heartbeat for any other call is
+ignored. `tokens` is how much the agent has produced, as the vendor
+reports it while streaming, reset per turn. While `thinking`, it is
+Claude's live estimate of the stretch under way (`thinking_tokens`
+records, or a `thinking_delta`'s own `estimated_tokens` when those do
+not arrive), cumulative within the stretch and counted from zero at the
+next one, so it ticks every few hundred ms instead of standing still
+until the message ends. Otherwise it is the turn's settled output:
 Claude's cumulative `usage.output_tokens` summed across a turn's
 `message_delta` events (a tool-use turn is several Claude messages,
 each ending with its own), Codex's summed from `thread/tokenUsage/updated`'s
@@ -215,7 +226,10 @@ item completing clears the adapter's notion of "current", so a report
 landing in the gap after one closes and before the next opens is kept
 (the sum is right) but not displayed until something is open to show it
 against, and a just-finished call is never redisplayed with a fresher
-count as if still running. Absent, not a misleading 0, before either
+count as if still running. The two counts are different quantities, so
+the number can step down when a thinking stretch gives way to text: the
+estimate of what was just thought is replaced by what the turn has
+settled so far. Absent, not a misleading 0, before either
 vendor has said anything, and always absent for Copilot, which reports
 nothing usable mid-turn. `since` is the record time the current activity began, so a
 client can say "thinking for 12 s"; `null` outside a turn. The split
@@ -235,11 +249,18 @@ the line says so; only a `tokens` count growing within the same
 activity is coalesced to at most one announcement a second, so token
 ticks do not flood the socket. A state transition's own `activity`
 (`waiting`, or a clear) is never throttled either.
-The fake agent's `thinking` and `tool_use` outputs carry the same
-hints, and its streamed text carries a `tokens` count too (one per word,
-reset per turn, its own stand-in for a vendor's running total), so
-tests can see `activity` change mid-turn, its `tokens` grow, and both
-clear at the turn's end.
+The fake agent's `status`, `thinking`, `thinking_tokens` and `tool_use`
+outputs carry the same hints, and its streamed text carries a `tokens`
+count too (one per word, reset per turn, its own stand-in for a vendor's
+running total), so tests can see `activity` change mid-turn, a request
+in flight, a thinking estimate ticking, and all of it clear at the
+turn's end.
+
+A commit the vendor reports (Claude's `system` subtype
+`vcs_state_changed` with kind `commit`) comes back from the adapter as
+`committed: { branch?, cwd? }` and becomes a system item in the
+transcript ("committed on main"), so a reader sees work landing where it
+happened; the run log takes the same signal.
 
 A command (turn, decision, interrupt) waits at most ten seconds for a
 resync in progress and is refused with `agent-unavailable` at once while
@@ -353,7 +374,7 @@ interface AgentAdapter {
   snapshot?(): unknown;
   restore?(state: unknown): void;
   /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
-  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; activity?: { kind: 'thinking' | 'writing' | 'tool'; detail?: string; tokens?: number } | null; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
+  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; activity?: { kind: 'requesting' | 'thinking' | 'writing' | 'tool'; detail?: string; tokens?: number } | null; committed?: { branch?: string; cwd?: string }; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
 }
 type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
 ```
@@ -368,7 +389,11 @@ confuses which item grows. One adapter instance exists per daemon session.
   become text / thinking / tool_use items, `user` events with
   `tool_result` become tool results, `stream_event` deltas update the
   current text item, `result` ends the turn. Errors surface as `result`
-  with `is_error`, or as `error`-typed lines.
+  with `is_error`, or as `error`-typed lines. Beside the content it
+  reads the stream's own progress records: `system` subtypes `status`
+  (a request in flight), `thinking_tokens` (the live estimate of the
+  thinking under way) and `vcs_state_changed` (a commit), and
+  `tool_progress` heartbeats for a long call.
 - **copilot** (`copilot --acp`, plus `--allow-all` from the adapter in bypass mode): ACP over stdio. The adapter
   sends `initialize` on start, `session/new` (or `session/load` with the
   stored session id to resume) when the initialize reply arrives, and

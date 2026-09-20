@@ -927,6 +927,57 @@ describe('agents', () => {
     expect(after.activity).toBeNull();
   });
 
+  it('shows the request in flight, then the thinking estimate ticking', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'thinking');
+    const mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'please use a tool',
+    });
+    // the request to the model is out before anything has come back
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.activity?.kind === 'requesting',
+      10000,
+      mark,
+    );
+    // then it thinks, and the fake agent's estimate grows while it does;
+    // polled rather than timed, since the ticks are half a second apart
+    // and the tool call ends the stretch
+    const seen: number[] = [];
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && seen.length < 2) {
+      const a = (await api.get(`/api/agents/${agent.id}`)).body.status.activity;
+      if (a?.kind === 'thinking' && typeof a.tokens === 'number') {
+        if (seen[seen.length - 1] !== a.tokens) seen.push(a.tokens);
+      }
+      await sleep(50);
+    }
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen[1]).toBeGreaterThan(seen[0]!);
+  });
+
+  it('writes a commit the agent reports into the transcript', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'committer');
+    await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'please commit that',
+    });
+    const frame = await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'system' &&
+        f.item.item.text === 'committed on main',
+    );
+    expect(frame.item.item).toEqual({
+      kind: 'system',
+      text: 'committed on main',
+    });
+  });
+
   it('survives a session exit and resumes on the next turn', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id);
