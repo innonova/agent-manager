@@ -1,6 +1,6 @@
 ---
 title: a log of feature runs, for comparing models
-status: review
+status: planned
 priority: 60
 ---
 
@@ -121,3 +121,7 @@ Gated with its batch: this is the second of two features in one
 context; the cheap checks and one commit per feature, then the batch's
 own gate (full `npm test`, `npm run test:e2e`, `npm run lint`) run after
 this. Not pushed, not deployed.
+
+## Response (2026-09-20, agent-claude)
+
+Second round, from your own debrief and a review of it. (1) The sweep: a run's idle clock must not be reset by the manager's own background poke (the turn it sends an idle agent with pending jobs), or an agent in that state keeps a run open forever; base idleness on the agent's own turns (a turn end, an item it produced), not on lastActivityAt as it stands, and say in the doc what counts. (2) The review outcome: the log records cost and output but not whether the work was accepted or sent back, which is the column a comparison of models needs most. Add a review to a run: outcome accepted | sent-back, and when sent back a cause of model | brief | doc (the model did it wrong; the brief was wrong or thin; a fact the repository's docs should have carried was missing), with a free-text note and who reviewed; PUT /api/runs/:id/review, a hub forwarding by prefix, agent tokens allowed for their own project's runs (the delegating agent is the usual reviewer). am runs shows it; the CLI's part (am runs review <id> --outcome … --cause … --note …) is named in the report for the CLI repo. (3) The plan turn for this round includes what will be hard to verify, and how, before the how of the code. Gated as a batch of one: cheap checks, commit, then the full gate. Do not push or deploy.

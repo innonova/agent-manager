@@ -1,33 +1,46 @@
 What we have learned about running work on different models, as of
-2026-09-20, kept by hand — the house view an agent has in front of it
-when it picks the model for a helper it starts. It is a view rather
-than a rule: the result depends as much on the brief and the context
-the helper is given as on the model. The run log is where the evidence
-accumulates; this is the conclusion drawn from it so far.
+2026-09-20, kept by hand and organised by the work, because that is how
+a chooser reads it. A view rather than a rule: the result depends as
+much on the brief and the context the helper is given as on the model,
+and the run log (`am runs`) is where the evidence accumulates, with a
+cause recorded when work is sent back (the model, the brief, or a
+missing doc fact). The choice is profile, model and effort together.
 
-### Claude Fable 5.1
+### When not to delegate
 
-Design, and anything with taste in it: a screen's layout, its wording,
-the shape of an interaction. Also the natural place for work whose
-specification is the conversation that produced it, since that
-conversation is what it is good at holding.
+Work whose specification is the conversation that produced it, and
+anything decided by taste: a screen's layout and wording, the shape of
+an interaction, the phrasing of a note. That stays in the session that
+holds the conversation, on a frontier model. Delegation pays when the
+work can be written down as a feature file, which is also the test of
+whether it can.
 
-### Codex gpt-6-astra
+### Design, and anything with taste in it
 
-The other eye for UI design. Worth asking when a screen has been
-through one pass already and still looks like the first idea.
+Claude Fable 5.1, or Codex's gpt-6-astra as the other eye once a screen
+has been through one pass and still looks like the first idea. Effort
+high. Not a cheaper model: a green test suite over a screen nobody
+looked at is the failure mode on record.
 
-### Claude Sonnet 5
+### Manager and daemon work: the service, adapters, protocol
 
-Wiring up a UI someone else designed, and manager work with a tight
-spec. The pace is slower, and the failure mode is a green test suite
-over work nobody looked at: a feature it gates reads as finished while
-the screen it changed went unopened. Screenshots, and a reading of the
-diff, are what that costs.
+Claude Opus 5, effort default. One batch of two features and one
+single round on record (2026-09-20): an exact reading of the vendor
+stream, the tests for the parts that were hard to see, plans that
+changed the spec for the better, a gate green on the first pass, and a
+debrief that named a defect in its own work. Roughly three times
+faster and a third the cost of Sonnet on the same kind of work.
 
-### Claude Opus 5
+### Wiring up what someone else designed; tightly specified work
 
-A manager round in ten minutes (2026-09-20, the third round of the
-agent-activity feature): an exact reading of the vendor stream, tests
-for the parts that were hard to see, and a caveat in its report about
-the one place the spec's wording had a consequence. One run so far.
+Claude Sonnet 5, effort default. Right when the shape is set and the
+tests say pass or fail: adapters, a field on a status, a CLI command.
+Slower, designs by editing (seventeen edits to one file where a plan
+turn would have done), and does exactly the sentences of a brief and
+nothing between them, so the brief has to carry the map. Not for
+anything that has to be looked at rather than tested.
+
+### Reading, searching, summarising
+
+Not measured yet. Claude Haiku 4.5 is the candidate for a reading pass
+whose output is a summary; a run or two will say.

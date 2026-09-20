@@ -1201,6 +1201,8 @@ describe('agents', () => {
       await own.post(`/api/projects/${p.id}/agents`, { name: 'helper' })
     ).body.agent;
     expect(helper.projectId).toBe(p.id);
+    expect(helper.createdBy).toBe('agent-boss'); // on the record, and in its note
+    expect(helper.harnessNote).toContain('started by agent-boss');
     mark = events.mark();
     const sent = await own.post(`/api/agents/${helper.id}/turn`, {
       text: 'hello',

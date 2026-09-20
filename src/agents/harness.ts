@@ -18,6 +18,8 @@ export interface HarnessContext {
   cwd: string;
   permissions: 'bypass' | 'ask';
   repos: { name: string; path: string }[];
+  /** Who created the agent: a person, or `agent-<name>` for a helper; null when unknown (agents from before the field). */
+  startedBy?: string | null;
   /**
    * The house view of the models (`models.md`), for `{{models}}`: what we
    * have learned about which model suits which work, so an agent that
@@ -62,6 +64,7 @@ export function renderHarnessNote(
     cwd: ctx.cwd,
     permissions: ctx.permissions,
     repos: ctx.repos.map((r) => `${r.name} (${r.path})`).join(', '),
+    startedBy: ctx.startedBy ?? 'a person',
     models: ctx.models?.trim() ? `## Models\n\n${ctx.models.trim()}` : '',
   };
   const note = template.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key: string) =>

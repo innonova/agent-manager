@@ -108,7 +108,7 @@ async function turn(text) {
     return;
   }
   if (text.includes('note')) {
-    await stream(note ? `My note: ${note}` : 'I have no note.');
+    await stream(note ? `My note: ${note}` : 'I have no note.', 0); // the whole note, not word by word: it is long
     await finish(t0);
     return;
   }

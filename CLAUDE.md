@@ -108,6 +108,10 @@ with caveats. When asked:
   sections are the feature's history and the human's answers to it;
 - set `status: in-progress` when you start;
 - when finished, append `## Report (YYYY-MM-DD)` with what you changed,
+  what you verified, what you left open, and what you noticed and left
+  alone (anything seen outside the feature's scope: a defect, a doubt,
+  a claim you could not check); the method behind all of this is
+  `docs/method.md`, read it once; then with the rest of the report: what you changed,
   what you verified and what you left open, and set `status: review`;
   if you cannot or should not continue, say why in the report and set
   `status: blocked`;

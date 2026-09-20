@@ -90,7 +90,7 @@ Copilot's ACP.
 ```
 User      { id, name, passwordHash, createdAt }
 Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }   // path = repos[0].path
-Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, harnessNote | null, vendorConversationId | null,
+Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, harnessNote | null, createdBy | null, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
 Feature   { projectId, repo, slug, title, status, priority, dependsOn[], body, mtime, range? }   // derived from files, not stored
@@ -672,8 +672,9 @@ A feature is `features/<slug>.md` in any of the project's repositories;
 its `repo` is the repository it lives in and its `path` is
 `<repo>/features/<slug>.md`. Slugs are unique per project: on a
 duplicate the first repository wins and the manager logs the shadowed
-file. A new feature is created in the primary repository unless the
-request names another (the UI always uses the primary: which repository
+file. A repository's name is the one given at creation, or the directory's
+basename for a project created with a single path. A new feature is
+created in the primary repository unless the request names another (the UI always uses the primary: which repository
 a feature "belongs to" is rarely obvious up front, and the agent works
 across the project anyway).
 
@@ -705,7 +706,8 @@ asks an agent, in its ordinary conversation, to work on one or more
 features, and can phrase that however the situation needs. The agent
 reads the file (spec, earlier reports, the human's responses), sets
 `status: in-progress`, does the work, appends a dated `## Report` with
-what changed, what was verified and what is left open, and sets
+what changed, what was verified, what is left open and what was
+noticed and left alone (see `docs/method.md`), and sets
 `status: review` (or `blocked`, with the reason in the report). The human
 reads the report in the UI, answers under a dated `## Response` and sets
 the status back to `planned`, or marks it `done`. An agent asked to
@@ -714,54 +716,22 @@ and takes up anything planned that appeared meanwhile. This is spelled
 out for agents in each repository's `CLAUDE.md`.
 
 Helpers and batches. An agent can delegate: with its session token it
-starts another agent in its project (`am new`, a cheaper model or
-another vendor), sends it work and reads what it came to (`am turn
---quiet` returns the final answer, `am wait` collects one sent with
-`--no-wait`), reviews its report and the feature's commit range, and
-forgets it (`am delete`) once the work is gated. One writer per
-repository still holds: delegation is sequential, the delegating agent
-does not edit while a helper runs.
-
-How a helper is run, learned from the first runs (2026-09-20): the
-result depends as much on the context and the brief as on the model.
-
-1. Orient first. The first turn asks the helper to read `CLAUDE.md`,
-   `docs/design.md` and `features/` of its repository and to answer
-   with what it understood and what it would question. That loads the
-   context a brief cannot carry (the same position the delegating
-   agent is in), and the answer shows whether it read the right
-   things before it has touched anything.
-2. A plan before each feature. "Read `features/<slug>.md`; say how you
-   would do it, which files, and what in the spec you would push back
-   on; do not edit yet." The delegating agent answers the plan, and
-   the dissent, substantively, then says go. A design settled in text
-   costs one turn; settled in edits it costs the seventeen edits to one
-   file that the first Sonnet round spent.
-3. Goal and constraints, not the solution. A brief names the outcome,
-   the files that matter and the pattern to follow, what not to touch,
-   and the gate; it leaves the design to the plan turn. A brief made of
-   imperatives sets the helper to literal compliance: it does exactly
-   the sentences it was given and nothing between them.
-4. Several features per helper, then forget it. Three to five in one
-   context, so the orientation pays for itself and compaction does not
-   eat it. A batch: one commit per feature (bisectable), only the cheap
-   checks per feature, no push and no deploy; the batch ends with one
-   gate, the full suite and lint and whatever review the work warrants,
-   run by whoever closes the batch, who fixes the fallout, pushes and
-   deploys. The feature reports say what was verified, so a feature
-   gated as part of a batch reads as such. The repositories' finishing
-   rules speak of a gate for this reason.
-5. Look at UI work. A green suite says nothing about what a screen
-   looks like; a UI feature is screenshotted and measured before it is
-   gated, and the brief says what to measure. Design with any taste in
-   it goes to a frontier model or stays in the main session, where the
-   conversation that produced the wish is; a cheaper model wires up
-   what is designed.
+starts another agent in its project (`am new`), gives it work (`am
+turn --quiet`, `am wait`), reviews its report and the feature's commit
+range, records the outcome on the run (`am runs review`) and forgets it
+(`am delete`) once the work is gated. One writer per repository still
+holds. How a helper is run (orientation, a plan per feature with the
+verification first, briefs as shape not route, the three scopes,
+batches and their gate, looking at UI work, closing the loop with a
+cause, debriefs) is the practice in `docs/method.md`; the mechanisms it
+uses are specified here.
 
 A feature's work spans a range of commits per repository: the manager
 records HEAD as the base when it first sees the feature in progress
 (the agent sets that; the poller notices within seconds, before any
-commit of the work) and HEAD as the end when it is marked done. Later
+commit of the work; a feature already in progress when the manager
+first indexes a project is history, not a transition, so it gets no
+base and opens no run) and HEAD as the end when it is marked done. Later
 rounds keep the first base. The range is exposed on the feature and is
 one of the bases the changes view accepts (`feature:<slug>`). Marking a
 feature done also moves the caller's read cursor to HEAD in every

@@ -39,6 +39,10 @@ describe('harness note', () => {
       'The project is "demo"; its repositories: api (/r/api), ui (/r/ui).',
     );
     expect(note).toContain('The session is long-lived');
+    expect(note).toContain('started by a person'); // no creator on record
+    expect(
+      renderHarnessNote(shipped, { ...ctx, startedBy: 'agent-boss' }),
+    ).toContain('started by agent-boss');
     expect(note).not.toContain('{{permissions}}'); // the CLI's own setting, not the harness's to state
     expect(note).toContain('features/<slug>.md');
     expect(note).not.toMatch(/\{\{/);

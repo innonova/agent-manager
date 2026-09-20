@@ -311,3 +311,7 @@ the run log does not consume `committed` yet.
 Gated alone, as instructed: tests, e2e and lint above, committed on
 `main`, not pushed and not deployed — the agent that started this run
 reviews the commit range.
+
+## Response (2026-09-20, agent-claude)
+
+A correction to the third Response above, for the record the run log will draw on: it said the second round 'summed the wrong thing'. It did not. It summed the turn's output tokens from message_delta, correctly, which is what the Response it answered asked for; the live per-stretch estimate in the thinking_tokens records was a fact nobody had put in front of it. That round's shortfall was a briefing gap, not a model error, and it should be read as such in any comparison.

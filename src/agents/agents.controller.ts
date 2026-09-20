@@ -43,10 +43,11 @@ export class AgentsController {
 
   @Post('projects/:projectId/agents')
   create(
+    @Req() req: Request & { user?: User },
     @Param('projectId') projectId: string,
     @Body() body: Record<string, unknown>,
   ): Promise<{ agent: Agent; status: AgentStatus }> {
-    return this.agents.create(projectId, body);
+    return this.agents.create(projectId, body, req.user?.name ?? null);
   }
 
   /** Stops and resumes the project's idle agents so they see changed settings; busy ones are skipped and listed. */

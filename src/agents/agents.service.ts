@@ -64,6 +64,8 @@ export interface Agent {
   effort: string | null;
   /** What the agent was told about running here at its last session start; null when the note is off. */
   harnessNote: string | null;
+  /** Who created it: a person's name, or `agent-<name>` for a helper started by another agent. */
+  createdBy: string | null;
 }
 
 export interface AgentSessionRef {
@@ -113,6 +115,7 @@ interface AgentRow {
   model: string | null;
   effort: string | null;
   harness_note: string | null;
+  created_by: string | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -236,6 +239,7 @@ const toAgent = (r: AgentRow): Agent => ({
   model: r.model ?? null,
   effort: r.effort ?? null,
   harnessNote: r.harness_note ?? null,
+  createdBy: r.created_by ?? null,
   currentSessionId: r.current_session_id,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
@@ -588,6 +592,7 @@ export class AgentsService
       model?: unknown;
       effort?: unknown;
     },
+    createdBy: string | null = null,
   ): Promise<{ agent: Agent; status: AgentStatus }> {
     const project = this.projects.get(projectId);
     if (this.deleting.has(projectId))
@@ -650,10 +655,11 @@ export class AgentsService
       model,
       effort,
       harnessNote: null, // set when the session starts
+      createdBy,
     };
     this.db
       .prepare(
-        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions, model, effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions, model, effort, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         agent.id,
@@ -663,9 +669,9 @@ export class AgentsService
         cwd,
         agent.createdAt,
         permissions,
-
         model,
         effort,
+        createdBy,
       );
     const live = this.ensureLive(agent);
     live.cache.loaded = true; // nothing on disk for a new agent
@@ -1298,6 +1304,7 @@ export class AgentsService
         cwd: agent.cwd,
         permissions: agent.permissions,
         repos,
+        startedBy: agent.createdBy,
         // the house view of the models, read the same way as the note
         // itself: at session start, so an edit reaches an agent at its
         // next restart and not before
