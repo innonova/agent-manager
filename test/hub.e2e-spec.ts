@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DbService } from '../src/db/db.service.js';
 import {
   Api,
   Events,
@@ -308,6 +309,57 @@ describe('hub', () => {
       201,
     );
   }, 40000);
+
+  it('reads a spoke\u2019s run log and reviews a run there, with the id prefixed once', async () => {
+    // a run of the spoke's own project, put there directly: what is under
+    // test is the forwarding and the id rewriting, not the opening, which
+    // the run log's own suite covers
+    const remote = (await spokeApi.get('/api/projects')).body[0].project;
+    // the hub knows that project under a prefixed id, which is what a
+    // client of the hub would filter by
+    const prefixed = ((await api.get('/api/projects')).body as any[]).find(
+      (r) => r.project.host === 'vibe',
+    ).project.id;
+    expect(prefixed).toBe(`vibe:${remote.id}`);
+    const db = spoke.app.get(DbService).db;
+    db.prepare(
+      `INSERT INTO runs (id, project_id, project_name, host, repo, slug, agent_id, agent_name,
+         profile, model, effort, permissions, started_at, ended_at, feature_status, outcome, item_from)
+       VALUES ('run-1', ?, ?, 'vibe', 'repo', 'widget', 'agent-1', 'helper',
+         'fake', 'fake-2', NULL, 'bypass', 1000, 2000, 'review', 'feature', 0)`,
+    ).run(remote.id, remote.name);
+
+    const listed = (await api.get(`/api/runs?project=${prefixed}`)).body.runs;
+    expect(listed).toHaveLength(1);
+    // prefixed once: the hub's own rewriting of a reply already does it,
+    // and a run has the shape that rewriting takes for an agent
+    expect(listed[0].id).toBe('vibe:run-1');
+    expect(listed[0].projectId).toBe(prefixed);
+    expect(listed[0].agentId).toBe('vibe:agent-1');
+    expect(listed[0].slug).toBe('widget');
+
+    const one = await api.get(`/api/runs/${listed[0].id}`);
+    expect(one.status).toBe(200);
+    expect(one.body.run.id).toBe('vibe:run-1');
+    expect(one.body.transcript).toEqual([]);
+
+    const reviewed = await api.put(`/api/runs/${listed[0].id}/review`, {
+      outcome: 'sent-back',
+      cause: 'doc',
+      note: 'The spoke did not know the rule.',
+    });
+    expect(reviewed.status).toBe(200);
+    expect(reviewed.body.run.id).toBe('vibe:run-1');
+    expect(reviewed.body.run.review).toMatchObject({
+      outcome: 'sent-back',
+      cause: 'doc',
+      by: 'admin',
+    });
+    // and it landed on the spoke, under its own id
+    expect((await spokeApi.get('/api/runs/run-1')).body.run.review.cause).toBe(
+      'doc',
+    );
+  }, 30000);
 
   it('reads and writes the operator files and the learnings of either machine', async () => {
     // the note-file routes forward by host; this is the first test of

@@ -45,6 +45,7 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
+import { spendOnlyUsage } from './usage.js';
 
 export interface Agent {
   id: string;
@@ -1763,9 +1764,34 @@ export class AgentsService
       sl.usage = cs.usage ?? null;
       live.cacheHeaders.set(sid, cs);
     }
+    this.restoreUsage(agent, live);
     this.logger.log(
       `agent ${agent.id}: ${h.count} item(s) from the transcript cache, ${Object.keys(h.sessions).length} session(s)`,
     );
+  }
+
+  /**
+   * What the sessions just loaded from the cache said they had spent,
+   * back on the status. Without this a restarted manager reports an
+   * agent's spend as unknown until its next turn end — which blanks it in
+   * the UI and, worse, moved a run's two readings onto different bases
+   * (see Runs: the vendor's running totals). It puts back only what the
+   * cache holds: the spend of each session and their total, with the time
+   * of the report it came from. Windows, plan, context and the vendor's
+   * verdict are a live account's business and are not invented here; the
+   * next real report replaces all of it.
+   */
+  private restoreUsage(agent: Agent, live: Live): void {
+    if (live.status.usage) return; // something live already said more
+    const current = agent.currentSessionId
+      ? live.sessions.get(agent.currentSessionId)
+      : undefined;
+    const sl = current?.usage
+      ? current
+      : [...live.sessions.values()].find((s) => s.usage);
+    if (!sl?.usage) return;
+    const usage = spendOnlyUsage(this.withTotal(live, sl, sl.usage));
+    if (usage) live.status = { ...live.status, usage };
   }
 
   /** Starts the transcript over: resident items, cache and every session's cursor. */

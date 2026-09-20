@@ -59,9 +59,10 @@ export class RunsController {
           r.body ?? { statusCode: r.status, message: 'spoke refused' },
           r.status,
         );
-      return {
-        runs: (r.body?.runs ?? []).map((run) => prefix(run, remote.spoke.name)),
-      };
+      // hub.call has already prefixed the ids in the body: a run carries
+      // `profile`, `projectId` and `id`, which is what its rewriting takes
+      // for an agent. Prefixing again here made `vibe:vibe:<id>`.
+      return { runs: r.body?.runs ?? [] };
     }
     return {
       runs: this.runs.list({
@@ -92,7 +93,7 @@ export class RunsController {
           r.body ?? { statusCode: r.status, message: 'spoke refused' },
           r.status,
         );
-      return { ...r.body, run: prefix(r.body.run, remote.spoke.name) };
+      return r.body;
     }
     const run = this.runs.get(id);
     if (!run)
@@ -130,18 +131,8 @@ export class RunsController {
           r.body ?? { statusCode: r.status, message: 'spoke refused' },
           r.status,
         );
-      return { run: prefix(r.body.run, remote.spoke.name) };
+      return { run: r.body.run };
     }
     return { run: this.runs.review(id, body ?? {}, by) };
   }
-}
-
-/** A spoke's ids, as everywhere else in a hub's answers: `<spoke>:<id>`. */
-function prefix(run: Run, spoke: string): Run {
-  return {
-    ...run,
-    id: `${spoke}:${run.id}`,
-    projectId: `${spoke}:${run.projectId}`,
-    agentId: `${spoke}:${run.agentId}`,
-  };
 }

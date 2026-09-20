@@ -228,3 +228,99 @@ causes per model is the reading, not the recording, and stays out per
 
 Gated alone (a batch of one, as briefed): cheap checks and this commit,
 then the full gate below. Not pushed, not deployed.
+
+## Response (2026-09-20, agent-claude)
+
+Third round. (1) The spend basis: record which basis was used at open (total or spend) and refuse to subtract unlike ones, reporting null; learnings entry #1 has the mechanism. (2) A run's spend should survive a manager reinstall, which is routine: consider recording the agent's usage at open and reading the close from the cached status rather than the live one when the live has been reset. (3) Review emits no event; the UI will want one when it shows runs. Plan first, verification first, as before.
+
+## Report (2026-09-20)
+
+Third round: the spend basis, the restore that makes it survive a
+reinstall, one event, and the double prefix folded in as agreed.
+
+**The basis (1) and the restore (2).** `src/runs/run-spend.ts` holds all
+of it as pure functions: `snapshotOf(usage, sessionId)` takes a reading
+on the widest basis the manager has and records *which* (`total` across
+the agent's sessions, or the current session's `spend` alone), and
+`runSpend(open, close)` subtracts only comparable pairs. It refuses
+unlike bases, two `spend` readings from different sessions, and any
+counter that went backwards; when it refuses, every field is null
+including cost. Nothing at the close is null; nothing at the open means
+the vendor first spoke during the run, so everything it has said
+belongs to the run. `runs.service.ts` stores the richer snapshot in the
+same `start_spend` column and tolerates a row written before this
+existed (no basis → no starting point).
+
+The restore is `restoreUsage` in `agents.service.ts`, called where the
+transcript cache is loaded, with the content rule extracted as
+`spendOnlyUsage` in `src/agents/usage.ts` so it can be stated exactly:
+it puts back the session's `spend`, the agent's `total` across the
+cached sessions, and the time of the report they came from; it leaves
+out the rolling windows, the vendor's verdict, the plan, the context
+and the provider, because spend only accumulates while a window
+expires. It is a floor: the session's replay or the next vendor report
+replaces it.
+
+**The event (3).** `RunsService` is an `EventEmitter`; `announce` fires
+`changed` on open, on close and on review, and the gateway broadcasts
+`run.changed { projectId, run }` carrying the run as it now stands.
+`RunsModule` is `@Global` now, like the agents and features modules and
+for the same reason — the gateway listens to all three.
+
+**The double prefix.** `hub.call` already rewrites the ids in a reply,
+and a run carries `profile`, `projectId` and `id`, which is exactly what
+that rewriting takes for an agent — so the controller's own `prefix()`
+made `vibe:vibe:<id>`. The helper is gone and the hub test it never had
+is there.
+
+**Verified.** Unit: `run-spend.spec.ts` (9 — the basis of a reading,
+same-basis subtraction, total-vs-spend refused both ways, different
+sessions refused, a counter going backwards, the vendor first speaking
+during the run, nothing at the close, an old-shaped row, and no partial
+answer about money) and `usage.spec.ts` (3 — what the restore puts back
+and what it leaves out). E2e: `test/run-restart.e2e-spec.ts` builds an
+agent with spend on two sessions (asserting the `total` precondition
+explicitly, so the file fails as a fixture problem rather than passing
+vacuously), opens a run, restarts the manager on its own data
+directory, and closes the run — once with the transcript cache intact
+and once with it deleted, where the figures are rebuilt from the daemon
+log instead. Both report the one priced turn inside the run:
+1 turn, 30 000 in, 300 out, $0.30. `runs.e2e-spec.ts` now watches
+`run.changed` on open, close and review; `hub.e2e-spec.ts` reads a
+spoke's run log, fetches a run by its prefixed id and reviews it there.
+
+**What I could not verify end to end, and why it is not a gap.** I
+could not construct an unlike-basis pair in a live system any more. The
+manager rebuilds an agent's sessions from the daemon log when the cache
+is gone, and the one remaining way to widen the basis mid-run — the
+agent exiting and resuming — closes the run first, by the rule from the
+previous round. That is evidence the fix works rather than a hole in
+the tests: the refusals are proven exactly by the unit spec, and the
+e2e proves that after the restore the ordinary reinstall no longer
+produces them. The real `npm run install:service` cannot be tested at
+all, since it ends every session on this machine.
+
+### Noticed, left alone
+
+- **Deleting an agent's earlier `agent_sessions` rows does not make the
+  manager forget them**: it re-adopts what the daemon still holds under
+  the agent's label and replays it. Good for the spend, and worth
+  knowing before anyone tries to prune an agent's history through the
+  database.
+- **The restore only fires when the cache is loaded.** An agent whose
+  transcript cache is missing *and* whose daemon sessions are gone has
+  no spend until it next reports — correct, but it means the floor is
+  the cache's, not the database's. A row on `agents` would outlive both.
+- **`runs` still has no index on `model` or `slug`**, and the list is
+  capped rather than paginated.
+- **`run.changed` goes to every authenticated socket**, agent tokens
+  included, like `agent.state` before it. That is the existing norm
+  rather than a new decision, and it is now in the doc.
+- **`GET /api/learnings` parses the whole file on every call** (from the
+  round before).
+- **The transcript export still writes the window of an abandoned run**,
+  after which the agent's later work belongs to no run until the feature
+  moves.
+
+Gated alone (a batch of one): cheap checks and this commit, then the
+full gate below. Not pushed, not deployed.

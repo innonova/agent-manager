@@ -834,12 +834,21 @@ project are gone) and one NDJSON file per run under `<dataDir>/runs/`:
   outcome;
 - the repository's HEAD at each end: a run that committed nothing shows
   the same hash twice;
-- what the vendor says the work cost, as the difference of its running
-  totals between the two ends (the totals at the start are kept on the
-  row, so the difference survives a restart of the manager). Every
-  field is `null`, not `0`, when the vendor said nothing during the
-  run: no data and free are different things, and Copilot reports
-  nothing usable at all;
+- what the vendor says the work cost, as the difference of two readings
+  of its running totals, one at each end. A reading carries the basis it
+  was taken on, because there are two: `total`, the agent's spend across
+  its sessions, which the manager knows only while it has those sessions
+  loaded, and `spend`, the current session's alone. Unlike readings are
+  not subtracted — nor are two `spend` readings from different sessions,
+  nor a pair where a counter went backwards. When a pair is refused
+  every field is `null`, cost included: half an answer about money is
+  worse than none. `null`, not `0`, is also what a run reports when the
+  vendor said nothing by the time it ended (Copilot says nothing usable
+  at all); when the vendor first spoke *during* the run, everything it
+  has said belongs to the run. The reading at the start is kept on the
+  row, so it survives a restart of the manager — and so does the
+  basis, which is what a run whose turns cost $31 and read zero was
+  missing;
 - the transcript of the window, exported to the run's file when it
   closes, as the same `StoredItem` lines the transcript cache holds, so
   one reader serves both. The window is the agent's item indexes
@@ -857,6 +866,25 @@ project are gone) and one NDJSON file per run under `<dataDir>/runs/`:
   log, confirms itself (`method.md`, Closing the loop). A later review
   replaces an earlier one — a verdict can be corrected — and re-stamps
   the time.
+
+What makes the two readings comparable across a restart is that the
+manager puts an agent's spend back on its status when it loads the
+transcript cache, instead of reporting nothing until the next turn end.
+It puts back only what was spent — the session's `spend`, the agent's
+`total` across the sessions the cache holds, and the time of the report
+those came from. It does not put back the account's rolling windows,
+the vendor's verdict, the plan or the context size: spend only
+accumulates, so a cached figure is a floor and never a lie, while a
+window is a moment in time that expires and a restored one would claim
+a limit that may have reset hours ago. Everything restored is replaced
+the moment the session's log is replayed or the vendor reports again.
+The same gap used to blank an agent's spend in the UI after every
+restart of the manager.
+
+A run is announced on the websocket as `run.changed` when it opens,
+when it closes and when it is reviewed — one frame carrying the run as
+it now stands, since what a reader wants is the same in all three
+cases.
 
 Run files are kept indefinitely. They are small, and outliving the
 agent is the whole point; nothing prunes them.
@@ -1083,6 +1111,7 @@ ui.build         { id }                            // the served UI build change
 presence         { agents: { [agentId]: [{ userId, name, typing }] } }
 users.changed    { users }                         // an account was created, renamed, reset or removed
 project.counts   { projectId, counts }
+run.changed      { projectId, run }                 // a run opened, ended or was reviewed; the run as it now stands
 agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt, background, model, queued, activity }
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended

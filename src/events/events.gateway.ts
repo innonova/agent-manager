@@ -15,6 +15,7 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DaemonClient } from '../daemon/daemon-client.js';
 import { FeaturesService } from '../features/features.service.js';
+import { RunsService } from '../runs/runs.service.js';
 import { HubService } from '../hub/hub.service.js';
 import { originAllowed } from '../origin.js';
 
@@ -58,6 +59,7 @@ export class EventsGateway
     private readonly agents: AgentsService,
     private readonly daemon: DaemonClient,
     private readonly features: FeaturesService,
+    private readonly runs: RunsService,
     private readonly hub: HubService,
   ) {}
 
@@ -79,6 +81,11 @@ export class EventsGateway
     );
     this.features.on('changed', (projectId, feature) =>
       this.broadcast({ type: 'feature.changed', projectId, feature }),
+    );
+    // one frame for a run appearing, ending and being judged: what the
+    // reader wants is the run as it now stands, whichever happened
+    this.runs.on('changed', (projectId, run) =>
+      this.broadcast({ type: 'run.changed', projectId, run }),
     );
     this.agents.on('counts', (projectId, counts) =>
       this.broadcast({ type: 'project.counts', projectId, counts }),

@@ -7,6 +7,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { OnModuleInit } from '@nestjs/common';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +21,7 @@ import type { FeatureStatus } from '../features/feature-file.js';
 import { ProjectsService, type Repo } from '../projects/projects.service.js';
 import type { Project } from '../projects/projects.service.js';
 import { lastOwnActivity } from './run-activity.js';
+import { NO_SPEND, runSpend, snapshotOf, type RunSpend } from './run-spend.js';
 
 /** How a run ended. `feature` is the ordinary one: the feature left `in-progress`. */
 export type RunOutcome =
@@ -36,14 +38,6 @@ export interface RunReview {
   note: string | null;
   by: string | null;
   at: number;
-}
-
-/** What the vendor says a stretch of work cost; every field is absent when it said nothing. */
-export interface RunSpend {
-  turns: number | null;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  costUsd: number | null;
 }
 
 export interface Run extends RunSpend {
@@ -127,8 +121,16 @@ const MAX_NOTE_BYTES = 8 * 1024;
  * forgotten, or nothing happens for `runIdleMs` and the run is abandoned.
  * Nothing here judges the work; it records what it cost and what was said.
  */
+/** A run appeared, ended, or was judged; the same frame carries all three. */
+export interface RunEvents {
+  changed: [projectId: string, run: Run];
+}
+
 @Injectable()
-export class RunsService implements OnModuleInit, OnModuleDestroy {
+export class RunsService
+  extends EventEmitter<RunEvents>
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(RunsService.name);
   private timer: NodeJS.Timeout | null = null;
   /** One close at a time per run id: the sweep, an exit and a status change can all arrive together. */
@@ -140,7 +142,9 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
     private readonly features: FeaturesService,
     private readonly agents: AgentsService,
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
-  ) {}
+  ) {
+    super();
+  }
 
   private get db() {
     return this.dbs.db;
@@ -245,6 +249,12 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
     return path.join(this.config.dataDir, 'runs');
   }
 
+  /** Says a run changed, with the run as it now stands. */
+  private announce(id: string): void {
+    const run = this.get(id);
+    if (run) this.emit('changed', run.projectId, run);
+  }
+
   // ---- opening and closing --------------------------------------------------
 
   private async onFeatureStatus(
@@ -299,6 +309,7 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
     const range = this.features.range(projectId, slug)[feature.repo];
     const base = range?.base ?? (repo ? await head(repo.path) : null);
     const status = this.agents.status(agent.id);
+    const id = randomUUID();
     this.db
       .prepare(
         `INSERT INTO runs (id, project_id, project_name, host, repo, slug, agent_id, agent_name,
@@ -306,7 +317,7 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        randomUUID(),
+        id,
         projectId,
         project.name,
         this.config.hostName,
@@ -321,8 +332,9 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
         Date.now(),
         base,
         this.agents.itemCount(agent.id),
-        JSON.stringify(spendOf(status.usage)),
+        JSON.stringify(snapshotOf(status.usage, agent.currentSessionId)),
       );
+    this.announce(id);
   }
 
   private async closeForFeature(
@@ -405,6 +417,7 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
           file,
           row.id,
         );
+      this.announce(row.id);
     } finally {
       this.closing.delete(row.id);
     }
@@ -416,31 +429,23 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
    * the run — "no data" and "free" are different things.
    */
   private spendSince(row: RunRow): RunSpend {
-    const none: RunSpend = {
-      turns: null,
-      inputTokens: null,
-      outputTokens: null,
-      costUsd: null,
-    };
-    let now: ReturnType<typeof spendOf>;
+    let close = null;
     try {
-      now = spendOf(this.agents.status(row.agent_id).usage);
+      const agent = this.agents.get(row.agent_id);
+      close = snapshotOf(
+        this.agents.status(row.agent_id).usage,
+        agent.currentSessionId,
+      );
     } catch {
-      return none; // the agent is already gone
+      return NO_SPEND; // the agent is already gone
     }
-    if (!now) return none;
-    const start = row.start_spend
-      ? (JSON.parse(row.start_spend) as ReturnType<typeof spendOf>)
-      : null;
-    return {
-      turns: now.turns - (start?.turns ?? 0),
-      inputTokens: now.inputTokens - (start?.inputTokens ?? 0),
-      outputTokens: now.outputTokens - (start?.outputTokens ?? 0),
-      costUsd:
-        now.costUsd === null
-          ? null
-          : Math.round((now.costUsd - (start?.costUsd ?? 0)) * 1e6) / 1e6,
-    };
+    let open: unknown = null;
+    try {
+      open = row.start_spend ? JSON.parse(row.start_spend) : null;
+    } catch {
+      open = null;
+    }
+    return runSpend(open, close);
   }
 
   private itemCountOf(agentId: string): number | null {
@@ -580,32 +585,9 @@ export class RunsService implements OnModuleInit, OnModuleDestroy {
            reviewed_by = ?, reviewed_at = ? WHERE id = ?`,
       )
       .run(outcome, cause, note || null, by, Date.now(), id);
+    this.announce(id);
     return this.get(id)!;
   }
-}
-
-/** The vendor's running totals for the agent, across its sessions; null when it has said nothing. */
-function spendOf(usage: { total?: Spendish; spend?: Spendish } | null): {
-  turns: number;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number | null;
-} | null {
-  const s = usage?.total ?? usage?.spend;
-  if (!s) return null;
-  return {
-    turns: s.turns,
-    inputTokens: s.inputTokens,
-    outputTokens: s.outputTokens,
-    costUsd: s.costUsd ?? null,
-  };
-}
-
-interface Spendish {
-  turns: number;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd?: number;
 }
 
 function toRun(r: RunRow): Run {

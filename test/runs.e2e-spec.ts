@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   Api,
+  Events,
   TestDaemon,
   TestManager,
   sleep,
@@ -18,6 +19,7 @@ let repo: string;
 let projectId: string;
 /** A single-path project names its repository after the directory. */
 let repoName: string;
+let events: Events;
 /** The closed run of the first test, reviewed by the second. */
 let closedRunId = '';
 
@@ -93,9 +95,11 @@ beforeAll(async () => {
   });
   projectId = r.body.project.id;
   repoName = r.body.project.repos[0].name;
+  events = await Events.connect(m.url, api.cookie);
 }, 30000);
 
 afterAll(async () => {
+  await events?.close();
   await m?.stop();
   await daemon?.stop();
 });
@@ -155,6 +159,12 @@ describe('run log', () => {
       const [run] = await runsOf('widget');
       return run ?? null;
     });
+    // a run appearing is announced like anything else on the status
+    const opened = await events.waitFor(
+      (f) => f.type === 'run.changed' && f.run?.slug === 'widget',
+    );
+    expect(opened.projectId).toBe(projectId);
+    expect(opened.run).toMatchObject({ id: open.id, endedAt: null });
     expect(open).toMatchObject({
       slug: 'widget',
       repo: repoName,
@@ -205,6 +215,14 @@ describe('run log', () => {
       featureStatus: 'review',
       id: open.id,
     });
+    // and so is its ending, with the run as it now stands
+    const ended = await events.waitFor(
+      (f) =>
+        f.type === 'run.changed' &&
+        f.run?.id === open.id &&
+        f.run?.endedAt !== null,
+    );
+    expect(ended.run.outcome).toBe('feature');
     expect(done.endCommit).toMatch(/^[0-9a-f]{7,}$/);
     expect(done.endCommit).not.toBe(done.baseCommit); // it committed
     expect(done.report).toContain('Built it. Tests pass.');
@@ -234,8 +252,15 @@ describe('run log', () => {
     expect(closedRunId).not.toBe(''); // the run of the test above
     const url = `/api/runs/${closedRunId}/review`;
     // a verdict without a cause is fine when the work was accepted
+    const mark = events.mark();
     const accepted = await api.put(url, { outcome: 'accepted' });
     expect(accepted.status).toBe(200);
+    const judged = await events.waitFor(
+      (f) => f.type === 'run.changed' && f.run?.id === closedRunId,
+      10000,
+      mark,
+    );
+    expect(judged.run.review).toMatchObject({ outcome: 'accepted' });
     expect(accepted.body.run.review).toMatchObject({
       outcome: 'accepted',
       cause: null,
