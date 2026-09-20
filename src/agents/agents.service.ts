@@ -414,6 +414,24 @@ export class AgentsService
     return this.ensureLive(this.get(id)).status;
   }
 
+  /** How many transcript items the agent has produced so far; the index the next one gets. */
+  itemCount(id: string): number {
+    const live = this.ensureLive(this.get(id));
+    return live.itemBase + live.items.length;
+  }
+
+  /**
+   * Called with an agent's id before it is forgotten, while its rows and
+   * its transcript are still there. Awaited, so what wants a copy of
+   * something (the run log's transcript export) gets one; a hook rather
+   * than a dependency, since the agent knows nothing of what watches it.
+   */
+  private beforeRemove: ((agentId: string) => Promise<void>)[] = [];
+
+  onBeforeRemove(fn: (agentId: string) => Promise<void>): void {
+    this.beforeRemove.push(fn);
+  }
+
   sessions(id: string): AgentSessionRef[] {
     return (
       this.db
@@ -1003,6 +1021,11 @@ export class AgentsService
     await this.withLockOrForce(live, id, async () => {
       const agent = this.get(id);
       await this.stopLocked(agent, true);
+      // while the transcript is still readable
+      for (const fn of this.beforeRemove)
+        await fn(id).catch((err: Error) =>
+          this.logger.warn(`agent ${id}: before-remove hook: ${err.message}`),
+        );
       this.auth.revokeAgentTokens(id);
       this.db
         .prepare('UPDATE agents SET archived_at = ? WHERE id = ?')
@@ -1022,6 +1045,11 @@ export class AgentsService
     await this.withLockOrForce(live, id, async () => {
       const agent = this.get(id);
       await this.stopLocked(agent, true);
+      // while the transcript is still readable
+      for (const fn of this.beforeRemove)
+        await fn(id).catch((err: Error) =>
+          this.logger.warn(`agent ${id}: before-remove hook: ${err.message}`),
+        );
       this.auth.revokeAgentTokens(id);
       const refs = this.sessions(id);
       this.db.prepare('DELETE FROM agents WHERE id = ?').run(id); // sessions and authors cascade

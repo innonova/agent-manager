@@ -69,6 +69,45 @@ export class FeaturesService
   /** One poll at a time; a slow one is simply not overlapped. */
   private polling = false;
   /**
+   * Called after a feature's status changed and its commit range was
+   * recorded, before the change is announced. A hook rather than a
+   * dependency so that what reacts to a transition (the run log) can
+   * depend on features without features depending on it.
+   */
+  private transitions: ((
+    projectId: string,
+    slug: string,
+    was: FeatureStatus | null,
+    now: FeatureStatus,
+  ) => Promise<void>)[] = [];
+
+  onTransition(
+    fn: (
+      projectId: string,
+      slug: string,
+      was: FeatureStatus | null,
+      now: FeatureStatus,
+    ) => Promise<void>,
+  ): void {
+    this.transitions.push(fn);
+  }
+
+  /** The range first, then whoever watches transitions; failures there never fail the write. */
+  private async transition(
+    projectId: string,
+    slug: string,
+    was: FeatureStatus | null,
+    now: FeatureStatus,
+  ): Promise<void> {
+    await this.recordRange(projectId, slug, now);
+    for (const fn of this.transitions)
+      await fn(projectId, slug, was, now).catch((err: Error) =>
+        this.logger.warn(
+          `feature ${slug}: transition hook failed: ${err.message}`,
+        ),
+      );
+  }
+  /**
    * Writes to one feature file are serialised, and each one re-reads the
    * file right before writing, so a human's status change or response
    * never overwrites a report the agent appended meanwhile.
@@ -295,7 +334,7 @@ export class FeaturesService
           } else if (known.get(f.slug) !== f.mtime) {
             const was = this.lastStatus.get(key);
             if (was !== f.status)
-              await this.recordRange(project.id, f.slug, f.status);
+              await this.transition(project.id, f.slug, was ?? null, f.status);
             this.emit('changed', project.id, this.decorate(project.id, f));
           }
           this.lastStatus.set(key, f.status);
@@ -333,7 +372,7 @@ export class FeaturesService
     after: FeatureStatus,
     userId?: string,
   ): Promise<Feature> {
-    if (before !== after) await this.recordRange(projectId, slug, after);
+    if (before !== after) await this.transition(projectId, slug, before, after);
     // Done means the human has looked at the work: their "since I last
     // looked" cursor moves to now in every repository of the project.
     if (before !== after && after === 'done' && userId)

@@ -796,6 +796,66 @@ in-progress ownership, outcome from state) was a source of bugs. The
 `feature_queue` and `feature_runs` tables from that version are dropped
 at startup.
 
+## Runs
+
+A run is one agent's work on one feature, recorded so that models can be
+compared on real work: which model did what, at what cost, with the
+diff and the transcript beside the numbers. The pieces exist already
+but scattered and perishable — the commit range on the feature, the
+transcript in the daemon's log (gone with the agent), the model on the
+agent row, the spend on the status — so a run copies what it needs and
+keeps it.
+
+A run opens when a feature goes `in-progress` and closes when it leaves
+it (`review`, `blocked`, `done`). The transitions come from the same
+watch that records the commit range: the feature poller calls its
+transition hooks after the range is recorded, so a run always has the
+base commit the diff view uses. The run is attributed to the agent
+working in the feature's own repository, else to the only agent working
+in the project; with no candidate there is no run, since numbers that
+belong to nobody are worse than none.
+
+Three safety nets close a run that never sees its feature move: the
+agent exits, the agent is forgotten (a hook that runs before its
+transcript is deleted, so the export still has something to read), or
+nothing happens for `AGENT_MANAGER_RUN_IDLE_MS` and the run is closed
+as `abandoned`. `outcome` says which of the four it was. A run closed
+because the agent's process exited does not reopen when the agent
+resumes: the next round of the feature is the next run.
+
+What a run records, in the `runs` table (no foreign keys, the agent's
+identity copied in: the log is the point after the agent and even the
+project are gone) and one NDJSON file per run under `<dataDir>/runs/`:
+
+- the agent (id, name, profile, model, effort, permissions), the host,
+  the project, the repository and the feature slug;
+- when it started and ended, the status the feature ended in, and the
+  outcome;
+- the repository's HEAD at each end: a run that committed nothing shows
+  the same hash twice;
+- what the vendor says the work cost, as the difference of its running
+  totals between the two ends (the totals at the start are kept on the
+  row, so the difference survives a restart of the manager). Every
+  field is `null`, not `0`, when the vendor said nothing during the
+  run: no data and free are different things, and Copilot reports
+  nothing usable at all;
+- the transcript of the window, exported to the run's file when it
+  closes, as the same `StoredItem` lines the transcript cache holds, so
+  one reader serves both. The window is the agent's item indexes
+  between the two ends, which is everything that agent did while the
+  run was open — a person talking to it meanwhile is in there too, and
+  that is the honest record rather than a filtered one;
+- the report the agent appended to the feature (its last `## Report`
+  section), as text.
+
+Run files are kept indefinitely. They are small, and outliving the
+agent is the whole point; nothing prunes them.
+
+The routes are a human's, like the harness and models files: an agent's
+token is refused them. There is no UI page in this round — a block on
+the projects page can follow once we know what we want to look at — and
+`am runs` belongs to `agent-manager-cli`.
+
 ## Daemon integration
 
 - One websocket to the daemon, reconnecting with backoff. On (re)connect a
@@ -905,6 +965,8 @@ GET    /api/harness                                             -> { hosts: [{ h
 PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there
 GET    /api/models                                              -> { hosts: [...] }; the models file per machine, same row shape as /api/harness (its `template` field is the file's text; it has no placeholders)
 PUT    /api/models                  { host?, template: string | null } -> the host's row; as /api/harness, capped at 8 KB because the text goes into every agent's note
+GET    /api/runs?project=&feature=&model=&since=&limit=         -> { runs: [...] }; the run log, newest first (see Runs); `project` may name a spoke's project (`<spoke>:<id>`), which forwards and prefixes the ids it returns
+GET    /api/runs/:id                                            -> { run, transcript: [StoredItem] }; the run and the transcript exported when it closed (empty when there is none); a prefixed id forwards to its spoke
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
@@ -1031,6 +1093,7 @@ swept once a minute.
 | `AGENT_MANAGER_SESSION_TTL_MS` | `2592000000` (30 days) | how long a login (browser cookie or `am login`) lasts |
 | `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
 | `AGENT_MANAGER_BACKGROUND_POKE_MS` | `1800000` | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables |
+| `AGENT_MANAGER_RUN_IDLE_MS` | `7200000` (2 h) | an open run whose agent has done nothing for this long is closed as `abandoned`; 0 disables |
 | `AGENT_MANAGER_RESIDENT_ITEMS` | `500` | transcript items kept in memory per agent beyond what the transcript cache holds |
 | `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
 | `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |

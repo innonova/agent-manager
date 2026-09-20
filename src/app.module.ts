@@ -14,6 +14,7 @@ import { HealthController } from './health.controller.js';
 import { HubModule } from './hub/hub.module.js';
 import { ProfilesController } from './profiles.controller.js';
 import { ProjectsModule } from './projects/projects.module.js';
+import { RunsModule } from './runs/runs.module.js';
 
 @Module({})
 export class AppModule {
@@ -33,6 +34,7 @@ export class AppModule {
         FilesModule,
         FeaturesModule,
         ChangesModule,
+        RunsModule,
       ],
       controllers: [ProfilesController, HealthController],
     };

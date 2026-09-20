@@ -9,7 +9,8 @@
 // The text of a turn steers the script: "error" -> an error turn,
 // "slow" -> a long turn, "tool" -> a tool call, "exit" -> the process exits,
 // "permission" (with --ask) -> asks permission and waits for the answer,
-// "commit" -> reports a commit, anything else -> a short streamed answer.
+// "commit" -> reports a commit, "linger" -> stays working until interrupted,
+// anything else -> a short streamed answer.
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -133,6 +134,14 @@ async function turn(text) {
       out({ type: 'background', count: 1 });
       await stream('Started a background job.');
     }
+    await finish(t0);
+    return;
+  }
+  if (text.includes('linger')) {
+    // stays working for a while, so a test can watch something that takes
+    // the manager a few seconds to notice; an interrupt cuts it short
+    await stream('Working on it.');
+    for (let i = 0; i < 100 && !interrupted; i++) await sleep(200);
     await finish(t0);
     return;
   }

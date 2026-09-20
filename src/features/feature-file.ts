@@ -244,3 +244,20 @@ export async function writeFeature(
   await fs.writeFile(tmp, serializeFeature(f));
   await fs.rename(tmp, p);
 }
+
+/**
+ * The last `## Report` section of a feature's body, heading included:
+ * what the agent said about the round that just ended. Null when the
+ * feature has no report yet.
+ */
+export function lastReport(body: string): string | null {
+  const heads = [...body.matchAll(/^## Report\b.*$/gm)];
+  const last = heads[heads.length - 1];
+  if (!last) return null;
+  const from = last.index!;
+  // up to the next section of either kind, else the end of the body
+  const after = body.slice(from + last[0].length);
+  const next = /^## (?:Report|Response)\b/m.exec(after);
+  const text = next ? after.slice(0, next.index) : after;
+  return `${last[0]}${text}`.trim();
+}

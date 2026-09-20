@@ -84,6 +84,42 @@ CREATE TABLE IF NOT EXISTS feature_ranges (
   end_commit TEXT,
   PRIMARY KEY (project_id, slug, repo)
 );
+-- One agent's work on one feature. Deliberately without foreign keys and
+-- with the agent's identity copied in: the log is the point after the
+-- agent, and even the project, is forgotten.
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  profile TEXT NOT NULL,
+  model TEXT,
+  effort TEXT,
+  permissions TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  feature_status TEXT,
+  outcome TEXT,
+  base_commit TEXT,
+  end_commit TEXT,
+  turns INTEGER,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cost_usd REAL,
+  item_from INTEGER NOT NULL,
+  item_to INTEGER,
+  -- the vendor's running totals when the run began, so the close can
+  -- report the difference after a restart of the manager
+  start_spend TEXT,
+  report TEXT,
+  transcript_file TEXT
+);
+CREATE INDEX IF NOT EXISTS runs_project ON runs (project_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS runs_open ON runs (agent_id) WHERE ended_at IS NULL;
 `;
 
 /** The SQLite handle plus schema setup. Queries live in the services that own the tables. */

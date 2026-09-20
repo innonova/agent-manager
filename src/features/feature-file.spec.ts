@@ -1,4 +1,4 @@
-import { parseFeature, serializeFeature } from './feature-file.js';
+import { lastReport, parseFeature, serializeFeature } from './feature-file.js';
 
 describe('feature files', () => {
   it('parses frontmatter with defaults and keeps unknown keys', () => {
@@ -82,5 +82,32 @@ describe('feature files', () => {
       extra: { profile: 'claude' },
     });
     expect(serializeFeature(f)).toContain('profile: claude');
+  });
+
+  it('takes the last report, heading included, and stops at the next section', () => {
+    const body = [
+      'The spec.',
+      '',
+      '## Report (2026-09-18)',
+      '',
+      'First round.',
+      '',
+      '## Response (2026-09-19)',
+      '',
+      'Do more.',
+      '',
+      '## Report (2026-09-20)',
+      '',
+      'Second round. Tests pass.',
+      '',
+    ].join('\n');
+    expect(lastReport(body)).toBe(
+      '## Report (2026-09-20)\n\nSecond round. Tests pass.',
+    );
+    // a report still being written, with nothing after it, and none at all
+    expect(lastReport('## Report (2026-09-20)\n\nWorking.')).toContain(
+      'Working.',
+    );
+    expect(lastReport('Just a spec.')).toBeNull();
   });
 });

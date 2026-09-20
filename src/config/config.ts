@@ -23,6 +23,8 @@ export interface ManagerConfig {
   eventsPingMs: number;
   /** An agent idle with background jobs and no activity this long is asked to check on them; 0 disables. */
   backgroundPokeMs: number;
+  /** A run whose agent has done nothing for this long is closed as abandoned; 0 disables. */
+  runIdleMs: number;
   /** Transcript items kept in memory per agent beyond what the transcript cache holds. */
   residentItems: number;
   /** How this machine is named to the UI, and by a hub that fronts for it. */
@@ -105,6 +107,7 @@ export function loadConfig(
         env.AGENT_MANAGER_DATA_DIR ?? path.join(xdgState, 'agent-manager'),
         'spokes.json',
       ),
+    runIdleMs: Number(env.AGENT_MANAGER_RUN_IDLE_MS ?? 2 * 60 * 60 * 1000),
     harnessFile:
       env.AGENT_MANAGER_HARNESS_FILE ??
       path.join(xdgConfig, 'agent-manager', 'harness.md'),
