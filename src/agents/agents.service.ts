@@ -927,6 +927,27 @@ export class AgentsService
   }
 
   /**
+   * Stops and resumes one agent, so it starts a fresh process with the
+   * current settings (repositories, harness note) and its conversation
+   * intact. Refused while it works, waits on a permission or has
+   * background jobs: the human interrupts first if that is meant. An
+   * exited agent is simply started.
+   */
+  async restart(id: string): Promise<void> {
+    const live = this.ensureLive(this.get(id));
+    await this.awaitSynced(live);
+    await this.withLock(live, async () => {
+      const agent = this.get(id);
+      if (agent.currentSessionId && live.status.state !== 'idle')
+        throw new ConflictException(`agent is ${live.status.state}`);
+      if (live.status.background > 0)
+        throw new ConflictException('agent has background jobs');
+      if (agent.currentSessionId) await this.stopLocked(agent, true);
+      await this.startSession(this.get(id), live);
+    });
+  }
+
+  /**
    * Stops and resumes every agent of a project that is idle with a live
    * session, so it picks up changed project settings (a repository added,
    * say). Agents mid-turn, waiting on a permission or with background

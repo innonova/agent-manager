@@ -723,6 +723,7 @@ POST   /api/agents/:id/turn         { text, steer?, images? }   -> 202 { mode: '
 POST   /api/agents/:id/permission { requestId, option }       -> answers a pending permission request with one of the options the item offered; 404 if none is pending
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
+POST   /api/agents/:id/restart      -> { ok }; stops and resumes this agent with the current settings (repositories, harness note), conversation intact; an exited one is started; 409 while working, waiting on a permission or with background jobs
 POST   /api/agents/:id/archive
 
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)

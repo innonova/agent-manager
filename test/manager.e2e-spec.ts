@@ -907,6 +907,63 @@ describe('agents', () => {
     });
   });
 
+  it('restarts one agent with its conversation, and refuses while it works', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'again');
+    let mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'hello' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      10000,
+      mark,
+    );
+    for (let i = 0; i < 100; i++) {
+      if (
+        (await api.get(`/api/agents/${agent.id}`)).body.status.state === 'idle'
+      )
+        break;
+      await sleep(20);
+    }
+    const before = (await api.get(`/api/agents/${agent.id}`)).body.agent;
+    mark = events.mark();
+    expect((await api.post(`/api/agents/${agent.id}/restart`)).status).toBe(
+      201,
+    );
+    const after = (await api.get(`/api/agents/${agent.id}`)).body;
+    expect(after.agent.currentSessionId).not.toBe(before.currentSessionId);
+    expect(after.agent.vendorConversationId).toBe(before.vendorConversationId); // resumed, not started over
+    expect(after.sessions).toHaveLength(2);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'system' &&
+        f.item.item.text.startsWith('session resumed'),
+      10000,
+      mark,
+    );
+    // busy: refused with the state, nothing restarted
+    mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'slow please' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'working',
+      10000,
+      mark,
+    );
+    const busy = await api.post(`/api/agents/${agent.id}/restart`);
+    expect(busy.status).toBe(409);
+    expect(busy.body.message).toBe('agent is working');
+    expect(
+      (await api.get(`/api/agents/${agent.id}`)).body.agent.currentSessionId,
+    ).toBe(after.agent.currentSessionId);
+  }, 30000);
+
   it('stops and archives', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id);

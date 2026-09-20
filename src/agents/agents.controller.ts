@@ -141,6 +141,13 @@ export class AgentsController {
     return { ok: true };
   }
 
+  /** Stops and resumes the agent with the current settings; 409 while it works, waits on a permission or has background jobs. */
+  @Post('agents/:id/restart')
+  async restartOne(@Param('id') id: string): Promise<{ ok: true }> {
+    await this.agents.restart(id);
+    return { ok: true };
+  }
+
   @Post('agents/:id/archive')
   async archive(@Param('id') id: string): Promise<{ ok: true }> {
     await this.agents.archive(id);
