@@ -1,6 +1,6 @@
 ---
 title: a per-project setting for when agents delegate
-status: review
+status: done
 priority: 45
 ---
 

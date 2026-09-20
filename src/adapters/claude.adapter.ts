@@ -552,6 +552,8 @@ export class ClaudeAdapter implements AgentAdapter {
         // messages, so the count sums across each one's message_delta.
         const out = ev.usage?.output_tokens;
         if (typeof out === 'number') this.turnOutputTokens += out;
+        // the message is settled: its thinking is inside the total now
+        this.thinkingTokens = 0;
         return this.currentActivity
           ? {
               activity: this.activityHint(
@@ -581,11 +583,12 @@ export class ClaudeAdapter implements AgentAdapter {
     detail?: string,
   ): NonNullable<Ingest['activity']> {
     this.currentActivity = detail === undefined ? { kind } : { kind, detail };
-    // Thinking is the one stretch Claude counts live; everything else
-    // reports the turn's settled output, which only moves at a
-    // `message_delta` between stretches.
-    const tokens =
-      kind === 'thinking' ? this.thinkingTokens : this.turnOutputTokens;
+    // One running number for the turn: the settled output of the messages
+    // so far plus Claude's live estimate of the stretch under way, which
+    // folds into the total when the message settles. It only ever grows
+    // within a turn; a count that started over at each stretch read as
+    // noise (the person's note, 2026-09-20).
+    const tokens = this.turnOutputTokens + this.thinkingTokens;
     return { ...this.currentActivity, tokens };
   }
 

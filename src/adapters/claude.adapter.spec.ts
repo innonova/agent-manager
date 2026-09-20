@@ -158,6 +158,74 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  it('reports one running number: the settled total plus the stretch under way', () => {
+    const a = new ClaudeAdapter();
+    a.ingest(
+      rec('out', ev({ type: 'message_start', message: { model: 'm' } }), 1),
+    );
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text' },
+        }),
+        2,
+      ),
+    );
+    a.ingest(
+      rec(
+        'out',
+        ev({ type: 'message_delta', usage: { output_tokens: 12 } }),
+        3,
+      ),
+    );
+    // a new message starts thinking: its estimate rides on top of the 12
+    a.ingest(
+      rec(
+        'out',
+        { type: 'system', subtype: 'status', status: 'requesting' },
+        4,
+      ),
+    );
+    a.ingest(
+      rec(
+        'out',
+        ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking' },
+        }),
+        5,
+      ),
+    );
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          {
+            type: 'system',
+            subtype: 'thinking_tokens',
+            estimated_tokens: 50,
+            estimated_tokens_delta: 50,
+          },
+          6,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 62 } });
+    // the message settles with 60 output tokens, thinking included: 72, not 122
+    expect(
+      a.ingest(
+        rec(
+          'out',
+          ev({ type: 'message_delta', usage: { output_tokens: 60 } }),
+          7,
+        ),
+      ),
+    ).toEqual({ activity: { kind: 'thinking', tokens: 72 } });
+  });
+
   it("sums output tokens across a turn's message_delta events and resets them per turn", () => {
     const a = new ClaudeAdapter();
     a.ingest(rec('out', ev({ type: 'message_start' }), 0));
@@ -389,7 +457,7 @@ describe('ClaudeAdapter', () => {
           12,
         ),
       ),
-    ).toEqual({ activity: { kind: 'thinking', tokens: 0 } });
+    ).toEqual({ activity: { kind: 'thinking', tokens: 378 } }); // the settled total so far, not zero: one running number
     expect(
       a.ingest(
         rec(
@@ -402,7 +470,7 @@ describe('ClaudeAdapter', () => {
           13,
         ),
       ),
-    ).toEqual({ activity: { kind: 'thinking', tokens: 50 } });
+    ).toEqual({ activity: { kind: 'thinking', tokens: 428 } }); // 378 settled plus the stretch's 50
     // a thinking estimate outside a thinking stretch changes nothing on its own
     a.ingest(rec('out', { type: 'result', usage: {}, subtype: 'success' }, 14));
     expect(

@@ -222,12 +222,14 @@ permission request or an `ask` left open. Claude's `tool_progress`
 heartbeats (every 30 s of a long call) re-report the call as it stands,
 so `since` keeps saying when it began; a heartbeat for any other call is
 ignored. `tokens` is how much the agent has produced, as the vendor
-reports it while streaming, reset per turn. While `thinking`, it is
-Claude's live estimate of the stretch under way (`thinking_tokens`
-records, or a `thinking_delta`'s own `estimated_tokens` when those do
-not arrive), cumulative within the stretch and counted from zero at the
-next one, so it ticks every few hundred ms instead of standing still
-until the message ends. Otherwise it is the turn's settled output:
+reports it while streaming, reset per turn: one running number that
+only grows within the turn. For Claude it is the settled output of the
+turn's messages so far plus the live estimate of the stretch under way
+(`thinking_tokens` records, or a `thinking_delta`'s own
+`estimated_tokens` when those do not arrive), which ticks every few
+hundred ms and folds into the settled total when its message ends (a
+count that started over at each stretch read as noise). The settled
+part is the turn's output:
 Claude's cumulative `usage.output_tokens` summed across a turn's
 `message_delta` events (a tool-use turn is several Claude messages,
 each ending with its own), Codex's summed from `thread/tokenUsage/updated`'s
