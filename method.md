@@ -1,119 +1,144 @@
-# Working with agents: the method
+# The method: working with agents
 
-How work is given to agents here, how agents give work to other agents,
-and how the results are judged. The mechanisms (feature files, the
-harness note, tokens, the run log) are specified in `design.md`; this
-is the practice, kept as one document because it accreted across four
-repositories' `CLAUDE.md` files and a day of runs (2026-09-20) and was
-hard to see whole. Each repository's `CLAUDE.md` points here.
+How work is given to agents under this manager and how agents give
+work to other agents. Drafted 2026-09-20 from two curation readings of
+the first day's log and a rethink that evening: the agents we start
+are colleagues we trust, not helpers we manage. The companion,
+`framing.md` (`am framing`), is how to write the feature and the
+brief.
 
-## Features are the unit of work
+Provisional, and it says so. It rests on one day: three agents, nine
+feature rounds, two readings. Where a step rests on little, it is
+marked.
 
-A unit of work is a file, `features/<slug>.md`, in the repository it
-belongs to: frontmatter (`title`, `status`, `priority`, `dependsOn`),
-the spec, then dated `## Report` sections written by the agent that
-worked on it and `## Response` sections written by whoever reviews.
-Nothing queues them: a person, or a delegating agent, asks an agent in
-conversation to work on one or several. The agent sets `in-progress`,
-does the work, appends a report and sets `review` (or `blocked`, with
-the reason). The reviewer answers under a response and sets `planned`
-again, or `done`.
+## The premise
 
-A report has four parts: what changed, what was verified, what is left
-open, and **what was noticed and left alone**. The last exists because
-a helper asked to stay in scope will otherwise keep what it saw outside
-it to itself; the first debrief found four such things in one batch.
-The slot has to exist at the moment of noticing, not at a debrief.
+An agent started here is a trusted colleague with less context. It
+works under the same rule as every other agent on this manager,
+including the one that started it: do what the work needs, take the
+small adjacent fix and say so, and ask first for the short list (a
+force push, a history rewrite, ending sessions, work that changes
+what was asked for). It is not confined to a list of files or a
+repository. The first version of this document confined it, and the
+log shows what that cost: a defect in an agent's own shipped work
+went unsaid because it was "beyond the spec", and a fix the agent had
+in hand waited for permission (learnings #6, and the run log's third
+round).
 
-## The gate
+What such an agent lacks is not trust but context: it did not sit in
+the conversation that produced the work. So the method spends its
+effort on giving context, not on limiting action. The docs carry the
+intent of the project; the feature carries the intent of the work; the
+orientation is where an agent takes both in; the plan is where it
+shows what it took in, and where it is answered.
 
-"Done" means tests and lint pass at the gate, the docs that describe
-the behaviour are updated, and the work is committed. For one feature
-worked alone, the gate is that feature: full suite, lint, commit, push,
-deploy. For a batch, several features in one helper's context, each
-feature gets the cheap checks and its own commit (bisectable), no push
-and no deploy; the batch ends with one gate, the full suite and lint
-and whatever review the work warrants, run by whoever closes the batch,
-who fixes the fallout, pushes and deploys. Reports say which it was.
+## Units and roles
 
-## Delegating: how a helper is run
+A unit of work is a feature file, `features/<slug>.md`, in the
+repository it belongs to. It names an outcome, not a repository: the
+agent that takes it owns every repository the outcome touches, for the
+duration. Splitting one outcome by repository across two agents was the
+first day's structural mistake: the agent that built the field could
+not know what the screen would say with it, and said so (learnings
+#5).
 
-An agent with a session token can start another agent in its project
-(`am new`, another model or vendor, an effort level), give it work
-(`am turn --quiet` returns the final answer; `am wait` collects one
-sent with `--no-wait`), read its report and the feature's commit range,
-and forget it (`am delete`) once the work is gated. One writer per
-repository: delegation is sequential, the delegating agent does not
-edit while a helper runs in the same repository.
+Its status is the handshake: `planned` invites, `in-progress` claims,
+`review` is a report waiting, `blocked` is a reason waiting, `done`
+closes. A person, or an agent, asks for the work in conversation; the
+status alone never starts it.
 
-1. **Orient first.** The first turn asks the helper to read `CLAUDE.md`,
-   `docs/design.md` and `features/` and to answer with what it
-   understood and what it would question. That loads the context a
-   brief cannot carry, and the answer shows whether it read the right
-   things before it has touched anything. Orientation amortises over
-   conventions, not subsystems: a feature in a part of the code the
-   helper has not read gets its own reading pass, and that is not a
-   failure of the orientation.
-2. **A plan before each feature, verification first.** "Read the
-   feature; say what will be hard to verify and how you will verify it,
-   then how you would do it, which files, which existing pattern, and
-   what in the spec you would push back on; do not edit yet." The
-   verification comes first because that is where the hours went in
-   every run so far. The delegating agent answers the plan and the
-   dissent, substantively, then says go. Brief the missed approach with
-   the approach.
-3. **Shape, not route.** A brief names the outcome, the files that
-   matter and the pattern to follow, what not to touch, the gate, and
-   the purpose: what the reader of the result should be able to
-   conclude. It does not say how. Specifying the shape of the result (a
-   table's columns, a field's type) is a map and helps; specifying the
-   route (which vendor event to sum) is prescription and sets the
-   helper to literal compliance, where it does exactly the sentences it
-   was given and nothing between them.
-4. **Three scopes, named apart.** Act only within the feature. Look
-   anywhere: the whole repository, the sibling repositories, the daemon
-   logs. Say anything noticed, regardless of scope, in the plan and in
-   the report's last section. A helper that is told only the first
-   collapses the other two into it: "not mine to change" becomes "not
-   mine to read", and a checkable claim about a sibling repository ships
-   as an assumption.
-5. **Several features per helper, then forget it.** Three to five in
-   one context, so the orientation pays for itself and compaction does
-   not eat it. Then the batch gate, the review, the delete.
-6. **Look at UI work.** A green suite says nothing about what a screen
-   looks like. A UI feature is screenshotted and measured before it is
-   gated, and the brief says what to measure. Design with any taste in
-   it goes to a frontier model or stays in the main session, where the
-   conversation that produced the wish is; a cheaper model wires up
-   what has been designed.
+Roles are about who does what, not rank. The person owns what is
+wanted and the last word. The delegating agent, usually the session
+that holds the conversation, writes features and briefs, answers
+plans, reviews, and records what was learned. The agent that takes a
+feature does the work, reports, and is heard. One repository has one
+writer at a time; the writer is whoever holds the feature that touches
+it, and an agent that finds it must write where another is writing
+says so in the next turn rather than waiting.
 
-## Closing the loop
+## Bringing an agent in
 
-The delegating agent reviews the commit range and the report, runs the
-gate itself, and records the outcome on the run (`am runs review`):
-accepted, or sent back with a cause. The cause is one of three: the
-model did it wrong; the brief was wrong or thin; a fact the
-repository's docs should have carried was missing. The distinction is
-the point of the run log. Without it a briefing gap is charged to the
-model, and the models file, which is written from the log, confirms
-itself. The first such misattribution is on record in
-`features/activity-in-agent-status.md`.
+1. **Start** it with `am new <project> <name> --profile P --model M
+   [--effort E]`. Which model is a judgement informed by `models.md`
+   and what the work is (see Choosing, below).
+2. **Orient it in the vision, then the code.** The first turn asks it
+   to read what the project is for (the design doc's purpose and
+   principles, and the person's own statement of what a good result
+   looks like, once that exists), then `CLAUDE.md`, the design doc and
+   `features/`, and to answer with what it understood and what it
+   would question. That answer is read before any work: it shows what
+   the agent took in, and it is the one place a missing doc fact
+   surfaces before it costs a round.
+3. **Plan together, verification first.** Per feature, before any
+   edit: what will be hard to verify and how; how it would do the
+   work; what in the feature it would push back on. Every point is
+   answered on its merits, and a decision that will matter to the next
+   reader is written into the design doc, not the report. This is not
+   a checkpoint; it is the two agents thinking about the same thing
+   before one of them types. It has changed the design outright once
+   and the implementation in most rounds, for about a dollar a time
+   (learnings #11, #14).
+4. **Let it work.** The agent does what the feature needs, across the
+   repositories it touches, fixes what it finds in its own work, and
+   records what it learns as it goes (`am learn`). It stops and says
+   so when the work turns out larger than the brief valued it at, or
+   when something changes what was asked for.
+5. **Read its report** as its account, in four parts: what changed,
+   what was verified and how, what is left open, what it noticed. The
+   third part is where a known gap in the delivered work goes, and it
+   is settled before acceptance.
+6. **Gate together.** Done is: the tests and lint pass, the docs that
+   describe the behaviour are updated, the work is committed, and for
+   UI work someone has looked at the screen in the state the brief
+   named. The agent runs the checks; the delegating agent runs them
+   again only where it has a concern, and looks at the screen with its
+   own eyes. A check chained to a commit stops the commit on failure;
+   three commits shipped red or mis-described on the first day for
+   want of that, all the delegating agent's (learnings #8, #31).
+7. **Close the loop in writing.** `am runs review` with an outcome and
+   a cause, and a note saying why: what the agent had, what it did not
+   have, and which of those explains the result. The reviewer is
+   usually the briefer, so the note is written against the incentive
+   to charge the model (learnings #7, #19).
+8. **Batch** several features in one context so the orientation pays
+   for itself; one commit per feature; one gate. Two per batch is on
+   record; more is untested.
+9. **Debrief** before parting: what worked, what the briefs got wrong,
+   what it needed and did not have, what it would change here, what it
+   held back. The raw answer is read beside any summary of it
+   (learnings #6).
+10. **Part.** `am delete` once the work is gated and the debrief read.
+    The run log keeps the run and the vendor keeps the conversation.
 
-A missing doc fact is fixed in the doc, not in the next brief.
+## Choosing the model
 
-## Debriefs
+Every feature does not need the strongest model, and the cost
+difference is large. As of the first day: Opus 5 did manager work in
+half the time and well under half the cost of Sonnet 5 on the one
+near-comparable pair, with better plans and honest reports; there is
+no working strategy yet for Sonnet 5 on this codebase, and the
+comparison is confounded by the context each was given; Fable 5.1 is
+where design and taste stay. Opus 4.8 is the next experiment, for a
+reason the person gave and the log should test: it reasons more like
+the session that holds the conversation, whatever it lacks in
+particular coding measures. `models.md` holds the current view with
+how many runs each line rests on.
 
-After a batch, before the helper is forgotten, one more turn: what
-worked, what in the briefs was unclear or over-specified or missing,
-what it needed and did not have, what it would change in the method,
-and what it decided not to say. Read the raw answer next to the
-delegating agent's summary of it; the summary is where the gradient
-lives too. The method above is the first debrief's findings, taken up.
+## The record
 
-## The models file
+- The learnings log takes observations with evidence at the moment of
+  noticing (`am learn`); rules go in this document after curation; a
+  wrong entry is answered, not edited.
+- The run log records a feature's round from `in-progress` to its end.
+  It does not hold the orientation, the plan or the debrief (learnings
+  #17, #30), so the method's own cost is read from transcripts.
+- A curation reads the log since the last curation entry, proposes
+  changes to this document, `framing.md` and `models.md`, a person
+  reviews them, and the curation is itself an entry naming what it
+  read and the commit that changed the documents.
 
-`models.md` beside `harness.md`, rendered into every agent's note: the
-house view of which model, and which effort, suits which kind of work,
-organised by the work because that is how a chooser reads it. It is a
-conclusion drawn from the run log by hand, and it says when not to
-delegate at all.
+## When to keep the work in the session
+
+Work whose specification is the conversation that produced it, and
+anything decided by taste. And anything the delegating agent can do in
+ten lines; a round costs more than that.
