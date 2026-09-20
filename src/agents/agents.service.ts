@@ -15,6 +15,8 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type {
   AccountUsage,
+  Activity,
+  ActivityKind,
   AgentAdapter,
   AgentState,
   Ingest,
@@ -83,6 +85,8 @@ export interface AgentStatus {
   queued: number;
   /** The vendor account's limits as last reported through this agent, if it has said. */
   usage: AccountUsage | null;
+  /** What the last thing on the stream was doing; null outside a turn. */
+  activity: Activity;
 }
 
 export interface StoredItem {
@@ -191,6 +195,10 @@ interface Live {
   flushing: boolean;
   /** When the watchdog last asked about background jobs. */
   lastPokeAt: number;
+  /** When an `activity`-only change was last announced, for its own throttle. */
+  lastActivityEmitAt: number;
+  /** A coalesced `activity` change waiting out the throttle window; picks up the latest value when it fires. */
+  activityFlush: NodeJS.Timeout | null;
   /**
    * The status changed while a replay was in flight and has not been
    * announced: states derived from history are applied silently and only
@@ -1017,6 +1025,7 @@ export class AgentsService
       this.auth.revokeAgentTokens(id);
       const refs = this.sessions(id);
       this.db.prepare('DELETE FROM agents WHERE id = ?').run(id); // sessions and authors cascade
+      if (live.activityFlush) clearTimeout(live.activityFlush);
       this.live.delete(id);
       for (const ref of refs) {
         this.sessionOwner.delete(ref.daemonSessionId);
@@ -1059,6 +1068,7 @@ export class AgentsService
           const agent = this.get(row.id); // fresh: a resume may have happened while we waited
           await this.stopLocked(agent, true);
           for (const sid of live.sessions.keys()) this.sessionOwner.delete(sid);
+          if (live.activityFlush) clearTimeout(live.activityFlush);
           this.live.delete(agent.id);
           this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
           await live.cache.chain;
@@ -1530,7 +1540,16 @@ export class AgentsService
         ingest.state,
         ingest.error ?? null,
         sl.attaching,
+        record.t,
       );
+    // A content hint only says something while the state itself does not
+    // change (a state transition's own activity is setState's to derive).
+    if (
+      ingest.activity !== undefined &&
+      !ingest.state &&
+      sl.id === agent.currentSessionId
+    )
+      this.setActivity(agent, live, ingest.activity, sl.attaching, record.t);
     // At a turn end everything the session produced so far is final:
     // remember the adapter's state here so a restart can continue from it.
     if (turnEnded) this.settle(agent, live, sl);
@@ -2112,6 +2131,7 @@ export class AgentsService
           model: null,
           queued: 0,
           usage: null,
+          activity: null,
         },
         items: [],
         itemBase: 0,
@@ -2135,6 +2155,8 @@ export class AgentsService
         queued: [],
         flushing: false,
         lastPokeAt: 0,
+        lastActivityEmitAt: 0,
+        activityFlush: null,
       };
       this.live.set(agent.id, live);
     }
@@ -2221,15 +2243,29 @@ export class AgentsService
     return stored;
   }
 
-  /** Records the status; announces it unless `quiet` (a replay in flight), in which case `releaseState` will. */
+  /**
+   * Records the status; announces it unless `quiet` (a replay in flight), in
+   * which case `releaseState` will. `activity` follows the transition:
+   * `waiting-permission` sets it to `waiting`, any other real change of
+   * `state` clears it (a turn beginning or ending has nothing to show yet),
+   * and a call that only changes `error` (same `state`) leaves it alone.
+   * `at` is the record time behind the transition, for `activity.since`.
+   */
   private setState(
     agent: Agent,
     live: Live,
     state: AgentState,
     error: string | null,
     quiet = false,
+    at: number = Date.now(),
   ): void {
     if (live.status.state === state && live.status.error === error) return;
+    const activity: Activity =
+      state === live.status.state
+        ? live.status.activity
+        : state === 'waiting-permission'
+          ? { kind: 'waiting', since: at }
+          : null;
     live.status = {
       state,
       error,
@@ -2239,6 +2275,7 @@ export class AgentsService
       model: state === 'exited' ? null : live.status.model,
       queued: live.status.queued,
       usage: live.status.usage,
+      activity,
     };
     // A message held for the next turn goes as soon as the agent can take
     // one; a transition replayed from history is not that moment.
@@ -2249,8 +2286,66 @@ export class AgentsService
       return;
     }
     live.stateHeld = false;
+    if (live.activityFlush) {
+      clearTimeout(live.activityFlush);
+      live.activityFlush = null;
+    }
+    live.lastActivityEmitAt = Date.now();
     this.emit('state', agent.id, agent.projectId, live.status);
     this.emit('counts', agent.projectId, this.counts(agent.projectId));
+  }
+
+  /**
+   * A mid-turn content hint from the adapter (thinking, writing, a tool):
+   * applied to the status at once, announced on change like any other
+   * status field, but coalesced to at most one announcement a second while
+   * it keeps changing, so a burst of small tool calls does not flood the
+   * socket; a state transition's own activity (set by `setState`) is never
+   * throttled. A pending coalesce always fires with the latest value.
+   */
+  private setActivity(
+    agent: Agent,
+    live: Live,
+    hint: { kind: Exclude<ActivityKind, 'waiting'>; detail?: string } | null,
+    quiet: boolean,
+    at: number,
+  ): void {
+    const cur = live.status.activity;
+    const same =
+      (cur?.kind ?? null) === (hint?.kind ?? null) &&
+      (cur?.detail ?? undefined) === (hint?.detail ?? undefined);
+    if (same) return;
+    live.status = {
+      ...live.status,
+      activity: hint
+        ? { kind: hint.kind, detail: hint.detail, since: at }
+        : null,
+    };
+    if (quiet) {
+      live.stateHeld = true;
+      return;
+    }
+    this.announceActivity(agent, live);
+  }
+
+  /** Emits the current status now if the throttle window is open, or schedules it for when it opens. */
+  private announceActivity(agent: Agent, live: Live): void {
+    const now = Date.now();
+    const wait = live.lastActivityEmitAt + 1000 - now;
+    if (wait <= 0) {
+      live.lastActivityEmitAt = now;
+      live.stateHeld = false;
+      this.emit('state', agent.id, agent.projectId, live.status);
+      return;
+    }
+    if (live.activityFlush) return; // already scheduled; it reads live.status when it fires
+    live.activityFlush = setTimeout(() => {
+      live.activityFlush = null;
+      live.lastActivityEmitAt = Date.now();
+      live.stateHeld = false;
+      this.emit('state', agent.id, agent.projectId, live.status);
+    }, wait);
+    live.activityFlush.unref();
   }
 
   /** The count of background jobs is part of the status and announced like a state change. */
@@ -2274,6 +2369,7 @@ export class AgentsService
   private releaseState(agent: Agent, live: Live): void {
     if (!live.stateHeld) return;
     live.stateHeld = false;
+    live.lastActivityEmitAt = Date.now();
     this.emit('state', agent.id, agent.projectId, live.status);
     this.emit('counts', agent.projectId, this.counts(agent.projectId));
     if (live.status.state === 'idle' && live.queued.length)

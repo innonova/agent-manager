@@ -133,7 +133,7 @@ describe('CodexAdapter', () => {
   it('turns the recorded two-turn session with a command into items', () => {
     const a = new CodexAdapter();
     a.startLines({ cwd: '/w', resume: null });
-    const { items, states, conversationId, error } = replay(
+    const { items, states, activities, conversationId, error } = replay(
       a,
       loadFixture('codex', 'tool-and-text.ndjson'),
     );
@@ -175,6 +175,14 @@ describe('CodexAdapter', () => {
       'idle',
     ]);
     expect(a.turnInProgress()).toBe(false);
+    // a command's activity names it; the reply around it is `writing`
+    const toolKinds = activities.filter((act) => act?.kind === 'tool');
+    expect(toolKinds.map((act) => act?.detail)).toEqual([
+      "/bin/bash -lc 'cat note.txt'",
+      "/bin/bash -lc 'printf beta > created.txt'",
+    ]);
+    expect(activities.some((act) => act?.kind === 'writing')).toBe(true);
+    expect(activities[0]).toEqual({ kind: 'writing' });
   });
 
   it('builds turn and interrupt lines once the thread is known', () => {

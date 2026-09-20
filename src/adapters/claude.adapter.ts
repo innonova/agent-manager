@@ -11,6 +11,7 @@ import type {
   PermissionRequest,
   Permissions,
 } from './adapter.js';
+import { toolActivityDetail } from './adapter.js';
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -418,6 +419,7 @@ export class ClaudeAdapter implements AgentAdapter {
             text: block.text ?? '',
           };
           return {
+            activity: { kind: 'writing' },
             ops: [
               {
                 op: 'append',
@@ -439,6 +441,7 @@ export class ClaudeAdapter implements AgentAdapter {
             kind: 'thinking',
             text: block.thinking ?? '',
           };
+          return { activity: { kind: 'thinking' } };
         }
         return {};
       }
@@ -448,6 +451,7 @@ export class ClaudeAdapter implements AgentAdapter {
         if (s.kind === 'text' && ev.delta?.type === 'text_delta') {
           s.text += ev.delta.text;
           return {
+            activity: { kind: 'writing' },
             ops: [
               {
                 op: 'update',
@@ -464,6 +468,7 @@ export class ClaudeAdapter implements AgentAdapter {
         ) {
           s.text += ev.delta.thinking;
           return {
+            activity: { kind: 'thinking' },
             ops: [
               {
                 op: 'update',
@@ -500,11 +505,13 @@ export class ClaudeAdapter implements AgentAdapter {
   /** The complete block: authoritative. Replaces the streamed item under its key, or is appended. */
   private ingestAssistant(message: any): Ingest {
     const ops: ItemOp[] = [];
+    let activity: Ingest['activity'];
     const s = this.streaming;
     for (const block of message?.content ?? []) {
       switch (block.type) {
         case 'text':
           if (!block.text) break;
+          activity = { kind: 'writing' };
           if (s?.kind === 'text')
             ops.push({
               op: 'update',
@@ -518,6 +525,7 @@ export class ClaudeAdapter implements AgentAdapter {
           break;
         case 'thinking':
           if (!block.thinking) break;
+          activity = { kind: 'thinking' };
           if (s?.kind === 'thinking' && s.text)
             ops.push({
               op: 'update',
@@ -527,6 +535,10 @@ export class ClaudeAdapter implements AgentAdapter {
           else ops.push(append({ kind: 'thinking', text: block.thinking }));
           break;
         case 'tool_use':
+          activity = {
+            kind: 'tool',
+            detail: toolActivityDetail(block.name, block.input),
+          };
           ops.push(
             append({
               kind: 'tool_use',
@@ -541,7 +553,7 @@ export class ClaudeAdapter implements AgentAdapter {
       }
     }
     this.streaming = null;
-    return { ops };
+    return { activity, ops };
   }
 
   private ingestToolResults(line: any): Ingest {

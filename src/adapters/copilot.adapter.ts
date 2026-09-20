@@ -10,6 +10,7 @@ import type {
   PermissionRequest,
   Permissions,
 } from './adapter.js';
+import { toolActivityDetail } from './adapter.js';
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -435,6 +436,7 @@ export class CopilotAdapter implements AgentAdapter {
           this.textKey = `t${++this.texts}`;
           this.text = chunk;
           return {
+            activity: { kind: 'writing' },
             ops: [
               ...(this.turnOpen
                 ? []
@@ -449,6 +451,7 @@ export class CopilotAdapter implements AgentAdapter {
         }
         this.text += chunk;
         return {
+          activity: { kind: 'writing' },
           ops: [
             {
               op: 'update',
@@ -464,6 +467,7 @@ export class CopilotAdapter implements AgentAdapter {
           this.thoughtKey = `th${++this.texts}`;
           this.thought = chunk;
           return {
+            activity: { kind: 'thinking' },
             ops: [
               {
                 op: 'append',
@@ -475,6 +479,7 @@ export class CopilotAdapter implements AgentAdapter {
         }
         this.thought += chunk;
         return {
+          activity: { kind: 'thinking' },
           ops: [
             {
               op: 'update',
@@ -494,13 +499,18 @@ export class CopilotAdapter implements AgentAdapter {
       }
       case 'tool_call': {
         this.thoughtKey = null;
+        const name = String(u.title ?? u.kind ?? 'tool');
         return {
+          activity: {
+            kind: 'tool',
+            detail: toolActivityDetail(name, u.rawInput),
+          },
           ops: [
             ...this.endText(),
             append({
               kind: 'tool_use',
               id: String(u.toolCallId),
-              name: String(u.title ?? u.kind ?? 'tool'),
+              name,
               input: u.rawInput ?? null,
             }),
           ],

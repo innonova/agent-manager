@@ -10,6 +10,7 @@ import type {
   PermissionRequest,
   Permissions,
 } from './adapter.js';
+import { toolActivityDetail } from './adapter.js';
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -164,6 +165,7 @@ export class FakeAdapter implements AgentAdapter {
         this.streamingText = '';
         this.textKey = `t${++this.texts}`;
         return {
+          activity: { kind: 'writing' },
           ops: [
             {
               op: 'append',
@@ -175,6 +177,7 @@ export class FakeAdapter implements AgentAdapter {
       case 'text_delta':
         this.streamingText += line.text;
         return {
+          activity: { kind: 'writing' },
           ops: [
             {
               op: 'update',
@@ -260,9 +263,16 @@ export class FakeAdapter implements AgentAdapter {
       case 'background':
         return { background: Number(line.count) || 0 };
       case 'thinking':
-        return { ops: [append({ kind: 'thinking', text: line.text })] };
+        return {
+          activity: { kind: 'thinking' },
+          ops: [append({ kind: 'thinking', text: line.text })],
+        };
       case 'tool_use':
         return {
+          activity: {
+            kind: 'tool',
+            detail: toolActivityDetail(line.name, line.input),
+          },
           ops: [
             append({
               kind: 'tool_use',

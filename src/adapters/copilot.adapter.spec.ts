@@ -31,6 +31,32 @@ describe('CopilotAdapter', () => {
     expect(conversationId).toMatch(/^98475de4/);
   });
 
+  it('reports a thought chunk as thinking activity', () => {
+    const a = new CopilotAdapter();
+    const rec = (d: unknown, seq: number) => ({
+      seq,
+      t: 0,
+      s: 'out' as const,
+      d: JSON.stringify(d),
+    });
+    expect(
+      a.ingest(
+        rec(
+          {
+            method: 'session/update',
+            params: {
+              update: {
+                sessionUpdate: 'agent_thought_chunk',
+                content: { type: 'text', text: 'Let me check.' },
+              },
+            },
+          },
+          1,
+        ),
+      ),
+    ).toMatchObject({ activity: { kind: 'thinking' } });
+  });
+
   it('loads an existing session when resuming', () => {
     const a = new CopilotAdapter();
     a.startLines({ cwd: '/w', resume: 'sess-1' });
@@ -47,7 +73,7 @@ describe('CopilotAdapter', () => {
   it('turns the recorded two-turn session with tool calls into items', () => {
     const a = new CopilotAdapter();
     a.startLines({ cwd: '/w', resume: null });
-    const { items, states, error } = replay(
+    const { items, states, activities, error } = replay(
       a,
       loadFixture('copilot', 'tool-and-text.ndjson'),
     );
@@ -79,6 +105,13 @@ describe('CopilotAdapter', () => {
     expect((items[8] as any).usage).toMatchObject({ outputTokens: 175 });
     expect((items[10] as any).text).toBe('PONG');
     expect(states).toEqual(['idle', 'working', 'idle', 'working', 'idle']);
+    // the shell read names its command, the patch falls back to its title
+    const toolActivities = activities.filter((act) => act?.kind === 'tool');
+    expect(toolActivities.map((act) => act?.detail)).toEqual([
+      'cat note.txt',
+      'apply_patch',
+    ]);
+    expect(activities.some((act) => act?.kind === 'writing')).toBe(true);
   });
 
   it('builds prompt and cancel lines once the session is known, and surfaces permission requests', () => {

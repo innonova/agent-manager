@@ -859,6 +859,35 @@ describe('agents', () => {
     ).toBe(true);
   });
 
+  it('derives an activity from the stream and clears it at the turn end', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'activity');
+    await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'please use a tool',
+    });
+    // the fake agent sleeps 50ms between the tool call and its result, long
+    // enough to see the activity mid-flight
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'tool_use',
+    );
+    let status = (await api.get(`/api/agents/${agent.id}`)).body.status;
+    expect(status.activity).toMatchObject({ kind: 'tool' });
+    expect(status.activity.detail).toContain('example.txt');
+    expect(typeof status.activity.since).toBe('number');
+
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+    );
+    status = (await api.get(`/api/agents/${agent.id}`)).body.status;
+    expect(status.activity).toBeNull();
+  });
+
   it('survives a session exit and resumes on the next turn', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id);

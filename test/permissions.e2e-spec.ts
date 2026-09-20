@@ -274,6 +274,35 @@ describe('permissions', () => {
     );
   });
 
+  it('the activity is `waiting` while a permission is pending, and clears once it is answered', async () => {
+    const created = await api.post(`/api/projects/${projectId}/agents`, {
+      name: 'watched',
+      profile: 'fake',
+      permissions: 'ask',
+    });
+    const id = created.body.agent.id as string;
+    await stateOf(id, 'idle');
+
+    const mark = events.mark();
+    await api.post(`/api/agents/${id}/turn`, { text: 'this needs permission' });
+    await stateOf(id, 'waiting-permission', mark);
+    const asked = await itemOf(
+      id,
+      (i) => i.kind === 'permission' && i.decision === null,
+      mark,
+    );
+    let status = (await api.get(`/api/agents/${id}`)).body.status;
+    expect(status.activity).toMatchObject({ kind: 'waiting' });
+
+    await api.post(`/api/agents/${id}/permission`, {
+      requestId: asked.item.item.requestId,
+      option: 'allow',
+    });
+    await stateOf(id, 'idle', mark);
+    status = (await api.get(`/api/agents/${id}`)).body.status;
+    expect(status.activity).toBeNull();
+  });
+
   it('a pending request survives a manager restart: the answer still reaches the agent', async () => {
     const created = await api.post(`/api/projects/${projectId}/agents`, {
       name: 'patient',

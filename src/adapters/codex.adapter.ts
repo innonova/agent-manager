@@ -11,6 +11,7 @@ import type {
   PermissionRequest,
   Permissions,
 } from './adapter.js';
+import { toolActivityDetail } from './adapter.js';
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -349,6 +350,7 @@ export class CodexAdapter implements AgentAdapter {
           (this.texts.get(id) ?? '') + String(line.params?.delta ?? '');
         this.texts.set(id, text);
         return {
+          activity: { kind: 'writing' },
           ops: [
             {
               op: 'update',
@@ -618,6 +620,7 @@ export class CodexAdapter implements AgentAdapter {
           this.textKeys.set(id, key);
           this.texts.set(id, item.text ?? '');
           return {
+            activity: { kind: 'writing' },
             ops: [
               {
                 op: 'append',
@@ -644,7 +647,8 @@ export class CodexAdapter implements AgentAdapter {
           : { ops: [append({ kind: 'text', text, streaming: false })] };
       }
       case 'reasoning':
-        return completed && item.text
+        if (!completed) return { activity: { kind: 'thinking' } };
+        return item.text
           ? { ops: [append({ kind: 'thinking', text: String(item.text) })] }
           : {};
       case 'commandExecution':
@@ -652,6 +656,10 @@ export class CodexAdapter implements AgentAdapter {
         else this.openCommands.add(String(item.id));
         if (!completed)
           return {
+            activity: {
+              kind: 'tool',
+              detail: toolActivityDetail('shell', { command: item.command }),
+            },
             ops: [
               append({
                 kind: 'tool_use',
@@ -676,6 +684,12 @@ export class CodexAdapter implements AgentAdapter {
       case 'fileChange':
         if (!completed)
           return {
+            activity: {
+              kind: 'tool',
+              detail: toolActivityDetail('edit', {
+                path: fileChangePath(item.changes ?? item),
+              }),
+            },
             ops: [
               append({
                 kind: 'tool_use',
@@ -739,6 +753,20 @@ function userItem(input: unknown): Item {
     })
     .filter((x): x is TurnImage => x !== null);
   return { kind: 'user', text, ...(images.length ? { images } : {}) };
+}
+
+/** The path of a fileChange item, whose exact shape is not documented; best effort across a few plausible layouts. */
+function fileChangePath(changes: unknown): string | undefined {
+  if (changes && typeof changes === 'object' && 'path' in changes) {
+    const p = (changes as { path?: unknown }).path;
+    if (typeof p === 'string') return p;
+  }
+  if (Array.isArray(changes)) {
+    for (const c of changes)
+      if (c && typeof c === 'object' && typeof (c as any).path === 'string')
+        return (c as any).path;
+  }
+  return undefined;
 }
 
 /** What the adapter remembers of the account's usage between reports. */

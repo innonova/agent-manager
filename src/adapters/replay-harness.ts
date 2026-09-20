@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AgentAdapter, AgentState, Item } from './adapter.js';
+import type { AgentAdapter, AgentState, Ingest, Item } from './adapter.js';
 import type { LogRecord } from '../daemon/daemon-client.js';
 
 const FIXTURES = path.resolve(
@@ -24,6 +24,7 @@ export function replay(adapter: AgentAdapter, records: LogRecord[]) {
   const states: AgentState[] = [];
   const backgrounds: number[] = [];
   const sent: { afterSeq: number; line: any }[] = [];
+  const activities: Exclude<Ingest['activity'], undefined>[] = [];
   let conversationId: string | undefined;
   let error: string | undefined;
   for (const r of records) {
@@ -41,6 +42,15 @@ export function replay(adapter: AgentAdapter, records: LogRecord[]) {
     if (ing.state) states.push(ing.state);
     if (ing.background !== undefined) backgrounds.push(ing.background);
     if (ing.error) error = ing.error;
+    if (ing.activity !== undefined) activities.push(ing.activity);
   }
-  return { items, states, backgrounds, sent, conversationId, error };
+  return {
+    items,
+    states,
+    backgrounds,
+    sent,
+    conversationId,
+    error,
+    activities,
+  };
 }

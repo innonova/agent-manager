@@ -19,6 +19,7 @@ describe('FakeAdapter', () => {
       ...append({ kind: 'user', text: 'hi' }),
     });
     expect(a.ingest(rec('out', { type: 'text_start' }))).toEqual({
+      activity: { kind: 'writing' },
       ops: [
         {
           op: 'append',
@@ -28,6 +29,7 @@ describe('FakeAdapter', () => {
       ],
     });
     expect(a.ingest(rec('out', { type: 'text_delta', text: 'a ' }))).toEqual({
+      activity: { kind: 'writing' },
       ops: [
         {
           op: 'update',
@@ -37,6 +39,7 @@ describe('FakeAdapter', () => {
       ],
     });
     expect(a.ingest(rec('out', { type: 'text_delta', text: 'b' }))).toEqual({
+      activity: { kind: 'writing' },
       ops: [
         {
           op: 'update',
@@ -63,9 +66,10 @@ describe('FakeAdapter', () => {
           input: { x: 1 },
         }),
       ),
-    ).toEqual(
-      append({ kind: 'tool_use', id: 't1', name: 'Read', input: { x: 1 } }),
-    );
+    ).toEqual({
+      activity: { kind: 'tool', detail: 'Read' },
+      ...append({ kind: 'tool_use', id: 't1', name: 'Read', input: { x: 1 } }),
+    });
     expect(
       a.ingest(rec('out', { type: 'tool_result', id: 't1', output: 'o' })),
     ).toEqual(
@@ -91,6 +95,7 @@ describe('FakeAdapter', () => {
     );
     // a second streamed text gets its own key
     expect(a.ingest(rec('out', { type: 'text_start' }))).toEqual({
+      activity: { kind: 'writing' },
       ops: [
         {
           op: 'append',

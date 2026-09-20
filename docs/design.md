@@ -195,6 +195,33 @@ calls until their output arrives. That last one rests on the wording of
 Copilot's result text; if Copilot sees real use here, rerun the probe
 (ask it to background `sleep 25` and end its turn) and firm this up.
 
+The status also carries `activity`, a compact read of the last thing on
+the stream: `{ kind: 'thinking' | 'writing' | 'tool' | 'waiting';
+detail?: string; since: number } | null`. `thinking` is a reasoning
+delta (Claude's `thinking` blocks, Codex's `reasoning` item, Copilot's
+`agent_thought_chunk`), `writing` is an output text delta (Claude's
+`text` blocks, Codex's `item/agentMessage/delta`, Copilot's
+`agent_message_chunk`), `tool` is a tool call under way, `detail` naming
+what runs (a shell tool's command, first line trimmed to ~80 chars; a
+read or edit's path; otherwise the tool's name), and `waiting` is a
+permission request or an `ask` left open. `since` is the record time the
+current activity began, so a client can say "thinking for 12 s"; `null`
+outside a turn. The split follows the adapter/service line everywhere
+else: an adapter's `ingest` returns a bare `{ kind, detail? } | null`
+hint on `thinking`, `writing` and `tool` records only (`undefined` when
+a record says nothing about it), and the service turns that into the
+full value, adds `since`, derives `waiting` from the `waiting-permission`
+state and clears it (to `null`) at every other state transition — a
+turn beginning or ending has nothing to show yet, so an adapter never
+reports `waiting` or a clear itself. Announced as part of `agent.state`
+on change like the rest of the status, except a hint that only changes
+`activity` (the state itself unchanged) is coalesced to at most one
+announcement a second, so a burst of small tool calls does not flood the
+socket; a state transition's own `activity` (`waiting`, or a clear) is
+never throttled. The fake agent's `thinking` and `tool_use` outputs
+carry the same hints, so tests can see `activity` change mid-turn and
+clear at the turn's end.
+
 A command (turn, decision, interrupt) waits at most ten seconds for a
 resync in progress and is refused with `agent-unavailable` at once while
 the daemon is disconnected, so nothing queues up to run whenever the
@@ -307,7 +334,7 @@ interface AgentAdapter {
   snapshot?(): unknown;
   restore?(state: unknown): void;
   /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
-  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
+  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; activity?: { kind: 'thinking' | 'writing' | 'tool'; detail?: string } | null; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
 }
 type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
 ```
@@ -745,7 +772,7 @@ PATCH  /api/projects/:id            same fields; `repos` replaces the whole list
 POST   /api/projects/:id/agents/restart -> { restarted: [agentId], skipped: [{ id, why }] }; stops and resumes every idle agent with a live session so it picks up the project's current repositories; agents working, waiting on a permission or with background jobs are skipped with the reason, exited ones need nothing
 DELETE /api/projects/:id            (does not touch the repository)
 
-GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt, background, model, queued }
+GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt, background, model, queued, activity }
 POST   /api/projects/:id/agents     { name, profile, cwd?, permissions?, model?, effort? } -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
@@ -823,7 +850,7 @@ ui.build         { id }                            // the served UI build change
 presence         { agents: { [agentId]: [{ userId, name, typing }] } }
 users.changed    { users }                         // an account was created, renamed, reset or removed
 project.counts   { projectId, counts }
-agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt, background, model, queued }
+agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt, background, model, queued, activity }
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
 agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0

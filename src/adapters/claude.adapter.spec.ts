@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AgentState, Item } from './adapter.js';
+import type { AgentState, Ingest, Item } from './adapter.js';
 import { ClaudeAdapter } from './claude.adapter.js';
 import type { LogRecord } from '../daemon/daemon-client.js';
 
@@ -15,6 +15,7 @@ function run(adapter: ClaudeAdapter, records: LogRecord[]) {
   const items: Item[] = [];
   const keys = new Map<string, number>();
   const states: AgentState[] = [];
+  const activities: Exclude<Ingest['activity'], undefined>[] = [];
   let conversationId: string | undefined;
   let error: string | undefined;
   for (const r of records) {
@@ -30,8 +31,9 @@ function run(adapter: ClaudeAdapter, records: LogRecord[]) {
     }
     if (ing.state) states.push(ing.state);
     if (ing.error) error = ing.error;
+    if (ing.activity !== undefined) activities.push(ing.activity);
   }
-  return { items, states, conversationId, error };
+  return { items, states, activities, conversationId, error };
 }
 
 function load(name: string): LogRecord[] {
@@ -98,7 +100,7 @@ describe('ClaudeAdapter', () => {
   });
 
   it('turns a recorded two-turn session with a tool call into items', () => {
-    const { items, states, conversationId, error } = run(
+    const { items, states, activities, conversationId, error } = run(
       new ClaudeAdapter(),
       load('tool-and-text.ndjson'),
     );
@@ -142,6 +144,18 @@ describe('ClaudeAdapter', () => {
       'working',
       'idle',
     ]);
+    // the tool call is seen as a `tool` activity, naming the file read;
+    // the reply that follows it is `writing`
+    const toolActivityAt = activities.findIndex((a) => a?.kind === 'tool');
+    const writingActivityAt = activities.findIndex(
+      (a) => a?.kind === 'writing',
+    );
+    expect(toolActivityAt).toBeGreaterThanOrEqual(0);
+    expect(writingActivityAt).toBeGreaterThan(toolActivityAt);
+    expect(activities[toolActivityAt]).toMatchObject({
+      kind: 'tool',
+      detail: expect.stringMatching(/example\.txt$/),
+    });
   });
 
   it('streams text deltas into one growing item before the full message replaces it', () => {
@@ -174,7 +188,7 @@ describe('ClaudeAdapter', () => {
           1,
         ),
       ),
-    ).toEqual({});
+    ).toEqual({ activity: { kind: 'thinking' } });
     expect(
       a.ingest(
         rec(
@@ -188,6 +202,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
+      activity: { kind: 'thinking' },
       ops: [
         {
           op: 'update',
@@ -209,6 +224,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
+      activity: { kind: 'thinking' },
       ops: [
         {
           op: 'update',
@@ -233,6 +249,7 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
+      activity: { kind: 'thinking' },
       ops: [
         {
           op: 'update',

@@ -9,6 +9,50 @@ export type AgentState =
   | 'error'
   | 'exited';
 
+/** What the last thing on the stream was doing, for the status's `activity`. */
+export type ActivityKind = 'thinking' | 'writing' | 'tool' | 'waiting';
+
+export interface ActivityInfo {
+  kind: ActivityKind;
+  /** What runs: a shell tool's command (first line, ~80 chars), a read/edit's path, else the tool's name. */
+  detail?: string;
+  /** The record time the activity started, so a client can say "thinking for 12 s". */
+  since: number;
+}
+
+/** Null outside a turn. */
+export type Activity = ActivityInfo | null;
+
+/**
+ * A tool call's activity detail: the command for a shell-like tool (first
+ * line, trimmed to ~80 chars), the path for a read or edit, else the tool's
+ * own name. Shared across adapters since Claude, Codex, Copilot and the
+ * fake agent all describe a call the same two ways (a `command` or a
+ * `file_path`/`path`).
+ */
+export function toolActivityDetail(
+  name: string,
+  input: unknown,
+  max = 80,
+): string {
+  const i = (input && typeof input === 'object' ? input : {}) as Record<
+    string,
+    unknown
+  >;
+  const command = typeof i.command === 'string' ? i.command : undefined;
+  if (command) {
+    const line = command.split('\n')[0] ?? '';
+    return line.length > max ? `${line.slice(0, max)}…` : line;
+  }
+  const path =
+    typeof i.file_path === 'string'
+      ? i.file_path
+      : typeof i.path === 'string'
+        ? i.path
+        : undefined;
+  return path ?? name;
+}
+
 /** Whether the agent may act without asking, or must ask the human before gated tools. */
 export type Permissions = 'bypass' | 'ask';
 
@@ -126,6 +170,15 @@ export interface Ingest {
    * a restart never repeats a handshake.
    */
   send?: unknown[];
+  /**
+   * A hint of what the stream is doing right now, for the status's
+   * `activity`: `thinking` while reasoning text arrives, `writing` while
+   * output text arrives, `tool` with `detail` naming what runs. Absent
+   * means no change; an explicit `null` clears it. The service adds
+   * `since`, derives `waiting` from the `waiting-permission` state and
+   * clears it at a turn's end, so an adapter never reports those itself.
+   */
+  activity?: { kind: Exclude<ActivityKind, 'waiting'>; detail?: string } | null;
 }
 
 /**
