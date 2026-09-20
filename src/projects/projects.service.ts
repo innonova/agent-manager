@@ -13,6 +13,9 @@ export interface Repo {
   path: string;
 }
 
+/** When an agent in the project may start another: on its own judgement (`free`), or only when a person asked (`on-request`). */
+export type Delegation = 'free' | 'on-request';
+
 export interface Project {
   id: string;
   name: string;
@@ -20,6 +23,7 @@ export interface Project {
   path: string;
   repos: Repo[];
   defaultProfile: string | null;
+  delegation: Delegation;
   createdAt: number;
 }
 
@@ -28,7 +32,14 @@ interface Row {
   name: string;
   path: string;
   default_profile: string | null;
+  delegation: string | null;
   created_at: number;
+}
+
+/** Validates a delegation value from a request, or throws. */
+function parseDelegation(v: unknown): Delegation {
+  if (v === 'free' || v === 'on-request') return v;
+  throw new BadRequestException('"delegation" must be "free" or "on-request"');
 }
 
 const REPO_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -73,6 +84,7 @@ export class ProjectsService {
       path: repos[0]?.path ?? r.path,
       repos,
       defaultProfile: r.default_profile,
+      delegation: r.delegation === 'on-request' ? 'on-request' : 'free',
       createdAt: r.created_at,
     };
   }
@@ -118,6 +130,7 @@ export class ProjectsService {
     path?: unknown;
     repos?: unknown;
     defaultProfile?: unknown;
+    delegation?: unknown;
   }): Project {
     if (typeof input.name !== 'string' || input.name.trim() === '')
       throw new BadRequestException('"name" is required');
@@ -128,19 +141,22 @@ export class ProjectsService {
     ) {
       throw new BadRequestException('"defaultProfile" must be a string');
     }
+    const delegation =
+      input.delegation === undefined ? 'free' : parseDelegation(input.delegation);
     const repos = this.parseRepos(input);
     const id = randomUUID();
     const createdAt = Date.now();
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          'INSERT INTO projects (id, name, path, default_profile, created_at) VALUES (?, ?, ?, ?, ?)',
+          'INSERT INTO projects (id, name, path, default_profile, delegation, created_at) VALUES (?, ?, ?, ?, ?, ?)',
         )
         .run(
           id,
           (input.name as string).trim(),
           repos[0].path,
           (input.defaultProfile as string | null) ?? null,
+          delegation,
           createdAt,
         );
       this.saveRepos(id, repos);
@@ -156,6 +172,7 @@ export class ProjectsService {
       defaultProfile?: unknown;
       repos?: unknown;
       path?: unknown;
+      delegation?: unknown;
     },
   ): Project {
     const current = this.get(id);
@@ -170,6 +187,10 @@ export class ProjectsService {
       throw new BadRequestException(
         '"defaultProfile" must be a string or null',
       );
+    const delegation =
+      input.delegation === undefined
+        ? current.delegation
+        : parseDelegation(input.delegation);
     const repos =
       input.repos !== undefined || input.path !== undefined
         ? this.parseRepos(input)
@@ -177,9 +198,9 @@ export class ProjectsService {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          'UPDATE projects SET name = ?, default_profile = ?, path = ? WHERE id = ?',
+          'UPDATE projects SET name = ?, default_profile = ?, delegation = ?, path = ? WHERE id = ?',
         )
-        .run(name.trim(), defaultProfile, repos[0].path, id);
+        .run(name.trim(), defaultProfile, delegation, repos[0].path, id);
       if (repos !== current.repos) this.saveRepos(id, repos);
     });
     tx();

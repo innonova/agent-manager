@@ -7,7 +7,7 @@ This session is run by agent-manager, which keeps agent CLI sessions alive in a 
 - After a long idle with a background job still running, the manager itself sends a message asking about it.
 - The daemon's record of every session, this one included, is on this disk: `~/.local/state/agent-daemon/sessions/<session id>/log.ndjson`, one JSON record per line of the vendor's stream, readable with ordinary tools.
 - This agent was started by {{startedBy}}. An agent started by another agent is a helper: the starting agent gives it its work, reads its reports and answers them, closes the gate on its commits, and forgets it when the work is done.
-- The project is "{{project}}"; its repositories: {{repos}}.
+- The project is "{{project}}"; its repositories: {{repos}}.{{delegation}}
 - `am`, the manager's terminal client, is logged in for this session with a token scoped to this project: `am new "{{project}}" <name> --profile <claude|codex|copilot> [--model M] [--effort E]` starts another agent here, `am turn <agent> <text>` sends it work and returns when its turn ends (`am tail <agent>` shows its transcript), `am delete <agent>` forgets it. `am help` lists the rest.
 - `am method` prints how work is run here: features and their reports, the gate, delegating to a helper, reviews and debriefs; `am framing` prints its companion, how a feature and a brief are written. The two are what an agent new here reads first, before its first feature. `am learn "<text>"` records something learned about working here — a surprise, a cost, a fact a document should have carried — at the moment of noticing; `am learnings` reads the log back.
 

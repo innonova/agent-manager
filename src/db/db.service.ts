@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   path TEXT NOT NULL,
   default_profile TEXT,
+  delegation TEXT NOT NULL DEFAULT 'free',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS project_repos (
@@ -180,6 +181,14 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     if (!agentCols.includes('permissions'))
       this.db.exec(
         "ALTER TABLE agents ADD COLUMN permissions TEXT NOT NULL DEFAULT 'bypass'",
+      );
+    // Per-project delegation rule, added after projects shipped.
+    const projectCols = (
+      this.db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!projectCols.includes('delegation'))
+      this.db.exec(
+        "ALTER TABLE projects ADD COLUMN delegation TEXT NOT NULL DEFAULT 'free'",
       );
     // Projects created before repos existed: their path becomes the single repo.
     const legacy = this.db

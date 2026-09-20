@@ -89,7 +89,7 @@ Copilot's ACP.
 
 ```
 User      { id, name, passwordHash, createdAt }
-Project   { id, name, repos: [{ name, path }], path, defaultProfile, createdAt }   // path = repos[0].path
+Project   { id, name, repos: [{ name, path }], path, defaultProfile, delegation: free | on-request, createdAt }   // path = repos[0].path
 Agent     { id, projectId, name, profile, cwd, permissions: bypass | ask, model | null, effort | null, harnessNote | null, createdBy | null, vendorConversationId | null,
             currentSessionId | null, createdAt, archivedAt | null }
 AgentSession { agentId, daemonSessionId, startedAt, endedAt | null }
@@ -325,9 +325,15 @@ features convention described well enough for a repository that has not
 started using it.
 
 The note is built from a template with `{{agent}}`, `{{project}}`,
-`{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}`, `{{repos}}` and
-`{{models}}` placeholders. All but the last render a value inline;
-`{{models}}` brings its own heading, rendering `## Models` followed by
+`{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}`, `{{repos}}`,
+`{{delegation}}` and `{{models}}` placeholders. Most render a value
+inline; `{{delegation}}` renders one bullet under the project line when
+the project's delegation is `on-request` ("agents delegate only when a
+person has expressly asked for it in the conversation") and nothing for
+a `free` project, as a description of the project rather than an
+instruction (the how-to-delegate is the method, unchanged; only the
+when differs per project); `{{models}}` brings its own heading,
+rendering `## Models` followed by
 the models file's text, and nothing at all when that file is empty, so
 turning the house view off leaves no empty section behind (a run of
 blank lines left by a placeholder that rendered nothing is collapsed). The shipped text is `harness.md` at the repository root,
@@ -1078,7 +1084,7 @@ POST   /api/users/:id/password                                  -> { password };
 DELETE /api/users/:id                                           -> { ok }; not yourself, not the last user
 
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.host names the machine; as a hub, the spokes' projects too, ids `<host>:<id>`
-POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, host? }   (`path` alone is accepted as a one-repo shorthand; `host` creates on that spoke)
+POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, delegation?, host? }   (`path` alone is accepted as a one-repo shorthand; `delegation` is `free` (default) or `on-request`; `host` creates on that spoke)
 GET    /api/projects/:id/profiles                               -> { profiles } of the machine the project is on
 GET    /api/projects/:id
 PATCH  /api/projects/:id            same fields; `repos` replaces the whole list, order included. Running agents keep the directories they were started with; see the restart below.

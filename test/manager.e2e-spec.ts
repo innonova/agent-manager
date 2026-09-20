@@ -521,6 +521,65 @@ describe('agents', () => {
     }
   }, 30000);
 
+  it('an on-request project carries the delegation line in the note; free carries none, and a restart picks up a change', async () => {
+    const onreq = (
+      await api.post('/api/projects', {
+        name: 'guarded',
+        path: projectDir,
+        defaultProfile: 'fake',
+        delegation: 'on-request',
+      })
+    ).body.project;
+    expect(onreq.delegation).toBe('on-request');
+    const a = (await api.post(`/api/projects/${onreq.id}/agents`, { name: 'g1' }))
+      .body.agent;
+    expect(a.harnessNote).toContain(
+      'agents delegate only when a person has expressly asked for it',
+    );
+
+    // a free project (the default) carries no line and no hole where it was
+    const free = (
+      await api.post('/api/projects', {
+        name: 'open',
+        path: projectDir,
+        defaultProfile: 'fake',
+      })
+    ).body.project;
+    expect(free.delegation).toBe('free');
+    const b = (await api.post(`/api/projects/${free.id}/agents`, { name: 'f1' }))
+      .body.agent;
+    expect(b.harnessNote).not.toContain('agents delegate only when');
+    expect(b.harnessNote).not.toMatch(/\n\n\n/);
+
+    // the setting can be edited, and a restart of the agent reads the change
+    expect(
+      (await api.patch(`/api/projects/${onreq.id}`, { delegation: 'free' })).body
+        .project.delegation,
+    ).toBe('free');
+    // restart is refused unless the agent is idle: wait for the fresh session
+    const waitIdle = async (id: string) => {
+      for (let i = 0; i < 60; i++) {
+        if ((await api.get(`/api/agents/${id}`)).body.status.state === 'idle') return;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+    await waitIdle(a.id);
+    expect((await api.post(`/api/agents/${a.id}/restart`, {})).status).toBe(201);
+    const after = (await api.get(`/api/agents/${a.id}`)).body.agent;
+    expect(after.harnessNote).not.toContain('agents delegate only when');
+
+    // a bad value is refused
+    expect(
+      (
+        await api.post('/api/projects', {
+          name: 'bad',
+          path: projectDir,
+          delegation: 'sometimes',
+        })
+      ).status,
+    ).toBe(400);
+  }, 30000);
+
   it('the harness template is read and written per host through the API', async () => {
     const before = (await api.get('/api/harness')).body.hosts;
     expect(before).toHaveLength(1);

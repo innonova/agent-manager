@@ -18,6 +18,8 @@ export interface HarnessContext {
   cwd: string;
   permissions: 'bypass' | 'ask';
   repos: { name: string; path: string }[];
+  /** The project's delegation rule; renders a line only for `on-request`. */
+  delegation: 'free' | 'on-request';
   /** Who created the agent: a person, or `agent-<name>` for a helper; null when unknown (agents from before the field). */
   startedBy?: string | null;
   /**
@@ -65,6 +67,12 @@ export function renderHarnessNote(
     permissions: ctx.permissions,
     repos: ctx.repos.map((r) => `${r.name} (${r.path})`).join(', '),
     startedBy: ctx.startedBy ?? 'a person',
+    // A description of the project, not an instruction to the agent; nothing
+    // for a free project, so its placeholder collapses away with no blank line.
+    delegation:
+      ctx.delegation === 'on-request'
+        ? '\n- In this project, agents delegate only when a person has expressly asked for it in the conversation.'
+        : '',
     models: ctx.models?.trim() ? `## Models\n\n${ctx.models.trim()}` : '',
   };
   const note = template.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key: string) =>

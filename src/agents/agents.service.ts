@@ -1307,10 +1307,12 @@ export class AgentsService
   private harnessNote(agent: Agent): string | null {
     let repos: { name: string; path: string }[] = [];
     let project = agent.projectId;
+    let delegation: 'free' | 'on-request' = 'free';
     try {
       const p = this.projects.get(agent.projectId);
       repos = p.repos;
       project = p.name;
+      delegation = p.delegation;
     } catch {
       /* deleted meanwhile: the note still says who the agent is */
     }
@@ -1327,6 +1329,7 @@ export class AgentsService
         cwd: agent.cwd,
         permissions: agent.permissions,
         repos,
+        delegation,
         startedBy: agent.createdBy,
         // the house view of the models, read the same way as the note
         // itself: at session start, so an edit reaches an agent at its
