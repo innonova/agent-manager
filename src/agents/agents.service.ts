@@ -2337,14 +2337,22 @@ export class AgentsService
       live.stateHeld = true;
       return;
     }
-    this.announceActivity(agent, live);
+    // A change of what it does (thinking to a tool, one tool to the next)
+    // is discrete and rare: announced at once, or a reader sees the
+    // transcript's tool call a second before the line says so. Only the
+    // token count growing within the same activity waits out the window.
+    this.announceActivity(agent, live, !sameActivity);
   }
 
-  /** Emits the current status now if the throttle window is open, or schedules it for when it opens. */
-  private announceActivity(agent: Agent, live: Live): void {
+  /** Emits the current status now if the throttle window is open (or `now` says so), or schedules it for when it opens. */
+  private announceActivity(agent: Agent, live: Live, now_ = false): void {
     const now = Date.now();
-    const wait = live.lastActivityEmitAt + 1000 - now;
+    const wait = now_ ? 0 : live.lastActivityEmitAt + 1000 - now;
     if (wait <= 0) {
+      if (live.activityFlush) {
+        clearTimeout(live.activityFlush); // the scheduled one would only repeat this status
+        live.activityFlush = null;
+      }
       live.lastActivityEmitAt = now;
       live.stateHeld = false;
       this.emit('state', agent.id, agent.projectId, live.status);

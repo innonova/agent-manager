@@ -228,11 +228,13 @@ clears it (to `null`) at every other state transition — a turn
 beginning or ending has nothing to show yet, so an adapter never
 reports `waiting` or a clear itself. Announced as part of `agent.state`
 on change (a `tokens` change with the same `kind` and `detail` counts,
-but does not restart `since`) like the rest of the status, except a
-hint that only changes `activity` (the state itself unchanged) is
-coalesced to at most one announcement a second, so a burst of small
-tool calls or token ticks does not flood the socket; a state
-transition's own `activity` (`waiting`, or a clear) is never throttled.
+but does not restart `since`) like the rest of the status. A change of
+what it does (thinking to a tool, one tool to the next) is announced at
+once, or a reader would see the transcript's tool call a second before
+the line says so; only a `tokens` count growing within the same
+activity is coalesced to at most one announcement a second, so token
+ticks do not flood the socket. A state transition's own `activity`
+(`waiting`, or a clear) is never throttled either.
 The fake agent's `thinking` and `tool_use` outputs carry the same
 hints, and its streamed text carries a `tokens` count too (one per word,
 reset per turn, its own stand-in for a vendor's running total), so
