@@ -40,6 +40,7 @@ export class ClaudeAdapter implements AgentAdapter {
     kind: 'requesting' | 'thinking' | 'writing' | 'tool';
     detail?: string;
     id?: string;
+    tool?: string;
   } | null = null;
   /** The turn's output tokens so far, summed across a turn's `message_delta` events (a tool-use turn is several Claude messages). */
   private turnOutputTokens = 0;
@@ -504,6 +505,7 @@ export class ClaudeAdapter implements AgentAdapter {
               'tool',
               toolActivityDetail(String(block.name ?? 'tool'), undefined),
               this.currentToolUseId,
+              String(block.name ?? 'tool'),
             ),
           };
         }
@@ -528,7 +530,14 @@ export class ClaudeAdapter implements AgentAdapter {
           this.streamedChars += String(ev.delta.partial_json ?? '').length;
           const cur = this.currentActivity;
           return cur
-            ? { activity: this.activityHint(cur.kind, cur.detail, cur.id) }
+            ? {
+                activity: this.activityHint(
+                  cur.kind,
+                  cur.detail,
+                  cur.id,
+                  cur.tool,
+                ),
+              }
             : {};
         }
         const s = this.streaming;
@@ -601,6 +610,7 @@ export class ClaudeAdapter implements AgentAdapter {
                 this.currentActivity.kind,
                 this.currentActivity.detail,
                 this.currentActivity.id,
+                this.currentActivity.tool,
               ),
             }
           : {};
@@ -627,10 +637,12 @@ export class ClaudeAdapter implements AgentAdapter {
     kind: 'requesting' | 'thinking' | 'writing' | 'tool',
     detail?: string,
     id?: string,
+    tool?: string,
   ): NonNullable<Ingest['activity']> {
     this.currentActivity = { kind };
     if (detail !== undefined) this.currentActivity.detail = detail;
     if (id !== undefined) this.currentActivity.id = id;
+    if (tool !== undefined) this.currentActivity.tool = tool;
     // One running number for the turn: the settled output of the messages
     // so far, plus the live estimate of the message under way (Claude's
     // own for a thinking stretch, the streamed characters for text and
@@ -655,7 +667,9 @@ export class ClaudeAdapter implements AgentAdapter {
     const id = String(line.parent_tool_use_id ?? line.tool_use_id ?? '');
     const cur = this.currentActivity;
     if (cur?.kind !== 'tool' || !id || id !== this.currentToolUseId) return {};
-    return { activity: this.activityHint('tool', cur.detail, cur.id) };
+    return {
+      activity: this.activityHint('tool', cur.detail, cur.id, cur.tool),
+    };
   }
 
   /** The complete block: authoritative. Replaces the streamed item under its key, or is appended. */
@@ -696,6 +710,7 @@ export class ClaudeAdapter implements AgentAdapter {
             'tool',
             toolActivityDetail(block.name, block.input),
             this.currentToolUseId,
+            String(block.name),
           );
           ops.push(
             append({

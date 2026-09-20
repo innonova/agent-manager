@@ -17,6 +17,8 @@ export interface ActivityInfo {
   kind: ActivityKind;
   /** What runs: a shell tool's command (first line, ~80 chars), a read/edit's path, else the tool's name. */
   detail?: string;
+  /** The tool's own name while `tool` (Bash, Read, shell, …), so a client can say what kind of thing runs without the transcript. */
+  tool?: string;
   /** The record time the activity started, so a client can say "thinking for 12 s". */
   since: number;
   /**
@@ -195,6 +197,7 @@ export interface Ingest {
   activity?: {
     kind: Exclude<ActivityKind, 'waiting'>;
     detail?: string;
+    tool?: string;
     tokens?: number;
     /**
      * What the activity is about (a tool call's id), when the adapter

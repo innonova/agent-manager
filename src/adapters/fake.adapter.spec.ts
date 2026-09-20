@@ -67,7 +67,7 @@ describe('FakeAdapter', () => {
         }),
       ),
     ).toEqual({
-      activity: { kind: 'tool', detail: 'Read' },
+      activity: { kind: 'tool', detail: 'Read', tool: 'Read' },
       ...append({ kind: 'tool_use', id: 't1', name: 'Read', input: { x: 1 } }),
     });
     expect(

@@ -46,6 +46,7 @@ export class CodexAdapter implements AgentAdapter {
   private currentActivity: {
     kind: 'thinking' | 'writing' | 'tool';
     detail?: string;
+    tool?: string;
   } | null = null;
   /** The turn's output tokens so far, from `thread/tokenUsage/updated`'s `last.outputTokens`, summed across the turn's model calls. */
   private turnOutputTokens = 0;
@@ -663,8 +664,11 @@ export class CodexAdapter implements AgentAdapter {
   private activityHint(
     kind: 'thinking' | 'writing' | 'tool',
     detail?: string,
+    tool?: string,
   ): NonNullable<Ingest['activity']> {
-    this.currentActivity = detail === undefined ? { kind } : { kind, detail };
+    this.currentActivity = { kind };
+    if (detail !== undefined) this.currentActivity.detail = detail;
+    if (tool !== undefined) this.currentActivity.tool = tool;
     return {
       ...this.currentActivity,
       ...(this.hasTurnTokens ? { tokens: this.turnOutputTokens } : {}),
@@ -724,6 +728,7 @@ export class CodexAdapter implements AgentAdapter {
             activity: this.activityHint(
               'tool',
               toolActivityDetail('shell', { command: item.command }),
+              'shell',
             ),
             ops: [
               append({
@@ -754,6 +759,7 @@ export class CodexAdapter implements AgentAdapter {
               toolActivityDetail('edit', {
                 path: fileChangePath(item.changes ?? item),
               }),
+              'edit',
             ),
             ops: [
               append({

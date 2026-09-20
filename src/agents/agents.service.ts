@@ -2431,6 +2431,7 @@ export class AgentsService
     hint: {
       kind: Exclude<ActivityKind, 'waiting'>;
       detail?: string;
+      tool?: string;
       tokens?: number;
       id?: string;
     } | null,
@@ -2460,7 +2461,13 @@ export class AgentsService
     live.status = {
       ...live.status,
       activity: hint
-        ? { kind: hint.kind, detail: hint.detail, tokens: hint.tokens, since }
+        ? {
+            kind: hint.kind,
+            detail: hint.detail,
+            tool: hint.tool,
+            tokens: hint.tokens,
+            since,
+          }
         : null,
     };
     if (quiet) {

@@ -254,7 +254,13 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'tool', detail: 'Bash', id: 'toolu_9', tokens: 0 },
+      activity: {
+        kind: 'tool',
+        detail: 'Bash',
+        id: 'toolu_9',
+        tool: 'Bash',
+        tokens: 0,
+      },
     });
     // its input streams: about a token per four characters, live
     expect(
@@ -273,7 +279,13 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'tool', detail: 'Bash', id: 'toolu_9', tokens: 5 },
+      activity: {
+        kind: 'tool',
+        detail: 'Bash',
+        id: 'toolu_9',
+        tool: 'Bash',
+        tokens: 5,
+      },
     });
     a.ingest(rec('out', ev({ type: 'content_block_stop', index: 0 }), 4));
     // the complete call: the same activity (same id), now naming the command
@@ -297,7 +309,13 @@ describe('ClaudeAdapter', () => {
           5,
         ),
       ).activity,
-    ).toEqual({ kind: 'tool', detail: 'ls -la', id: 'toolu_9', tokens: 5 });
+    ).toEqual({
+      kind: 'tool',
+      detail: 'ls -la',
+      id: 'toolu_9',
+      tool: 'Bash',
+      tokens: 5,
+    });
     // the message settles under the estimate: the number holds rather than drops
     expect(
       a.ingest(
@@ -307,7 +325,13 @@ describe('ClaudeAdapter', () => {
           6,
         ),
       ).activity,
-    ).toEqual({ kind: 'tool', detail: 'ls -la', id: 'toolu_9', tokens: 5 });
+    ).toEqual({
+      kind: 'tool',
+      detail: 'ls -la',
+      id: 'toolu_9',
+      tool: 'Bash',
+      tokens: 5,
+    });
     // and the next message's estimate rides on the settled 3, shown once it passes 5
     a.ingest(
       rec(
@@ -401,7 +425,13 @@ describe('ClaudeAdapter', () => {
           4,
         ),
       ).activity,
-    ).toEqual({ kind: 'tool', detail: 'ls', id: 't1', tokens: 12 });
+    ).toEqual({
+      kind: 'tool',
+      detail: 'ls',
+      id: 't1',
+      tool: 'Bash',
+      tokens: 12,
+    });
     expect(
       a.ingest(
         rec(
@@ -411,7 +441,13 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'tool', detail: 'ls', id: 't1', tokens: 17 },
+      activity: {
+        kind: 'tool',
+        detail: 'ls',
+        id: 't1',
+        tool: 'Bash',
+        tokens: 17,
+      },
     });
     // the turn ends; a fresh turn starts the count over
     a.ingest(rec('out', { type: 'result', usage: {}, subtype: 'success' }, 6));
@@ -644,7 +680,13 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({
-      activity: { kind: 'tool', detail: 'npm test', id: 'toolu_1', tokens: 0 },
+      activity: {
+        kind: 'tool',
+        detail: 'npm test',
+        id: 'toolu_1',
+        tool: 'Bash',
+        tokens: 0,
+      },
     });
     // a sub-agent's call, or one already finished: not what is on show
     expect(

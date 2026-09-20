@@ -217,7 +217,10 @@ Copilot's `agent_thought_chunk`), `writing` is an output text delta
 (Claude's `text` blocks, Codex's `item/agentMessage/delta`, Copilot's
 `agent_message_chunk`), `tool` is a tool call under way, `detail` naming
 what runs (a shell tool's command, first line trimmed to ~80 chars; a
-read or edit's path; otherwise the tool's name), and `waiting` is a
+read or edit's path; otherwise the tool's name) and `tool` the tool's
+own name (Bash, Read, shell, edit, a Copilot call's title), so a client
+can say what kind of thing runs without reading the transcript for it,
+and `waiting` is a
 permission request or an `ask` left open. For Claude the `tool`
 activity begins when the call's `tool_use` block starts streaming,
 named by the tool alone, and is refined with the input once the block

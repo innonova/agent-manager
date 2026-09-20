@@ -287,6 +287,7 @@ export class FakeAdapter implements AgentAdapter {
           activity: {
             kind: 'tool',
             detail: toolActivityDetail(line.name, line.input),
+            tool: String(line.name),
           },
           ops: [
             append({

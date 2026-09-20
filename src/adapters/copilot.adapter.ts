@@ -504,6 +504,7 @@ export class CopilotAdapter implements AgentAdapter {
           activity: {
             kind: 'tool',
             detail: toolActivityDetail(name, u.rawInput),
+            tool: name,
           },
           ops: [
             ...this.endText(),
