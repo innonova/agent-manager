@@ -18,36 +18,26 @@ echo "building in $ROOT"
 echo "installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
-# The harness note every agent gets at session start. The config copy is
-# what runs; the shipped text goes there when there is no copy, or when the
-# copy is still the text the previous install shipped (unchanged by the
-# operator: the previous shipped text is the one in the install dir, read
-# before it is replaced below). An edited copy is kept and pointed out.
-# The models file rides along on the same terms: the house view of which
-# model suits which work, rendered into every note at {{models}}.
-seed_config_file() {
-  local what="$1" src="$2" target="$3"
-  if [ ! -e "$target" ]; then
-    mkdir -p "$(dirname "$target")"
-    cp "$src" "$target"
-    echo "$what seeded at $target"
-  elif cmp -s "$src" "$target"; then
-    : # already the shipped text
-  elif [ -e "$INSTALL_DIR/$(basename "$src")" ] && cmp -s "$INSTALL_DIR/$(basename "$src")" "$target"; then
-    cp "$src" "$target"
-    echo "$what updated at $target (it was the previously shipped text, unchanged)"
-  else
-    echo "$what at $target is edited; kept (the UI shows the shipped text too)"
-  fi
-}
+# The operator's files: the harness note every agent gets at session
+# start, the house view of the models rendered into it, and the method
+# every project on this machine works by. The config copy is what runs;
+# seed_config_file (scripts/seed-config-file.sh, which its own test
+# drives) decides between seeding, updating an untouched copy and keeping
+# an edited one. The install directory still holds the previously shipped
+# text at this point: it is replaced below.
+. "$ROOT/scripts/seed-config-file.sh"
 
-HARNESS="${AGENT_MANAGER_HARNESS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager/harness.md}"
-MODELS="${AGENT_MANAGER_MODELS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager/models.md}"
-seed_config_file "harness note" "$ROOT/harness.md" "$HARNESS"
-seed_config_file "models file" "$ROOT/models.md" "$MODELS"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager"
+HARNESS="${AGENT_MANAGER_HARNESS_FILE:-$CONFIG_DIR/harness.md}"
+MODELS="${AGENT_MANAGER_MODELS_FILE:-$CONFIG_DIR/models.md}"
+METHOD="${AGENT_MANAGER_METHOD_FILE:-$CONFIG_DIR/method.md}"
+seed_config_file "harness note" "$ROOT/harness.md" "$HARNESS" "$INSTALL_DIR"
+seed_config_file "models file" "$ROOT/models.md" "$MODELS" "$INSTALL_DIR"
+seed_config_file "method" "$ROOT/method.md" "$METHOD" "$INSTALL_DIR"
 
 rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/fixtures"
-cp -r "$ROOT/dist" "$ROOT/fixtures" "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/harness.md" "$ROOT/models.md" "$INSTALL_DIR/"
+cp -r "$ROOT/dist" "$ROOT/fixtures" "$ROOT/package.json" "$ROOT/package-lock.json" \
+  "$ROOT/harness.md" "$ROOT/models.md" "$ROOT/method.md" "$INSTALL_DIR/"
 (cd "$INSTALL_DIR" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 && npm rebuild better-sqlite3 argon2 >/dev/null 2>&1)
 if [ -e "$UI_DIST/index.html" ]; then
   rm -rf "$INSTALL_DIR/ui"

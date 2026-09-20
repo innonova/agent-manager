@@ -14,7 +14,7 @@ import { shippedHarnessNote } from './harness.js';
  * no restart, an empty file turning the thing off — so one implementation
  * serves both, and the UI edits them with one editor.
  */
-export type NoteFileKind = 'harness' | 'models';
+export type NoteFileKind = 'harness' | 'models' | 'method';
 
 /** The file's state on one machine: the shipped text (no file, or a file equal to it), the operator's, or turned off (an empty file). */
 export interface NoteFileRow {
@@ -30,7 +30,7 @@ export interface NoteFileRow {
   file: string;
 }
 
-/** What tells the two apart: where they live and how much text is reasonable in one. */
+/** What tells the three apart: where they live and how much text is reasonable in one. */
 const KINDS: Record<
   NoteFileKind,
   { apiPath: string; maxBytes: number; limit: string }
@@ -39,6 +39,8 @@ const KINDS: Record<
   harness: { apiPath: '/api/harness', maxBytes: 64 * 1024, limit: '64 KB' },
   // the models file is pasted into every note of every agent, so it stays short
   models: { apiPath: '/api/models', maxBytes: 8 * 1024, limit: '8 KB' },
+  // the method is a few pages and is read on request, not pasted anywhere
+  method: { apiPath: '/api/method', maxBytes: 64 * 1024, limit: '64 KB' },
 };
 
 @Injectable()
@@ -50,15 +52,23 @@ export class NoteFileService {
 
   /** Where this machine's copy and the shipped text live, per kind. */
   private files(kind: NoteFileKind): { file: string; shipped: string } {
-    return kind === 'harness'
-      ? {
+    switch (kind) {
+      case 'harness':
+        return {
           file: this.config.harnessFile,
           shipped: this.config.shippedHarnessFile,
-        }
-      : {
+        };
+      case 'models':
+        return {
           file: this.config.modelsFile,
           shipped: this.config.shippedModelsFile,
         };
+      case 'method':
+        return {
+          file: this.config.methodFile,
+          shipped: this.config.shippedMethodFile,
+        };
+    }
   }
 
   /** This machine's row, and a spoke's for each machine a hub fronts for. */

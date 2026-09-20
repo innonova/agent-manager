@@ -309,6 +309,59 @@ describe('hub', () => {
     );
   }, 40000);
 
+  it('reads and writes the operator files and the learnings of either machine', async () => {
+    // the note-file routes forward by host; this is the first test of
+    // that path, and it covers the harness and models files with it,
+    // since all three are one implementation
+    const hosts = (await api.get('/api/method')).body.hosts;
+    expect(hosts.map((h: any) => h.host).sort()).toEqual(['main', 'vibe']);
+    expect(hosts.every((h: any) => h.template.includes('The gate'))).toBe(true);
+    const written = await api.put('/api/method', {
+      host: 'vibe',
+      template: '# How we work over there\n',
+    });
+    expect(written.status).toBe(200);
+    expect(written.body).toMatchObject({ host: 'vibe', source: 'custom' });
+    // it landed on the spoke, not here
+    expect((await spokeApi.get('/api/method')).body.hosts[0].template).toBe(
+      '# How we work over there\n',
+    );
+    expect(
+      (await api.get('/api/method')).body.hosts.find(
+        (h: any) => h.host === 'main',
+      ).source,
+    ).toBe('built-in');
+    expect(
+      (await api.put('/api/method', { host: 'nowhere', template: 'x' })).status,
+    ).toBe(404);
+
+    // the learnings log is per install: each machine keeps its own
+    await api.post('/api/learnings', { text: 'Learned on the hub.' });
+    const there = await api.post('/api/learnings', {
+      host: 'vibe',
+      text: 'Learned on the spoke.',
+      ref: 'run x',
+    });
+    expect(there.status).toBe(201);
+    expect(there.body).toMatchObject({ host: 'vibe' });
+    expect(there.body.entry).toMatchObject({ n: 1, ref: 'run x' });
+    const here = await api.get('/api/learnings');
+    expect(here.body.host).toBe('main');
+    expect(here.body.entries.map((e: any) => e.text)).toEqual([
+      'Learned on the hub.',
+    ]);
+    const spokeLog = await api.get('/api/learnings?host=vibe');
+    expect(spokeLog.body.host).toBe('vibe');
+    expect(spokeLog.body.entries.map((e: any) => e.text)).toEqual([
+      'Learned on the spoke.',
+    ]);
+    // and the spoke agrees about its own
+    expect((await spokeApi.get('/api/learnings')).body.entries[0].text).toBe(
+      'Learned on the spoke.',
+    );
+    expect((await api.get('/api/learnings?host=nowhere')).status).toBe(404);
+  }, 30000);
+
   it('a spoke going away is reported, not fatal', async () => {
     const pid = ((await api.get('/api/projects')).body as any[]).find(
       (r) => r.project.host === 'vibe',

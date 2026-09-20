@@ -54,3 +54,31 @@ export class ModelsController {
     return this.notes.save('models', req.user?.name ?? 'hub', body);
   }
 }
+
+/**
+ * The method: how work is run under this manager — features, the gate,
+ * helpers, reviews, debriefs. Not this repository's concern but every
+ * project's on the machine, so it is shipped, seeded and edited like the
+ * other two. It is not rendered into the harness note (too long); the
+ * note says that `am method` prints it, which is this route, and an
+ * agent's token may read it for exactly that reason.
+ */
+@Controller('api/method')
+export class MethodController {
+  constructor(private readonly notes: NoteFileService) {}
+
+  @Get()
+  list(
+    @Req() req: Request & { user?: User },
+  ): Promise<{ hosts: NoteFileRow[] }> {
+    return this.notes.list('method', req.user?.name ?? 'hub');
+  }
+
+  @Put()
+  save(
+    @Req() req: Request & { user?: User },
+    @Body() body: { host?: unknown; template?: unknown },
+  ): Promise<NoteFileRow> {
+    return this.notes.save('method', req.user?.name ?? 'hub', body);
+  }
+}

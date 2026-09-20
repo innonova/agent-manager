@@ -41,6 +41,10 @@ export interface ManagerConfig {
   modelsFile: string;
   /** The models file as shipped: `models.md` next to `dist/`; what the installer seeds the config file from. */
   shippedModelsFile: string;
+  /** The method: how work is run under this manager, for every project on the machine. */
+  methodFile: string;
+  /** The method as shipped: `method.md` next to `dist/`. */
+  shippedMethodFile: string;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -125,6 +129,15 @@ export function loadConfig(
       '..',
       '..',
       'models.md',
+    ),
+    methodFile:
+      env.AGENT_MANAGER_METHOD_FILE ??
+      path.join(xdgConfig, 'agent-manager', 'method.md'),
+    shippedMethodFile: path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'method.md',
     ),
   };
 }

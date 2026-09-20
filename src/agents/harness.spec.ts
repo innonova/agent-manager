@@ -49,6 +49,20 @@ describe('harness note', () => {
     // description, not procedure: the note tells the agent nothing to do
     expect(note).not.toMatch(/\b(never|always|do not|must)\b/i);
   });
+  it('points at the method rather than carrying it', () => {
+    const note = renderHarnessNote(shippedHarnessNote(SHIPPED), ctx)!;
+    expect(note).toContain('am method');
+    expect(note).toContain('am learn');
+    // the method is a few pages: the note says where it is and stays short
+    const method = fs.readFileSync(
+      path.resolve(import.meta.dirname, '..', '..', 'method.md'),
+      'utf8',
+    );
+    expect(method).toContain('## The gate');
+    expect(note).not.toContain('## The gate');
+    expect(note.length).toBeLessThan(method.length);
+  });
+
   it('renders the models file under a heading of its own, or not at all', () => {
     const shipped = shippedHarnessNote(SHIPPED);
     expect(shipped).toContain('{{models}}'); // the note asks for it

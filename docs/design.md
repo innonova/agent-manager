@@ -707,7 +707,7 @@ features, and can phrase that however the situation needs. The agent
 reads the file (spec, earlier reports, the human's responses), sets
 `status: in-progress`, does the work, appends a dated `## Report` with
 what changed, what was verified, what is left open and what was
-noticed and left alone (see `docs/method.md`), and sets
+noticed and left alone (see the method, below), and sets
 `status: review` (or `blocked`, with the reason in the report). The human
 reads the report in the UI, answers under a dated `## Response` and sets
 the status back to `planned`, or marks it `done`. An agent asked to
@@ -723,8 +723,20 @@ range, records the outcome on the run (`am runs review`) and forgets it
 holds. How a helper is run (orientation, a plan per feature with the
 verification first, briefs as shape not route, the three scopes,
 batches and their gate, looking at UI work, closing the loop with a
-cause, debriefs) is the practice in `docs/method.md`; the mechanisms it
+cause, debriefs) is the practice in the method; the mechanisms it
 uses are specified here.
+
+The method itself is not this repository's concern but every project's
+on the machine, so it is an operator file like the harness note and the
+models file rather than a document here: `method.md` at the repository
+root, installed next to `dist/`, seeded into
+`~/.config/agent-manager/method.md` (`AGENT_MANAGER_METHOD_FILE`) by
+the installer's three-way rule, read and written over `GET`/`PUT
+/api/method` with a hub forwarding by host. It is not rendered into the
+harness note — it is pages, not lines — so the note says instead that
+`am method` prints it, and an agent's token may read that route,
+though not write it. What the method is built from is the learnings log
+below.
 
 A feature's work spans a range of commits per repository: the manager
 records HEAD as the base when it first sees the feature in progress
@@ -857,6 +869,43 @@ block on the projects page can follow once we know what we want to look
 at — and `am runs`, with its `review` verb, belongs to
 `agent-manager-cli`.
 
+## Learnings
+
+What was learned running agents here, one entry per paragraph, append
+only: `<dataDir>/learnings.md`, one log per install. Not per project —
+what is learned is about working under this manager, not about any one
+project's code — which makes it the one agent-token route with no
+project in it.
+
+An entry is an observation with evidence: what happened, and a pointer
+when there is one (a run id, a feature slug, a commit, free text). A
+rule or a conclusion is not an entry; those are curated into the method
+now and then, and a curation is itself an entry, saying how far it read
+and which commit changed the method. The manager only ever appends:
+nothing edits, nothing deletes, and a wrong entry is answered by
+another. An entry's header is the manager's, the body the author's:
+
+```
+## 2026-09-20 11:30 · agent-claude · run 9ae50a37 · feature run-log-for-model-comparison
+
+The run's spend read zero although its turns cost about $31: the
+manager was reinstalled during the run and the usage difference lost
+its starting point.
+```
+
+It is Markdown rather than a table in the database because the file is
+the artifact a person reads and curates, in an editor or a diff, with
+or without the manager running. The cost of that choice is that the
+body and the index share a syntax, so a body line that would pass for a
+header is indented by one space on the way in and the parser splits
+only on the exact header grammar; no entry can split itself in two.
+
+`n` counts the entries in the file from 1, which means the file is the
+index: an entry hand-deleted from the file renumbers everything after
+it, and a curation that said "read up to 47" then points elsewhere. The
+manager is the only writer for that reason, and a hand edit is a rule
+for people, not a second store to keep in step.
+
 ## Daemon integration
 
 - One websocket to the daemon, reconnecting with backoff. On (re)connect a
@@ -965,10 +1014,14 @@ GET    /api/usage                                               -> { hosts: [{ h
 GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
 PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there
 GET    /api/models                                              -> { hosts: [...] }; the models file per machine, same row shape as /api/harness (its `template` field is the file's text; it has no placeholders)
+GET    /api/method                                              -> { hosts: [...] }; the method per machine, same row shape; an agent's token may read this one
+PUT    /api/method                  { host?, template: string | null } -> the host's row; as /api/harness (64 KB); a person's, not an agent's
 PUT    /api/models                  { host?, template: string | null } -> the host's row; as /api/harness, capped at 8 KB because the text goes into every agent's note
 GET    /api/runs?project=&feature=&model=&since=&limit=         -> { runs: [...] }; the run log, newest first (see Runs); `project` may name a spoke's project (`<spoke>:<id>`), which forwards and prefixes the ids it returns
 GET    /api/runs/:id                                            -> { run, transcript: [StoredItem] }; the run and the transcript exported when it closed (empty when there is none); a prefixed id forwards to its spoke
 PUT    /api/runs/:id/review         { outcome: accepted | sent-back, cause?: model | brief | doc, note? } -> { run }; the reviewer's verdict (a cause is required when sending back and refused otherwise, note at most 8 KB); replaces an earlier verdict; an agent's token may review a run of its own project; a prefixed id forwards to its spoke
+GET    /api/learnings?since=<n>&host=                          -> { host, entries: [{ n, at, by, ref, text }] }; the learnings log of this install, oldest last, entries after `n`; `host` reads a spoke's
+POST   /api/learnings               { text, ref?, host? }       -> { host, entry }; appends one entry, written by whoever is asking (an agent's token too); `host` appends on that spoke
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
@@ -1063,8 +1116,12 @@ swept once a minute.
   process is logged in as a user named `agent-<name>`. The token is
   scoped to the agent's project: its agents, features, files and
   profiles, the project list, and its project's run log, including the
-  review of a run of it (the delegating agent is the usual reviewer);
-  not users, the harness template,
+  review of a run of it (the delegating agent is the usual reviewer).
+  Two routes are outside any project, deliberately: the method it may
+  read (`am method`) but not write, and the learnings log it may read
+  and append to (`am learn`), because what is learned about working
+  here belongs to the install and a helper mid-work is the usual
+  author. Not users, the harness template,
   other projects, or the project's own settings and bulk restart. A
   guardrail against a helper wandering, not a security boundary (the
   process runs as the manager's own user). Replaced at each session
@@ -1105,6 +1162,7 @@ swept once a minute.
 | `AGENT_MANAGER_HUB_TOKEN` | unset | lets a hub act here with this bearer token (see Hub and spokes) |
 | `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
 | `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none |
+| `AGENT_MANAGER_METHOD_FILE` | `~/.config/agent-manager/method.md` | how work is run here, for every project on the machine (see the method paragraph under Features); seeded from the shipped `method.md`, absent falls back to it |
 | `AGENT_MANAGER_MODELS_FILE` | `~/.config/agent-manager/models.md` | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section |
 
 The built UI's static assets and the SPA fallback are served without

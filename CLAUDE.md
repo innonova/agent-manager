@@ -111,7 +111,7 @@ with caveats. When asked:
   what you verified, what you left open, and what you noticed and left
   alone (anything seen outside the feature's scope: a defect, a doubt,
   a claim you could not check); the method behind all of this is
-  `docs/method.md`, read it once; then with the rest of the report: what you changed,
+  `method.md` at the repository root (what `am method` prints), read it once; then with the rest of the report: what you changed,
   what you verified and what you left open, and set `status: review`;
   if you cannot or should not continue, say why in the report and set
   `status: blocked`;
