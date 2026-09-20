@@ -1060,7 +1060,8 @@ swept once a minute.
   environment; only its hash is kept, in `agent_tokens`), so `am` in the
   process is logged in as a user named `agent-<name>`. The token is
   scoped to the agent's project: its agents, features, files and
-  profiles, and the project list; not users, the harness template,
+  profiles, the project list, and its project's run log; not users, the
+  harness template,
   other projects, or the project's own settings and bulk restart. A
   guardrail against a helper wandering, not a security boundary (the
   process runs as the manager's own user). Replaced at each session

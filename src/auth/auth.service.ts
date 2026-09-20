@@ -389,6 +389,22 @@ export class AuthService
       if (rest === '/agents/restart') return false;
       return true; // agents, features, files, profiles, uploads of its own project
     }
+    // the run log of its own project: the list filtered to it, and a run of it
+    if (p === '/api/runs') {
+      const q = new URLSearchParams(path.slice(path.indexOf('?') + 1));
+      return (
+        method === 'GET' &&
+        path.includes('?') &&
+        q.get('project') === scope.projectId
+      );
+    }
+    const run = /^\/api\/runs\/([^/]+)$/.exec(p);
+    if (run) {
+      const row = this.db
+        .prepare('SELECT project_id FROM runs WHERE id = ?')
+        .get(decodeURIComponent(run[1]!)) as { project_id: string } | undefined;
+      return method === 'GET' && row?.project_id === scope.projectId;
+    }
     const m = /^\/api\/agents\/([^/]+)(\/|$)/.exec(p);
     if (m) {
       const row = this.db

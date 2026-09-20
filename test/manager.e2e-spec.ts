@@ -1181,6 +1181,8 @@ describe('agents', () => {
     expect((await own.get('/api/projects')).status).toBe(200);
     expect((await own.get('/api/auth/me')).body.user.name).toBe('agent-boss');
     expect((await own.get('/api/users')).status).toBe(403);
+    expect((await own.get(`/api/runs?project=${p.id}`)).status).toBe(200); // its own run log
+    expect((await own.get('/api/runs')).status).toBe(403); // everyone's: no
     expect((await own.get('/api/harness')).status).toBe(403);
     // the house view reaches an agent in its note, not over the API
     expect((await own.get('/api/models')).status).toBe(403);
