@@ -147,7 +147,8 @@ Codex's primary and secondary from `account/rateLimits/updated`, named
 by their length) with used percent and reset time, a verdict when the
 vendor gives one, the plan; the session's `spend` (tokens in and out,
 turns, and dollars when the vendor prices them: Claude's `result`,
-whose cost is the session's running total, Codex's
+whose cost is the session's running total, so the `turn_end` item
+carries the step from the previous total, the turn's own cost; Codex's
 `thread/tokenUsage/updated`, one per model call, counted once per
 turn), and, once the agent has been restarted, `total`: the vendor's
 counters start over with each session, so the manager adds the earlier

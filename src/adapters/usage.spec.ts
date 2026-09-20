@@ -95,6 +95,23 @@ describe('account usage from the vendors', () => {
       costUsd: 1.5,
     });
     expect(r2.at).toBe(1000); // the record's time
+    // the turn-end item carries the turn's own cost, the step in the running total
+    const ends = a
+      .ingest(
+        rec(
+          {
+            type: 'result',
+            subtype: 'success',
+            result: 'ok',
+            total_cost_usd: 1.75,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+          4,
+        ),
+      )
+      .ops!.map((o) => o.item)
+      .filter((i) => i.kind === 'turn_end') as { costUsd?: number }[];
+    expect(ends[0]!.costUsd).toBeCloseTo(0.25);
     expect(r.provider).toBe('bedrock');
     expect(r.windows.map((x) => x.name)).toEqual(['7d opus', '7d fable']); // kept alongside
   });

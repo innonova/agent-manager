@@ -6,6 +6,13 @@ and the run log (`am runs`) is where the evidence accumulates, with a
 cause recorded when work is sent back (the model, the brief, or a
 missing doc fact). The choice is profile, model and effort together.
 
+What this rests on today: one day, three helpers, nine feature rounds,
+read from transcripts and the daemon logs, not from the run log, which
+came into being that afternoon and holds two rows. No run has used a
+non-default effort, so every effort line below is untested. The per-turn
+costs are from the daemon records (learnings #14): the turn-end line
+in a transcript showed the session's running total until then.
+
 ### When not to delegate
 
 Work whose specification is the conversation that produced it, and
@@ -18,25 +25,30 @@ whether it can.
 ### Design, and anything with taste in it
 
 Claude Fable 5.1, or Codex's gpt-6-astra as the other eye once a screen
-has been through one pass and still looks like the first idea. Effort
-high. Not a cheaper model: a green test suite over a screen nobody
+has been through one pass and still looks like the first idea. Effort:
+untested. Not a cheaper model: a green test suite over a screen nobody
 looked at is the failure mode on record.
 
 ### Manager and daemon work: the service, adapters, protocol
 
-Claude Opus 5, effort default. One batch of two features and one
-single round on record (2026-09-20): an exact reading of the vendor
-stream, the tests for the parts that were hard to see, plans that
-changed the spec for the better, a gate green on the first pass, and a
-debrief that named a defect in its own work. Roughly three times
-faster and a third the cost of Sonnet on the same kind of work.
+Claude Opus 5, effort default. Four rounds and a batch of two on
+record (2026-09-20): an exact reading of the vendor stream, the tests
+for the parts that were hard to see, plans that changed the spec for
+the better, gates green on the first pass twice of three, and a
+debrief that named a defect in its own work. On the one near-comparable
+pair, an adapter round each on the same files with different asks:
+10 min and $5.55 against Sonnet's 18 min and $13.33. About half the
+time, well under half the cost; the two rounds differed in what they
+inherited, so the size of the gap is not settled.
 
 ### Wiring up what someone else designed; tightly specified work
 
 Claude Sonnet 5, effort default. Right when the shape is set and the
 tests say pass or fail: adapters, a field on a status, a CLI command.
-Slower, designs by editing (seventeen edits to one file where a plan
-turn would have done), and does exactly the sentences of a brief and
+Two manager rounds ($9.28 and $13.33, 20 and 18 min) and three UI
+rounds ($2.67, $1.41, $4.44) on record. Slower; in one round it edited
+one file seventeen times (edit counts partly reflect tool style, see
+learnings #22), and it did exactly the sentences of a brief and
 nothing between them, so the brief has to carry the map. Not for
 anything that has to be looked at rather than tested.
 
