@@ -137,8 +137,39 @@ how many runs each line rests on.
   reviews them, and the curation is itself an entry naming what it
   read and the commit that changed the documents.
 
-## When to keep the work in the session
+## When to delegate
 
-Work whose specification is the conversation that produced it, and
-anything decided by taste. And anything the delegating agent can do in
-ten lines; a round costs more than that.
+Delegation is an economy, not a rule. Work done in the session that
+holds the conversation has the most context and the strongest model
+and costs the most per token and the most of that session's attention;
+work handed to another agent costs a hand-off (a feature written well
+enough to carry the intent, a plan answered, a review, a gate) and
+gets back a cheaper model with less context. Nothing says difficult
+work belongs elsewhere; on the first day the two changes that mattered
+most to the person were made in the session in ten lines each, while
+their features were still being written.
+
+Delegate when all of these hold:
+
+- the work can be written down as a feature file that carries its
+  purpose without the conversation; writing it is the test;
+- the hand-off costs less than the work: a plan and a review are two
+  turns of the delegating agent's attention, and a small change is
+  cheaper made than briefed;
+- the result can be checked without the conversation: a gate, a
+  screenshot, a diff a reviewer can read;
+- the cheaper model has a record on that kind of work, or the round is
+  meant to build one.
+
+Keep it in the session when any of these hold instead:
+
+- the specification is the conversation, or the result is decided by
+  taste;
+- the work is hard in a way that needs everything the session knows,
+  and getting it wrong is dear;
+- speed matters more than cost, and the round trip is the bottleneck;
+- the change is small.
+
+Batch several features per agent so the hand-off is paid once, and
+record the round so the economy can be checked against what it
+delivered.
