@@ -249,6 +249,11 @@ export class DaemonClient
     await this.request({ type: 'session.end-input', id });
   }
 
+  /** Deletes an exited session and its log for good. */
+  async remove(id: string): Promise<void> {
+    await this.request({ type: 'session.remove', id });
+  }
+
   async signal(
     id: string,
     signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL',

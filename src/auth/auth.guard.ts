@@ -4,6 +4,7 @@ import {
   Injectable,
   SetMetadata,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
@@ -32,8 +33,13 @@ export class AuthGuard implements CanActivate {
     const req = ctx
       .switchToHttp()
       .getRequest<Request & { user?: User; sessionId?: string }>();
-    const { user, sessionId } = this.auth.userForHeaders(req.headers);
+    const { user, sessionId, scope } = this.auth.userForHeaders(req.headers);
     if (!user) throw new UnauthorizedException();
+    if (
+      scope &&
+      !this.auth.scopeAllows(scope, req.method, req.baseUrl + req.path)
+    )
+      throw new ForbiddenException("outside this agent token's project");
     req.user = user;
     req.sessionId = sessionId ?? undefined;
     return true;

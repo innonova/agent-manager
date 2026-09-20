@@ -996,6 +996,120 @@ describe('agents', () => {
     ).toBe(after.agent.currentSessionId);
   }, 30000);
 
+  it('an agent gets a token for its own project; a helper it starts acts under its name', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'boss');
+    let mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'token please' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      10000,
+      mark,
+    );
+    const said = itemsOf(agent.id)
+      .filter((i) => i.item.kind === 'text')
+      .map((i) => (i.item as { text: string }).text)
+      .join('\n');
+    const found = /My manager: (\S+) token ([0-9a-f]{64})/.exec(said);
+    expect(found).not.toBeNull();
+    expect(found![1]).toBe(m.url); // its own manager, on loopback
+    const own = new Api(m.url);
+    own.bearer = found![2];
+    // within its project: yes; the project's own settings, users, the harness, other projects: no
+    expect((await own.get(`/api/projects/${p.id}/agents`)).status).toBe(200);
+    expect((await own.get(`/api/projects/${p.id}/features`)).status).toBe(200);
+    expect((await own.get('/api/projects')).status).toBe(200);
+    expect((await own.get('/api/auth/me')).body.user.name).toBe('agent-boss');
+    expect((await own.get('/api/users')).status).toBe(403);
+    expect((await own.get('/api/harness')).status).toBe(403);
+    expect(
+      (await own.patch(`/api/projects/${p.id}`, { name: 'x' })).status,
+    ).toBe(403);
+    expect(
+      (await own.post(`/api/projects/${p.id}/agents/restart`)).status,
+    ).toBe(403);
+    const other = await createProject();
+    expect((await own.get(`/api/projects/${other.id}/agents`)).status).toBe(
+      403,
+    );
+    // a helper, started and driven by the agent, is attributed to it
+    const helper = (
+      await own.post(`/api/projects/${p.id}/agents`, { name: 'helper' })
+    ).body.agent;
+    expect(helper.projectId).toBe(p.id);
+    mark = events.mark();
+    const sent = await own.post(`/api/agents/${helper.id}/turn`, {
+      text: 'hello',
+    });
+    expect([201, 202]).toContain(sent.status); // sent, or held while the helper starts
+    const user = await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === helper.id &&
+        f.item.item.kind === 'user',
+      10000,
+      mark,
+    );
+    expect(user.item.item.by).toBe('agent-boss');
+    expect((await own.get(`/api/agents/${helper.id}`)).status).toBe(200);
+    const foreign = (await createAgent(other.id, 'far')).agent;
+    expect((await own.get(`/api/agents/${foreign.id}`)).status).toBe(403);
+    // archiving the agent revokes its token
+    await api.post(`/api/agents/${agent.id}/archive`);
+    expect((await own.get(`/api/projects/${p.id}/agents`)).status).toBe(401);
+  }, 30000);
+
+  it('forgets an agent for good: rows, cache and daemon logs; archived ones are listed on request', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'gone');
+    const kept = (await createAgent(p.id, 'kept')).agent;
+    let mark = events.mark();
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'hello' });
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      10000,
+      mark,
+    );
+    const sessions = (await api.get(`/api/agents/${agent.id}`)).body.sessions;
+    expect(sessions).toHaveLength(1);
+    // archived: out of the list, in the archived list
+    await api.post(`/api/agents/${kept.id}/archive`);
+    expect(
+      (await api.get(`/api/projects/${p.id}/agents`)).body.map(
+        (r: any) => r.agent.name,
+      ),
+    ).toEqual(['gone']);
+    expect(
+      (await api.get(`/api/projects/${p.id}/agents?archived=1`)).body.map(
+        (r: any) => r.agent.name,
+      ),
+    ).toEqual(['kept']);
+    // forgotten: nothing left anywhere but the vendor's store
+    mark = events.mark();
+    expect((await api.delete(`/api/agents/${agent.id}`)).status).toBe(200);
+    await events.waitFor(
+      (f) => f.type === 'agent.removed' && f.agentId === agent.id,
+      10000,
+      mark,
+    );
+    expect((await api.get(`/api/agents/${agent.id}`)).status).toBe(404);
+    expect((await api.get(`/api/projects/${p.id}/agents`)).body).toEqual([]);
+    const daemonIds = (await m.app.get(DaemonClient).listSessions()).map(
+      (s) => s.id,
+    );
+    expect(daemonIds).not.toContain(sessions[0].daemonSessionId);
+    expect(
+      fs.existsSync(path.join(m.dataDir, 'transcripts', `${agent.id}.ndjson`)),
+    ).toBe(false);
+    expect((await api.delete(`/api/agents/${agent.id}`)).status).toBe(404);
+  }, 30000);
+
   it('stops and archives', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id);

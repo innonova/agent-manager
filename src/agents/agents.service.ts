@@ -24,6 +24,8 @@ import type {
   TurnImage,
 } from '../adapters/adapter.js';
 import { AdaptersService } from '../adapters/adapters.service.js';
+import { HttpAdapterHost } from '@nestjs/core';
+import { AuthService } from '../auth/auth.service.js';
 import { loadHarnessTemplate, renderHarnessNote } from './harness.js';
 import {
   type CachedSession,
@@ -205,6 +207,8 @@ export interface AgentEvents {
   reset: [agentId: string];
   session: [agentId: string, session: AgentSessionRef];
   counts: [projectId: string, counts: AgentCounts];
+  /** The agent was forgotten for good; clients drop it. */
+  removed: [agentId: string, projectId: string];
 }
 
 export const LABEL_PREFIX = 'agent-manager:';
@@ -307,6 +311,8 @@ export class AgentsService
     private readonly daemon: DaemonClient,
     private readonly adapters: AdaptersService,
     private readonly projects: ProjectsService,
+    private readonly auth: AuthService,
+    private readonly http: HttpAdapterHost,
   ) {
     super();
     this.cache = new TranscriptCache(config.dataDir);
@@ -367,12 +373,15 @@ export class AgentsService
 
   // ---- queries ------------------------------------------------------------
 
-  list(projectId: string): { agent: Agent; status: AgentStatus }[] {
+  list(
+    projectId: string,
+    archived = false,
+  ): { agent: Agent; status: AgentStatus }[] {
     this.projects.get(projectId);
     return (
       this.db
         .prepare(
-          'SELECT * FROM agents WHERE project_id = ? AND archived_at IS NULL ORDER BY created_at',
+          `SELECT * FROM agents WHERE project_id = ? AND archived_at IS ${archived ? 'NOT NULL' : 'NULL'} ORDER BY ${archived ? 'archived_at DESC' : 'created_at'}`,
         )
         .all(projectId) as AgentRow[]
     )
@@ -986,9 +995,45 @@ export class AgentsService
     await this.withLockOrForce(live, id, async () => {
       const agent = this.get(id);
       await this.stopLocked(agent, true);
+      this.auth.revokeAgentTokens(id);
       this.db
         .prepare('UPDATE agents SET archived_at = ? WHERE id = ?')
         .run(Date.now(), id);
+      this.emit('counts', agent.projectId, this.counts(agent.projectId));
+    });
+  }
+
+  /**
+   * Forgets an agent for good: the process is stopped, the daemon's logs
+   * of its sessions are removed, the transcript cache and the rows go.
+   * The vendor's own conversation store is left alone. For helpers whose
+   * work is in the git history and the feature's report.
+   */
+  async remove(id: string): Promise<void> {
+    const live = this.ensureLive(this.get(id));
+    await this.withLockOrForce(live, id, async () => {
+      const agent = this.get(id);
+      await this.stopLocked(agent, true);
+      this.auth.revokeAgentTokens(id);
+      const refs = this.sessions(id);
+      this.db.prepare('DELETE FROM agents WHERE id = ?').run(id); // sessions and authors cascade
+      this.live.delete(id);
+      for (const ref of refs) {
+        this.sessionOwner.delete(ref.daemonSessionId);
+        await this.daemon.remove(ref.daemonSessionId).catch((err: Error) => {
+          this.logger.warn(
+            `agent ${id}: daemon log of ${ref.daemonSessionId} not removed: ${err.message}`,
+          );
+        });
+      }
+      await this.cache.clear(id).catch(() => undefined);
+      await fs
+        .rm(path.join(this.config.dataDir, 'harness', id), {
+          recursive: true,
+          force: true,
+        })
+        .catch(() => undefined);
+      this.emit('removed', id, agent.projectId);
       this.emit('counts', agent.projectId, this.counts(agent.projectId));
     });
   }
@@ -1103,6 +1148,12 @@ export class AgentsService
       .prepare('UPDATE agents SET current_session_id = ? WHERE id = ?')
       .run(id, agent.id);
     agent.currentSessionId = id;
+    // its own way back in: `am` in the process reads these
+    const token = this.auth.issueAgentToken(agent.id, agent.projectId);
+    const own = {
+      AGENT_MANAGER_URL: this.ownUrl(),
+      AGENT_MANAGER_TOKEN: token,
+    };
     const note = this.harnessNote(agent);
     this.db
       .prepare('UPDATE agents SET harness_note = ? WHERE id = ?')
@@ -1122,7 +1173,7 @@ export class AgentsService
           note,
         }),
         cwd: agent.cwd,
-        env: await this.noteEnv(agent, adapter, note),
+        env: { ...own, ...(await this.noteEnv(agent, adapter, note)) },
         label: `${LABEL_PREFIX}${agent.id}`,
       });
     } catch (err) {
@@ -1173,6 +1224,16 @@ export class AgentsService
         }),
       );
     await this.reconcileCurrent(agent, live);
+  }
+
+  /** Where an agent on this machine reaches this manager: loopback and the port actually bound (configured 0 means ephemeral). */
+  private ownUrl(): string {
+    const addr = this.http.httpAdapter?.getHttpServer?.()?.address?.();
+    const port =
+      addr && typeof addr === 'object' && addr.port
+        ? addr.port
+        : this.config.port;
+    return `http://127.0.0.1:${port}`;
   }
 
   /** The harness note for this agent, from the operator's template or the built-in one; null when turned off. */

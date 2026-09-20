@@ -122,6 +122,8 @@ export async function startManager(
 /** Minimal HTTP client that keeps the login cookie. */
 export class Api {
   cookie = '';
+  /** A bearer token instead of the cookie: a hub's, or an agent's own. */
+  bearer = '';
   constructor(readonly base: string) {}
 
   async call(
@@ -134,6 +136,7 @@ export class Api {
       headers: {
         'content-type': 'application/json',
         ...(this.cookie ? { cookie: this.cookie } : {}),
+        ...(this.bearer ? { authorization: `Bearer ${this.bearer}` } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

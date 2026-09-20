@@ -49,7 +49,8 @@ npm run install:service # installs/restarts the user service; agents are unaffec
 
 Completed work is committed, pushed and deployed without asking first.
 None of those needs approval; they need judgement. A change is complete
-when it does what was asked, tests and lint pass, and the docs that
+when it does what was asked, tests and lint pass at the gate (see
+below), and the docs that
 describe the behaviour are updated (`docs/design.md` for a behaviour
 change, `README.md` for an operator-facing one). Then:
 
@@ -61,6 +62,13 @@ change, `README.md` for an operator-facing one). Then:
   `npm run build` in `../agent-manager-ui` first. A UI-only change is
   `npm run install:ui` instead, which does not restart the manager.
 - say in the summary what was committed, pushed and deployed.
+
+The gate: for one feature worked alone, the gate is that feature. For
+a batch (several features in one context, a helper agent's usual job),
+commit once per feature with the cheap checks, do not push or deploy,
+and run the full suite, lint and review once at the end; whoever closes
+the batch fixes the fallout, pushes and deploys. Say in each report
+whether the feature was gated alone or with its batch.
 
 Still ask first for force-pushes, history rewrites, deleting branches,
 anything that ends daemon sessions, and work beyond what was asked. When

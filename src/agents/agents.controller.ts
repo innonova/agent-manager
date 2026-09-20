@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Inject,
@@ -31,11 +32,13 @@ export class AgentsController {
     private readonly hub: HubService,
   ) {}
 
+  /** `?archived=1` lists the archived ones instead, newest first. */
   @Get('projects/:projectId/agents')
   list(
     @Param('projectId') projectId: string,
+    @Query('archived') archived?: string,
   ): { agent: Agent; status: AgentStatus }[] {
-    return this.agents.list(projectId);
+    return this.agents.list(projectId, archived === '1');
   }
 
   @Post('projects/:projectId/agents')
@@ -151,6 +154,13 @@ export class AgentsController {
   @Post('agents/:id/archive')
   async archive(@Param('id') id: string): Promise<{ ok: true }> {
     await this.agents.archive(id);
+    return { ok: true };
+  }
+
+  /** Forgets the agent for good: process, daemon logs, cache and rows; the vendor's own store stays. */
+  @Delete('agents/:id')
+  async remove(@Param('id') id: string): Promise<{ ok: true }> {
+    await this.agents.remove(id);
     return { ok: true };
   }
 }

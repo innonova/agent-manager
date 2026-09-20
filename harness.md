@@ -6,6 +6,7 @@ This session is run by agent-manager, which keeps agent CLI sessions alive in a 
 - Readers see your text, rendered as Markdown; tool calls are folded to one line and thinking is hidden. Only what you write in text reaches them.
 - After a long idle with a background job still running, the manager itself sends a message asking about it.
 - The project is "{{project}}"; its repositories: {{repos}}.
+- `am`, the manager's terminal client, is logged in for this session with a token scoped to this project: `am new "{{project}}" <name> --profile <claude|codex|copilot> [--model M] [--effort E]` starts another agent here, `am turn <agent> <text>` sends it work and returns when its turn ends (`am tail <agent>` shows its transcript), `am delete <agent>` forgets it. `am help` lists the rest.
 
 ## Features
 

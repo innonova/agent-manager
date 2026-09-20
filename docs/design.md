@@ -602,6 +602,21 @@ work through several features re-reads the directory before finishing
 and takes up anything planned that appeared meanwhile. This is spelled
 out for agents in each repository's `CLAUDE.md`.
 
+Helpers and batches. An agent can delegate: with its session token it
+starts another agent in its project (`am new`, a cheaper model or
+another vendor), sends it work (`am turn` returns when the turn ends)
+and reads its report and the feature's commit range, then forgets it
+(`am delete`) once the work is gated. One writer per repository still
+holds: delegation is sequential, the delegating agent does not edit
+while a helper runs. A batch is several planned features in one helper
+context: one commit per feature (bisectable), only the cheap checks per
+feature, no push and no deploy; the batch ends with one gate, the full
+suite and lint and whatever review the work warrants, run by whoever
+closes the batch, who fixes the fallout, pushes and deploys. The
+feature reports say what was verified, so a feature gated as part of a
+batch reads as such. The repositories' finishing rules speak of a gate
+for this reason.
+
 A feature's work spans a range of commits per repository: the manager
 records HEAD as the base when it first sees the feature in progress
 (the agent sets that; the poller notices within seconds, before any
@@ -740,6 +755,8 @@ POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/restart      -> { ok }; stops and resumes this agent with the current settings (repositories, harness note), conversation intact; an exited one is started; 409 while working, waiting on a permission or with background jobs
 POST   /api/agents/:id/archive
+DELETE /api/agents/:id             -> { ok }; forgets the agent for good: process stopped, the daemon's logs of its sessions removed, transcript cache and rows gone (the vendor's own conversation store stays); for helpers whose work is in git and the feature's report
+GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first
 
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
@@ -810,6 +827,7 @@ agent.state      { agentId, projectId, status }    // status = { state, error, l
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
 agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0
+agent.removed    { agentId, projectId }            // forgotten for good; drop it
 feature.changed  { projectId, feature }            // a feature file changed (status, report, response, edit)
 ```
 
@@ -832,6 +850,16 @@ swept once a minute.
   unknown users cost the same as known ones.
 - First admin: `AGENT_MANAGER_ADMIN_PASSWORD` on first start creates
   `admin`, or `npm run user:add -- <name>`.
+- Agent tokens: every session start issues the agent a bearer token
+  (`AGENT_MANAGER_TOKEN`, with `AGENT_MANAGER_URL`, in the process
+  environment; only its hash is kept, in `agent_tokens`), so `am` in the
+  process is logged in as a user named `agent-<name>`. The token is
+  scoped to the agent's project: its agents, features, files and
+  profiles, and the project list; not users, the harness template,
+  other projects, or the project's own settings and bulk restart. A
+  guardrail against a helper wandering, not a security boundary (the
+  process runs as the manager's own user). Replaced at each session
+  start, revoked by archive and forget.
 - No roles: every user is a trusted admin and sees every project. There
   is no other kind of account, because every user can drive agents that
   run with permissions bypassed anyway; a squad on one box shares one

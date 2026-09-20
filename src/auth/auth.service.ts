@@ -11,7 +11,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import argon2 from 'argon2';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import { sessionIdFromCookieHeader } from './cookie.js';
 import { EventEmitter } from 'node:events';
 import { MANAGER_CONFIG } from '../config/config.js';
@@ -34,6 +39,14 @@ interface UserRow {
 }
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** What an agent's session token is allowed to touch. */
+export interface AgentScope {
+  agentId: string;
+  projectId: string;
+}
+const hashToken = (t: string) => createHash('sha256').update(t).digest('hex');
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Unambiguous, typeable: no 0/O, 1/l/I. Four groups of four is ~79 bits. */
 const PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 
@@ -291,14 +304,27 @@ export class AuthService
     cookie?: string;
     authorization?: string;
     'x-acting-user'?: string | string[];
-  }): { user: User | null; sessionId: string | null } {
+  }): { user: User | null; sessionId: string | null; scope?: AgentScope } {
     const sessionId = sessionIdFromCookieHeader(headers.cookie);
     const fromCookie = this.userForSession(sessionId);
     if (fromCookie) return { user: fromCookie, sessionId: sessionId ?? null };
     const auth = headers.authorization ?? '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) return { user: null, sessionId: null };
+    const scope = this.agentForToken(token);
+    if (scope) {
+      // an agent's own session token: it acts as a user named after it
+      const agent = this.db
+        .prepare('SELECT name FROM agents WHERE id = ?')
+        .get(scope.agentId) as { name: string } | undefined;
+      if (!agent) return { user: null, sessionId: null };
+      return {
+        user: this.actingUser(`agent-${agent.name}`.slice(0, 64)),
+        sessionId: null,
+        scope,
+      };
+    }
     if (
-      !token ||
       !this.config.hubToken ||
       !timingSafeEqualStr(token, this.config.hubToken)
     )
@@ -307,6 +333,70 @@ export class AuthService
     const name = typeof acting === 'string' ? acting.trim() : '';
     if (!NAME_RE.test(name)) return { user: null, sessionId: null };
     return { user: this.actingUser(name), sessionId: null };
+  }
+
+  /**
+   * A token for an agent's session, so its `am` can reach this manager
+   * (AGENT_MANAGER_TOKEN in the process environment). Scoped to the
+   * agent's project; only the hash is kept. Replaced at every session
+   * start, gone with the agent.
+   */
+  issueAgentToken(agentId: string, projectId: string): string {
+    const token = randomBytes(32).toString('hex');
+    this.db.prepare('DELETE FROM agent_tokens WHERE agent_id = ?').run(agentId);
+    this.db
+      .prepare(
+        'INSERT INTO agent_tokens (token_hash, agent_id, project_id, created_at) VALUES (?, ?, ?, ?)',
+      )
+      .run(hashToken(token), agentId, projectId, Date.now());
+    return token;
+  }
+
+  revokeAgentTokens(agentId: string): void {
+    this.db.prepare('DELETE FROM agent_tokens WHERE agent_id = ?').run(agentId);
+  }
+
+  private agentForToken(token: string): AgentScope | null {
+    if (!/^[0-9a-f]{64}$/.test(token)) return null;
+    const row = this.db
+      .prepare(
+        'SELECT agent_id, project_id FROM agent_tokens WHERE token_hash = ?',
+      )
+      .get(hashToken(token)) as
+      { agent_id: string; project_id: string } | undefined;
+    return row ? { agentId: row.agent_id, projectId: row.project_id } : null;
+  }
+
+  /**
+   * What an agent's token may do: read and act within its own project
+   * (its agents, features, files, profiles) and nothing about users, other
+   * projects, the harness template or the project's own settings. A
+   * guardrail against a helper wandering, not a security boundary: the
+   * process runs as the same user as the manager.
+   */
+  scopeAllows(scope: AgentScope, method: string, path: string): boolean {
+    const p = path.replace(/\?.*$/, '');
+    if (p === '/api/auth/me' || p === '/api/health' || p === '/api/profiles')
+      return true;
+    if (p === '/api/events') return true;
+    if (p === '/api/projects' && method === 'GET') return true;
+    const inProject = new RegExp(
+      `^/api/projects/${escapeRe(scope.projectId)}(/|$)`,
+    );
+    if (inProject.test(p)) {
+      const rest = p.slice(`/api/projects/${scope.projectId}`.length);
+      if (rest === '' || rest === '/') return method === 'GET';
+      if (rest === '/agents/restart') return false;
+      return true; // agents, features, files, profiles, uploads of its own project
+    }
+    const m = /^\/api\/agents\/([^/]+)(\/|$)/.exec(p);
+    if (m) {
+      const row = this.db
+        .prepare('SELECT project_id FROM agents WHERE id = ?')
+        .get(decodeURIComponent(m[1]!)) as { project_id: string } | undefined;
+      return row?.project_id === scope.projectId;
+    }
+    return false;
   }
 
   /** The user of that name, created with an unusable password if new. */

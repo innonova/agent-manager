@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   ended_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS agent_sessions_agent ON agent_sessions(agent_id);
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  token_hash TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 DROP TABLE IF EXISTS feature_queue;
 DROP TABLE IF EXISTS feature_runs;
 CREATE TABLE IF NOT EXISTS turn_authors (

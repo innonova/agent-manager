@@ -103,6 +103,14 @@ async function turn(text) {
     await finish(t0);
     return;
   }
+  if (text.includes('token')) {
+    // the manager's own way in, from the environment (tests read it here; a real agent gives it to `am`)
+    await stream(
+      `My manager: ${process.env.AGENT_MANAGER_URL ?? ''} token ${process.env.AGENT_MANAGER_TOKEN ?? ''}`,
+    );
+    await finish(t0);
+    return;
+  }
   if (text.includes('usage')) {
     // "usage 42": the account's rolling windows, as Claude and Codex report theirs
     const n = Number(/usage\s+(\d+)/.exec(text)?.[1] ?? 42);
