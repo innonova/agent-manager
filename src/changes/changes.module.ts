@@ -1,11 +1,14 @@
 import { Global, Module } from '@nestjs/common';
-import { ChangesController } from './changes.controller.js';
+import {
+  ChangesController,
+  CommitsController,
+} from './changes.controller.js';
 import { ChangesService } from './changes.service.js';
 import { ReadCursorsService } from './read-cursors.service.js';
 
 @Global()
 @Module({
-  controllers: [ChangesController],
+  controllers: [ChangesController, CommitsController],
   providers: [ChangesService, ReadCursorsService],
   exports: [ReadCursorsService],
 })

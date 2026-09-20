@@ -930,6 +930,26 @@ cases.
 Run files are kept indefinitely. They are small, and outliving the
 agent is the whole point; nothing prunes them.
 
+The run windows are also what attributes commits. `GET
+/api/projects/:id/commits` lists the project's commits across its
+repositories, newest first, read straight from git (`git log`, one call
+per repository, nothing cached, so a rebase or amend shows at the next
+request). Each commit is attributed by falling in a run's window: the
+commits in a run's `base_commit..end_commit` (in that run's own
+repository; an open run runs to HEAD) carry that run's agent name and
+feature slug. When a commit falls in more than one window — two
+features' rounds interleaved in one repository — the innermost wins:
+the run whose base is the latest ancestor of the commit, ties broken by
+the most recent start. A commit in no window carries the git author and
+no feature. Because a run's window is only defined in the run's own
+repository, a commit an agent makes in a sibling repository during a run
+is not attributed (the git author, no feature); tying a commit to the
+turn that made it — which would fix that and attribute commits outside
+any run — needs a commit-to-turn record the manager does not keep, and
+whether Codex and Copilot even report their commits is unverified. The
+per-commit diff (`GET .../commits/:repo/:hash`) is the commit against
+its first parent, read the same way.
+
 The reviewer is usually the agent that delegated the work, so an
 agent's token reaches the run log of its own project: the list filtered
 to it, a run of it, and `PUT` of a review on one. Nothing else — the
@@ -1101,7 +1121,9 @@ PUT    /api/projects/:id/file?path=<file>[&overwrite=1]         raw body -> { pa
 POST   /api/projects/:id/dir        { path }                    -> 201 { path, created }; creates the directory and missing parents inside a repository (409 if a file is in the way)
 GET    /api/projects/:id/changes?base=<spec>                    -> { base, repos: [{ repo, base, head, note, files: [{ path, status: modified|added|deleted|renamed|untracked, oldPath? }] }] }; spec is `read` (the caller's cursor, default), `feature:<slug>` or a commit-ish; measured against the working tree; `note` says when the base fell back to HEAD (nothing read yet, history rewritten, no range recorded) or when git itself failed, which is never shown as a clean tree
 GET    /api/projects/:id/changes/file?path=<repo/path>&base=<spec> -> { path, base, before, after, binary, truncated }; before is the file at the base (null if absent there), after the working file (null if gone)
-POST   /api/projects/:id/changes/read { repo? }                 -> sets the caller's read cursor to HEAD in one or every repository
+POST   /api/projects/:id/changes/read { repo? }                 -> sets the caller's read cursor to HEAD in one or every repository (moved by the changes view on leaving it, and by marking a feature done)
+GET    /api/projects/:id/commits?repo=&feature=&agent=&since=&limit=&count= -> { commits: [{ repo, hash, shortHash, subject, author, at, agent, agentId, feature, unread }], working: [{ repo, agent, files }], sinceCount }; the project's commits across its repositories, newest first, each attributed to a run's window (agent name and feature slug) or, outside any window, to the git author with no feature; `unread` is after the caller's read cursor; `working` is the repos with uncommitted work and the agent of a run still open there; `sinceCount` is the unread commit count; `count=1` returns only that count; nothing is cached, so a rebase or amend shows at once
+GET    /api/projects/:id/commits/:repo/:hash[?path=<repo-relative>] -> without `path`, { repo, hash, subject, author, at, files: [{ path, status, oldPath? }] } (the commit against its first parent; a root commit's files are all added); with `path`, a FileDiff { path, base, before, after, binary, truncated } of that file (before its parent, after the commit); a hash that no longer exists is 404
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, review, blocked, planned, done; within a status by priority then slug, except done which is newest first (file mtime, i.e. when it was marked done)
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary
 GET    /api/projects/:id/features/:slug

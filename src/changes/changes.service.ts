@@ -11,8 +11,20 @@ import { NotRegularFileError, readRegular } from '../util/read-regular.js';
 import { FeaturesService } from '../features/features.service.js';
 import { ProjectsService, Repo } from '../projects/projects.service.js';
 import { isSlug } from '../features/feature-file.js';
-import { changedFiles, head, resolveCommit, showAt, sizeAt } from './git.js';
+import {
+  changedFiles,
+  commitFiles,
+  commitMeta,
+  commitsIn,
+  countIn,
+  head,
+  log,
+  resolveCommit,
+  showAt,
+  sizeAt,
+} from './git.js';
 import { ReadCursorsService } from './read-cursors.service.js';
+import { RunsService, Run } from '../runs/runs.service.js';
 import type { ChangedFile } from './git.js';
 
 export interface RepoChanges {
@@ -23,6 +35,34 @@ export interface RepoChanges {
   /** Why the base is not what was asked for, if it is not. */
   note: string | null;
   files: (ChangedFile & { path: string })[];
+}
+
+export interface CommitRow {
+  repo: string;
+  hash: string;
+  shortHash: string;
+  subject: string;
+  /** The git author name recorded on the commit. */
+  author: string;
+  /** Author time, milliseconds. */
+  at: number;
+  /** The agent's name when the commit falls in a run's window, else null (the git author is then who). */
+  agent: string | null;
+  agentId: string | null;
+  /** The feature slug when the commit falls in a run's window, else null. */
+  feature: string | null;
+  /** True when the commit is after the caller's read cursor in its repository. */
+  unread: boolean;
+}
+
+export interface WorkingRow {
+  repo: string;
+  /** The agent of a run still open in this repository, if any. */
+  agent: string | null;
+  /** Uncommitted changed-file count. */
+  files: number;
+  /** HEAD, so the uncommitted diff is fetched with the existing changes routes at `base=<head>`. */
+  head: string;
 }
 
 export interface FileDiff {
@@ -50,6 +90,7 @@ export class ChangesService {
     private readonly projects: ProjectsService,
     private readonly features: FeaturesService,
     private readonly cursors: ReadCursorsService,
+    private readonly runs: RunsService,
   ) {}
 
   private get db() {
@@ -231,6 +272,239 @@ export class ChangesService {
     return {
       path: rel,
       base: b.base,
+      before: beforeBuf ? beforeBuf.toString('utf8') : null,
+      after: afterBuf ? afterBuf.toString('utf8') : null,
+      binary: false,
+      truncated: false,
+    };
+  }
+
+  /**
+   * The project's commits across its repositories, newest first, each with
+   * who made it and which feature it belongs to. Attribution is by run
+   * window: a commit that falls in a run's `base..end` (in that run's own
+   * repository) carries that run's agent and feature; when it falls in more
+   * than one, the innermost wins — the run whose base is the latest ancestor
+   * of the commit, ties broken by the most recent start. A commit in no run
+   * window carries the git author and no feature. Nothing is cached: every
+   * call reads git afresh, so a rebase or amend is reflected at once.
+   */
+  async commits(
+    userId: string,
+    projectId: string,
+    filter: {
+      repo?: string;
+      feature?: string;
+      agent?: string;
+      since?: string;
+      limit?: number;
+    } = {},
+  ): Promise<{ commits: CommitRow[]; working: WorkingRow[]; sinceCount: number }> {
+    const project = this.projects.get(projectId);
+    if (filter.since !== undefined && typeof filter.since !== 'string')
+      throw new BadRequestException('"since" must be a commit');
+    const limit = Math.min(Math.max(Number(filter.limit) || 100, 1), 500);
+    // The run window source: all of the project's runs (recent first). A
+    // project with more than this many runs would not attribute a commit
+    // older than the window, which is outside anything a reader browses.
+    const runs = this.runs.list({ projectId, limit: 1000 });
+    const out: CommitRow[] = [];
+    const working: WorkingRow[] = [];
+    let sinceCount = 0;
+    for (const repo of project.repos) {
+      if (filter.repo && repo.name !== filter.repo) continue;
+      const h = await head(repo.path);
+      if (!h) continue; // not a git repository
+      // uncommitted work, and the agent of a run still open in this repo
+      const uncommitted = await changedFiles(repo.path, 'HEAD');
+      if (uncommitted && uncommitted.length) {
+        const open = runs.find(
+          (r) => r.repo === repo.name && r.endedAt === null,
+        );
+        working.push({
+          repo: repo.name,
+          agent: open?.agentName ?? null,
+          files: uncommitted.length,
+          head: h,
+        });
+      }
+      // the read cursor: commits after it are unread; a missing or vanished
+      // cursor means nothing is marked read, so everything is unread
+      const cursor = this.cursors.get(userId, projectId, repo.name);
+      const resolvedCursor = cursor
+        ? await resolveCommit(repo.path, cursor)
+        : null;
+      const unread = resolvedCursor
+        ? ((await commitsIn(repo.path, resolvedCursor, h)) ?? null)
+        : null; // null => treat all as unread
+      let since: string | undefined;
+      if (filter.since) {
+        const ok = await resolveCommit(repo.path, filter.since);
+        if (ok) since = ok;
+      }
+      const commits = (await log(repo.path, { limit, since })) ?? [];
+      const attribution = await this.attribute(repo.path, repo.name, commits, runs);
+      for (const c of commits) {
+        const isUnread = unread ? unread.has(c.hash) : true;
+        if (isUnread) sinceCount++;
+        const a = attribution.get(c.hash);
+        if (filter.feature && a?.feature !== filter.feature) continue;
+        if (filter.agent && a?.agentId !== filter.agent) continue;
+        out.push({
+          repo: repo.name,
+          hash: c.hash,
+          shortHash: c.hash.slice(0, 8),
+          subject: c.subject,
+          author: c.author,
+          at: c.at,
+          agent: a?.agent ?? null,
+          agentId: a?.agentId ?? null,
+          feature: a?.feature ?? null,
+          unread: isUnread,
+        });
+      }
+    }
+    out.sort((a, b) => b.at - a.at);
+    return { commits: out.slice(0, limit), working, sinceCount };
+  }
+
+  /**
+   * Which run, if any, each of `commits` belongs to. Candidate runs are
+   * those for this repository whose `base..end` window contains the commit
+   * (an open run runs to HEAD); the innermost wins — the run whose base sits
+   * latest in the log, ties by the most recent start.
+   */
+  private async attribute(
+    cwd: string,
+    repoName: string,
+    commits: { hash: string }[],
+    runs: Run[],
+  ): Promise<Map<string, { agent: string; agentId: string; feature: string }>> {
+    const pos = new Map(commits.map((c, i) => [c.hash, i]));
+    const mine = runs.filter((r) => r.repo === repoName && r.baseCommit);
+    // each run's window as a set of hashes, and where its base sits in the log
+    const windows: {
+      run: Run;
+      set: Set<string>;
+      basePos: number;
+    }[] = [];
+    for (const r of mine) {
+      const set = await commitsIn(cwd, r.baseCommit!, r.endCommit ?? 'HEAD');
+      if (!set) continue; // a base that no longer resolves contributes no window
+      windows.push({ run: r, set, basePos: pos.get(r.baseCommit!) ?? Infinity });
+    }
+    const result = new Map<
+      string,
+      { agent: string; agentId: string; feature: string }
+    >();
+    for (const c of commits) {
+      let best: (typeof windows)[number] | null = null;
+      for (const w of windows) {
+        if (!w.set.has(c.hash)) continue;
+        if (
+          !best ||
+          w.basePos < best.basePos || // base later in history (newer) wins
+          (w.basePos === best.basePos && w.run.startedAt > best.run.startedAt)
+        )
+          best = w;
+      }
+      if (best)
+        result.set(c.hash, {
+          agent: best.run.agentName,
+          agentId: best.run.agentId,
+          feature: best.run.slug,
+        });
+    }
+    return result;
+  }
+
+  /** How many commits are unread across the project's repositories (the tab badge). */
+  async commitCount(userId: string, projectId: string): Promise<number> {
+    const project = this.projects.get(projectId);
+    let count = 0;
+    for (const repo of project.repos) {
+      const h = await head(repo.path);
+      if (!h) continue;
+      const cursor = this.cursors.get(userId, projectId, repo.name);
+      const resolved = cursor ? await resolveCommit(repo.path, cursor) : null;
+      if (!resolved) {
+        // nothing marked read (or the cursor was rewritten away): every
+        // commit is unread, but a whole-history count is meaningless, so
+        // count only what a page would show
+        const commits = await log(repo.path, { limit: 500 });
+        count += commits?.length ?? 0;
+        continue;
+      }
+      count += (await countIn(repo.path, resolved, h)) ?? 0;
+    }
+    return count;
+  }
+
+  /**
+   * One commit's diff: with no `path`, the list of files it changed; with a
+   * `path`, that file's content before (its parent) and after (the commit).
+   * A hash that no longer exists is a 404, so a rebased-away commit selected
+   * in another tab fails cleanly rather than 500.
+   */
+  async commit(
+    userId: string,
+    projectId: string,
+    repoName: string,
+    hash: string,
+    rel?: unknown,
+  ): Promise<
+    | { repo: string; hash: string; subject: string; author: string; at: number; files: ChangedFile[] }
+    | FileDiff
+  > {
+    const project = this.projects.get(projectId);
+    const repo = project.repos.find((r) => r.name === repoName);
+    if (!repo) throw new NotFoundException(`no such repository: ${repoName}`);
+    if (!/^[0-9a-fA-F]{4,64}$/.test(hash))
+      throw new BadRequestException('bad commit hash');
+    const full = await resolveCommit(repo.path, hash);
+    if (!full) throw new NotFoundException(`no such commit: ${hash}`);
+    if (rel === undefined) {
+      const meta = await commitMeta(repo.path, full);
+      const files = (await commitFiles(repo.path, full)) ?? [];
+      return {
+        repo: repo.name,
+        hash: full,
+        subject: meta?.subject ?? '',
+        author: meta?.author ?? '',
+        at: meta?.at ?? 0,
+        files,
+      };
+    }
+    if (
+      typeof rel !== 'string' ||
+      !rel ||
+      rel.split('/').some((seg) => seg === '..' || seg === '')
+    )
+      throw new BadRequestException('"path" may not leave the repository');
+    // the parent side follows a rename to the old path
+    const files = (await commitFiles(repo.path, full)) ?? [];
+    const entry = files.find((f) => f.path === rel);
+    const parent = `${full}^`;
+    const beforePath = entry?.oldPath ?? rel;
+    const beforeSize =
+      entry?.status === 'added' ? null : await sizeAt(repo.path, parent, beforePath);
+    const afterSize =
+      entry?.status === 'deleted' ? null : await sizeAt(repo.path, full, rel);
+    const size = Math.max(beforeSize ?? 0, afterSize ?? 0);
+    if (size > MAX_FILE_BYTES)
+      return { path: rel, base: parent, before: null, after: null, binary: false, truncated: true };
+    const beforeBuf =
+      beforeSize === null ? null : await showAt(repo.path, parent, beforePath);
+    const afterBuf =
+      afterSize === null ? null : await showAt(repo.path, full, rel);
+    const binary = [beforeBuf, afterBuf].some((buf) =>
+      buf?.subarray(0, 8192).includes(0),
+    );
+    if (binary)
+      return { path: rel, base: parent, before: null, after: null, binary: true, truncated: false };
+    return {
+      path: rel,
+      base: parent,
       before: beforeBuf ? beforeBuf.toString('utf8') : null,
       after: afterBuf ? afterBuf.toString('utf8') : null,
       binary: false,
