@@ -219,6 +219,10 @@ export interface AgentEvents {
   reset: [agentId: string];
   session: [agentId: string, session: AgentSessionRef];
   counts: [projectId: string, counts: AgentCounts];
+  /** A new agent was created; clients add it to the active list. */
+  created: [agent: Agent, status: AgentStatus];
+  /** The agent was archived: off the active list but still readable; clients drop it from the active list. */
+  archived: [agentId: string, projectId: string];
   /** The agent was forgotten for good; clients drop it. */
   removed: [agentId: string, projectId: string];
 }
@@ -703,7 +707,11 @@ export class AgentsService
       this.live.delete(agent.id);
       throw asHttp(err);
     }
-    return { agent: this.get(agent.id), status: live.status };
+    const fresh = this.get(agent.id);
+    // startSession already emitted this agent's state, but for an id no
+    // client has seen; `created` is what makes it appear in every open tab.
+    this.emit('created', fresh, live.status);
+    return { agent: fresh, status: live.status };
   }
 
   /**
@@ -1050,6 +1058,7 @@ export class AgentsService
       this.db
         .prepare('UPDATE agents SET archived_at = ? WHERE id = ?')
         .run(Date.now(), id);
+      this.emit('archived', id, agent.projectId);
       this.emit('counts', agent.projectId, this.counts(agent.projectId));
     });
   }

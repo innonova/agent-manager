@@ -76,6 +76,12 @@ export class EventsGateway
     this.agents.on('reset', (agentId) =>
       this.broadcast({ type: 'agent.reset', agentId }),
     );
+    this.agents.on('created', (agent, status) =>
+      this.broadcast({ type: 'agent.created', agent, status }),
+    );
+    this.agents.on('archived', (agentId, projectId) =>
+      this.broadcast({ type: 'agent.archived', agentId, projectId }),
+    );
     this.agents.on('removed', (agentId, projectId) =>
       this.broadcast({ type: 'agent.removed', agentId, projectId }),
     );

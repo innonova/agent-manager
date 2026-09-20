@@ -1149,6 +1149,8 @@ agent.state      { agentId, projectId, status }    // status = { state, error, l
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
 agent.session    { agentId, session }              // a new session started or one ended
 agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0
+agent.created    { agent, status }                 // a new agent exists; add it to the project's list (ids prefixed on a hub)
+agent.archived   { agentId, projectId }            // archived: off the active list but still readable; drop it from the list
 agent.removed    { agentId, projectId }            // forgotten for good; drop it
 feature.changed  { projectId, feature }            // a feature file changed (status, report, response, edit)
 ```
