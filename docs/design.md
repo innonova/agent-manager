@@ -675,18 +675,48 @@ out for agents in each repository's `CLAUDE.md`.
 
 Helpers and batches. An agent can delegate: with its session token it
 starts another agent in its project (`am new`, a cheaper model or
-another vendor), sends it work (`am turn` returns when the turn ends)
-and reads its report and the feature's commit range, then forgets it
-(`am delete`) once the work is gated. One writer per repository still
-holds: delegation is sequential, the delegating agent does not edit
-while a helper runs. A batch is several planned features in one helper
-context: one commit per feature (bisectable), only the cheap checks per
-feature, no push and no deploy; the batch ends with one gate, the full
-suite and lint and whatever review the work warrants, run by whoever
-closes the batch, who fixes the fallout, pushes and deploys. The
-feature reports say what was verified, so a feature gated as part of a
-batch reads as such. The repositories' finishing rules speak of a gate
-for this reason.
+another vendor), sends it work and reads what it came to (`am turn
+--quiet` returns the final answer, `am wait` collects one sent with
+`--no-wait`), reviews its report and the feature's commit range, and
+forgets it (`am delete`) once the work is gated. One writer per
+repository still holds: delegation is sequential, the delegating agent
+does not edit while a helper runs.
+
+How a helper is run, learned from the first runs (2026-09-20): the
+result depends as much on the context and the brief as on the model.
+
+1. Orient first. The first turn asks the helper to read `CLAUDE.md`,
+   `docs/design.md` and `features/` of its repository and to answer
+   with what it understood and what it would question. That loads the
+   context a brief cannot carry (the same position the delegating
+   agent is in), and the answer shows whether it read the right
+   things before it has touched anything.
+2. A plan before each feature. "Read `features/<slug>.md`; say how you
+   would do it, which files, and what in the spec you would push back
+   on; do not edit yet." The delegating agent answers the plan, and
+   the dissent, substantively, then says go. A design settled in text
+   costs one turn; settled in edits it costs the seventeen edits to one
+   file that the first Sonnet round spent.
+3. Goal and constraints, not the solution. A brief names the outcome,
+   the files that matter and the pattern to follow, what not to touch,
+   and the gate; it leaves the design to the plan turn. A brief made of
+   imperatives sets the helper to literal compliance: it does exactly
+   the sentences it was given and nothing between them.
+4. Several features per helper, then forget it. Three to five in one
+   context, so the orientation pays for itself and compaction does not
+   eat it. A batch: one commit per feature (bisectable), only the cheap
+   checks per feature, no push and no deploy; the batch ends with one
+   gate, the full suite and lint and whatever review the work warrants,
+   run by whoever closes the batch, who fixes the fallout, pushes and
+   deploys. The feature reports say what was verified, so a feature
+   gated as part of a batch reads as such. The repositories' finishing
+   rules speak of a gate for this reason.
+5. Look at UI work. A green suite says nothing about what a screen
+   looks like; a UI feature is screenshotted and measured before it is
+   gated, and the brief says what to measure. Design with any taste in
+   it goes to a frontier model or stays in the main session, where the
+   conversation that produced the wish is; a cheaper model wires up
+   what is designed.
 
 A feature's work spans a range of commits per repository: the manager
 records HEAD as the base when it first sees the feature in progress
