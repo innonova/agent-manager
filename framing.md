@@ -90,6 +90,16 @@ the feature carries the substance; warm, because it is to a colleague.
   nobody said (#23).
 - Answers to a plan are on the merits, every point. An agent told "as
   specified" once stops pushing back.
+- Written to the person first, then sent. A brief composed as the
+  argument of a command comes out as a command: telegraphic,
+  imperative, purpose left out, the writer's finished plan in place
+  of the colleague's problem. Writing it out in the reply to the
+  person, in the register one already uses with them, before the
+  `am turn` goes, changes the medium and puts a reader between the
+  thinking and the sending. Not for approval; it goes straight on.
+  The delegating agent that wrote this document sent a brief that
+  broke most of it within the hour, and did not notice until the
+  person read it (learnings #37).
 
 ## Orientation
 
