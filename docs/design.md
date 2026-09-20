@@ -248,10 +248,13 @@ started using it.
 
 The note is built from a template with `{{agent}}`, `{{project}}`,
 `{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}` and `{{repos}}`
-placeholders: the built-in one (`src/agents/harness.ts`), or the
-operator's `~/.config/agent-manager/harness.md` (`AGENT_MANAGER_HARNESS_FILE`)
-when that exists, read at each session start so an edit needs no
-restart of the manager; an empty file turns the note off. Each vendor
+placeholders. The shipped text is `harness.md` at the repository root,
+installed next to `dist/`; the installer copies it once to
+`~/.config/agent-manager/harness.md` (`AGENT_MANAGER_HARNESS_FILE`) and
+never overwrites an edited copy (it says when the two differ). That
+copy is what runs, read at each session start so an edit needs no
+restart of the manager; a missing copy falls back to the shipped file,
+an empty one turns the note off. Each vendor
 has a per-process channel, so the note is supplied afresh with every
 session and a changed one reaches an agent at its next restart (the
 project's "save and restart agents", or `am project restart`):
@@ -739,7 +742,7 @@ POST   /api/agents/:id/archive
 GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
 GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
-PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null removes it (back to the built-in one); `host` names a spoke to write there
+PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
@@ -861,7 +864,7 @@ swept once a minute.
 | `AGENT_MANAGER_HOST_NAME` | the short hostname | how this machine is named in `project.host` and to a hub |
 | `AGENT_MANAGER_HUB_TOKEN` | unset | lets a hub act here with this bearer token (see Hub and spokes) |
 | `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
-| `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); absent means the built-in one, empty means none |
+| `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none |
 
 The built UI's static assets and the SPA fallback are served without
 authentication: the login page must load. Everything under `/api` except

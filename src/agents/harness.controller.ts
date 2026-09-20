@@ -14,9 +14,9 @@ import path from 'node:path';
 import type { User } from '../auth/auth.service.js';
 import { MANAGER_CONFIG, type ManagerConfig } from '../config/config.js';
 import { HubService } from '../hub/hub.service.js';
-import { DEFAULT_HARNESS_NOTE } from './harness.js';
+import { shippedHarnessNote } from './harness.js';
 
-/** The template's state on one machine: built in, the operator's, or turned off (an empty file). */
+/** The template's state on one machine: the shipped text (no file, or a file equal to it), the operator's, or turned off (an empty file). */
 export interface HarnessRow {
   host: string;
   source: 'built-in' | 'custom' | 'off';
@@ -68,7 +68,7 @@ export class HarnessController {
     return { hosts };
   }
 
-  /** `template`: text writes the file (empty turns the note off); null removes it, back to the built-in one. */
+  /** `template`: text writes the file (empty turns the note off); null writes the shipped text back into it. */
   @Put()
   async save(
     @Req() req: Request & { user?: User },
@@ -106,13 +106,14 @@ export class HarnessController {
       return { ...r.body, host: spoke.name };
     }
     const file = this.config.harnessFile;
-    if (template === null) await fs.rm(file, { force: true });
-    else {
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      await fs.writeFile(tmp, template, { mode: 0o644 });
-      await fs.rename(tmp, file);
-    }
+    const text =
+      template === null
+        ? shippedHarnessNote(this.config.shippedHarnessFile)
+        : template;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, text, { mode: 0o644 });
+    await fs.rename(tmp, file);
     return this.local();
   }
 
@@ -124,12 +125,17 @@ export class HarnessController {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
+    const shipped = shippedHarnessNote(this.config.shippedHarnessFile);
     return {
       host: this.config.hostName,
       source:
-        custom === null ? 'built-in' : custom.trim() === '' ? 'off' : 'custom',
-      template: custom ?? DEFAULT_HARNESS_NOTE,
-      builtIn: DEFAULT_HARNESS_NOTE,
+        custom === null || custom === shipped
+          ? 'built-in'
+          : custom.trim() === ''
+            ? 'off'
+            : 'custom',
+      template: custom ?? shipped,
+      builtIn: shipped,
       file,
     };
   }

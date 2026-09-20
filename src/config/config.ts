@@ -31,8 +31,10 @@ export interface ManagerConfig {
   hubToken: string | null;
   /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
   spokesFile: string;
-  /** The harness note's template, given to every agent at session start; absent means the built-in one, empty means none. */
+  /** The harness note's template, given to every agent at session start; absent means the shipped one, empty means none. */
   harnessFile: string;
+  /** The template as shipped: `harness.md` next to `dist/`; what the installer seeds the config file from. */
+  shippedHarnessFile: string;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -102,5 +104,11 @@ export function loadConfig(
     harnessFile:
       env.AGENT_MANAGER_HARNESS_FILE ??
       path.join(xdgConfig, 'agent-manager', 'harness.md'),
+    shippedHarnessFile: path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'harness.md',
+    ),
   };
 }

@@ -484,10 +484,10 @@ describe('agents', () => {
       .filter((i) => i.item.kind === 'text')
       .map((i) => (i.item as { text: string }).text)
       .join('\n');
-    expect(said).toContain('Running under agent-manager'); // the built-in note, filled in
+    expect(said).toContain('Running under agent-manager'); // the shipped note, filled in
     expect(said).toContain('features/<slug>.md');
     const got = (await api.get(`/api/agents/${agent.id}`)).body.agent;
-    expect(got.harnessNote).toContain('There is no terminal.'); // what it was told, on the record
+    expect(got.harnessNote).toContain('The session is long-lived'); // what it was told, on the record
     // an operator template replaces the note; an empty one turns it off
     const file = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), 'am-harness-')),
@@ -543,10 +543,9 @@ describe('agents', () => {
     expect((await api.put('/api/harness', { template: '' })).body.source).toBe(
       'off',
     );
-    expect(
-      (await api.put('/api/harness', { template: null })).body.source,
-    ).toBe('built-in');
-    expect(fs.existsSync(custom.body.file)).toBe(false);
+    const back = await api.put('/api/harness', { template: null });
+    expect(back.body.source).toBe('built-in');
+    expect(fs.readFileSync(custom.body.file, 'utf8')).toBe(back.body.builtIn); // the shipped text, written back
     expect((await api.put('/api/harness', { template: 42 })).status).toBe(400);
     expect(
       (await api.put('/api/harness', { host: 'nowhere', template: 'x' }))

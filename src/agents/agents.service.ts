@@ -1186,15 +1186,21 @@ export class AgentsService
     } catch {
       /* deleted meanwhile: the note still says who the agent is */
     }
-    return renderHarnessNote(loadHarnessTemplate(this.config.harnessFile), {
-      agent: agent.name,
-      project,
-      host: this.config.hostName,
-      profile: agent.profile,
-      cwd: agent.cwd,
-      permissions: agent.permissions,
-      repos,
-    });
+    return renderHarnessNote(
+      loadHarnessTemplate(
+        this.config.harnessFile,
+        this.config.shippedHarnessFile,
+      ),
+      {
+        agent: agent.name,
+        project,
+        host: this.config.hostName,
+        profile: agent.profile,
+        cwd: agent.cwd,
+        permissions: agent.permissions,
+        repos,
+      },
+    );
   }
 
   /**
