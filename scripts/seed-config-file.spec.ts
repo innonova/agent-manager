@@ -96,9 +96,7 @@ describe('seed_config_file', () => {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, 'the operator wrote this\n');
     expect(seed('models file', shipped, target, installed)).toContain('kept');
-    expect(seed('method', method, methodTarget, installed)).toContain(
-      'seeded',
-    );
+    expect(seed('method', method, methodTarget, installed)).toContain('seeded');
     expect(fs.readFileSync(methodTarget, 'utf8')).toBe('the method\n');
   });
 });
