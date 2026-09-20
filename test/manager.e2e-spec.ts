@@ -484,10 +484,10 @@ describe('agents', () => {
       .filter((i) => i.item.kind === 'text')
       .map((i) => (i.item as { text: string }).text)
       .join('\n');
-    expect(said).toContain('agent "told" of the project'); // the built-in note, filled in
+    expect(said).toContain('Running under agent-manager'); // the built-in note, filled in
     expect(said).toContain('features/<slug>.md');
     const got = (await api.get(`/api/agents/${agent.id}`)).body.agent;
-    expect(got.harnessNote).toContain('agent "told"'); // what it was told, on the record
+    expect(got.harnessNote).toContain("This session's mode: bypass."); // what it was told, on the record
     // an operator template replaces the note; an empty one turns it off
     const file = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), 'am-harness-')),

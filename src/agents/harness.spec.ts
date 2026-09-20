@@ -24,11 +24,14 @@ const ctx = {
 describe('harness note', () => {
   it('fills the placeholders of the default note', () => {
     const note = renderHarnessNote(DEFAULT_HARNESS_NOTE, ctx)!;
-    expect(note).toContain('agent "worker" of the project "demo" on box');
-    expect(note).toContain('api (/r/api), ui (/r/ui)');
-    expect(note).toContain('working directory is /r/api');
-    expect(note).toContain('Permissions: ask.');
+    expect(note).toContain(
+      'The project is "demo"; its repositories: api (/r/api), ui (/r/ui).',
+    );
+    expect(note).toContain("This session's mode: ask.");
+    expect(note).toContain('features/<slug>.md');
     expect(note).not.toMatch(/\{\{/);
+    // description, not procedure: the note tells the agent nothing to do
+    expect(note).not.toMatch(/\b(never|always|do not|must)\b/i);
   });
   it('keeps an unknown placeholder and turns an empty template into no note', () => {
     expect(renderHarnessNote('for {{agent}}: {{nope}}', ctx)).toBe(

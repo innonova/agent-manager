@@ -233,10 +233,16 @@ prompt, and has never heard of the features convention; the four
 repositories of this system carry that in their `CLAUDE.md` and
 `AGENTS.md`, any other project does not. So the manager tells every
 agent, at every session start, what it is running under: a short note
-naming the agent, the project and host, the repositories and working
-directory, the permission mode, that nobody is at a terminal and a
-question waits for the web UI, what a steered or held message is, the
-features convention, and that a restart is not an error.
+with only what the harness adds and the CLIs cannot know (nothing the
+CLI already tells its model: the working directory, the extra
+directories Claude and Copilot get as `--add-dir`), as description
+rather than procedure: that nobody is at a terminal and a question or
+permission request waits for the web UI, that a mid-turn message is a
+person's and a held one arrives as the next turn, that the manager
+itself asks about long-running background jobs, where uploads land, the
+project's repositories (Codex has no other way to know them), and the
+features convention described well enough for a repository that has not
+started using it.
 
 The note is built from a template with `{{agent}}`, `{{project}}`,
 `{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}` and `{{repos}}`

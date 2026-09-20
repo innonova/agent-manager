@@ -20,17 +20,27 @@ export interface HarnessContext {
   repos: { name: string; path: string }[];
 }
 
-/** The note as shipped; `~/.config/agent-manager/harness.md` replaces it, an empty file turns it off. */
+/**
+ * The note as shipped; `~/.config/agent-manager/harness.md` replaces it, an
+ * empty file turns it off. Only what the harness adds and the CLIs cannot
+ * know: no working directory (every CLI knows its own), no repository list
+ * beyond one line (Claude and Copilot get them as --add-dir; Codex does
+ * not), no procedure (the features convention is described, not
+ * commanded).
+ */
 export const DEFAULT_HARNESS_NOTE = `# Running under agent-manager
 
-You are the agent "{{agent}}" of the project "{{project}}" on {{host}}, run by agent-manager: a harness that keeps agent CLI sessions alive in a daemon and shows them in a web UI and a terminal client. Note:
+This session is run by agent-manager, a harness that keeps agent CLI sessions alive in a background daemon and shows them in a web UI and a terminal client. What that changes:
 
-- Nobody is at a terminal. Your output is read in the web UI, possibly much later. A question ends your turn and waits for a human to answer it there; when a reasonable assumption lets you proceed, proceed and say what you assumed.
-- The project's repositories: {{repos}}. Your working directory is {{cwd}}; the others are reachable at their paths.
-- Permissions: {{permissions}}. "bypass" means you act without asking; "ask" means gated tools wait for a human decision in the UI.
-- A message that arrives while you work is the human steering you: take it into account and continue. A message the vendor cannot take mid-turn is held and delivered as your next turn.
-- Units of work are files \`features/<slug>.md\` in a repository (frontmatter: title, status, priority, dependsOn; the body is the spec, followed by dated \`## Report\` and \`## Response\` sections). When asked to work on one: read the whole file, set \`status: in-progress\`, do the work, append \`## Report (YYYY-MM-DD)\` with what changed, what was verified and what is left open, and set \`status: review\` (or \`blocked\`, with the reason). Never edit the other frontmatter fields, and do not create or edit feature files otherwise unless asked.
-- The human may restart your session; you are resumed with your conversation intact. A restart is not an error.
+- Nobody is at a terminal. What you write is read in the web UI, possibly much later. A question ends your turn until someone answers it there, and in "ask" permission mode a permission request waits the same way. This session's mode: {{permissions}}.
+- A message that arrives while you work was typed by a person watching and concerns the work in progress. A message sent while you cannot take one arrives as your next turn. Several people may write to the same agent; messages carry no name.
+- After a long while idle with a background job still running (half an hour by default), the manager itself sends a message asking about it.
+- Files uploaded through the UI land in the working tree, untracked.
+- The project is "{{project}}"; its repositories: {{repos}}.
+
+## Features
+
+Work in these repositories is tracked as files, one per unit of work: \`features/<slug>.md\` in the repository it belongs to; the manager lists them per project. Frontmatter: \`title\`, \`status\` (planned, in-progress, review, blocked, done), \`priority\` (a number, lower first), \`dependsOn\` (slugs). The body is the spec, followed by dated \`## Report (YYYY-MM-DD)\` sections written by the agent that worked on it (what changed, what was verified, what is left open) and \`## Response (YYYY-MM-DD)\` sections written by a person. The manager reads the status and shows the sections: a person asks an agent to work on a planned feature, the agent sets it in-progress and then review with its report, the person answers or marks it done. A repository without a \`features/\` directory has not started; the first file creates it.
 `;
 
 /** Fills the placeholders; an unknown placeholder is left as is. Whitespace-only text means no note. */
