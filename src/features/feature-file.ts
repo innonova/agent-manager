@@ -38,6 +38,29 @@ export function isSlug(s: unknown): s is string {
   return typeof s === 'string' && SLUG_RE.test(s);
 }
 
+/** `key: value` lines as people write them, for frontmatter YAML refuses; quotes stripped, `[a, b]` and `a, b` as lists for dependsOn. */
+function plainKeyValues(text: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const i = raw.indexOf(':');
+    if (i <= 0) continue;
+    const key = raw.slice(0, i).trim();
+    let value: unknown = raw.slice(i + 1).trim();
+    if (typeof value === 'string' && /^(["']).*\1$/.test(value))
+      value = value.slice(1, -1);
+    if (key === 'dependsOn' && typeof value === 'string')
+      value = value
+        .replace(/^\[|\]$/g, '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+    if (key === 'priority' && typeof value === 'string' && /^\d+$/.test(value))
+      value = Number(value);
+    out[key] = value;
+  }
+  return out;
+}
+
 /** Splits `---\n...\n---\n` frontmatter from the body; tolerant of files without any. */
 function split(text: string): { front: Record<string, unknown>; body: string } {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
@@ -46,7 +69,12 @@ function split(text: string): { front: Record<string, unknown>; body: string } {
   try {
     front = YAML.parse(m[1]) ?? {};
   } catch {
-    front = {};
+    // Not YAML to the letter: a title with ": " in it is the usual case
+    // ("the UI as a reading app: hierarchy, ..."), which YAML refuses and
+    // which silently made every such feature `planned` with no title,
+    // no range and no run (learnings #47). Read it as people write it:
+    // one `key: value` per line, the first colon the separator.
+    front = plainKeyValues(m[1]);
   }
   return {
     front:

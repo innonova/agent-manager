@@ -1,5 +1,23 @@
 import { lastReport, parseFeature, serializeFeature } from './feature-file.js';
 
+describe('frontmatter that is not YAML to the letter', () => {
+  it('reads a title with a colon in it, as people write them', () => {
+    const f = parseFeature(
+      'ui-rethink',
+      'ui',
+      'ui/features/ui-rethink.md',
+      '---\ntitle: the UI as a reading app: hierarchy, one header line, projects first\nstatus: review\npriority: 30\ndependsOn: [a-thing, another]\n---\n\nBody.\n',
+      1,
+    );
+    expect(f.title).toBe(
+      'the UI as a reading app: hierarchy, one header line, projects first',
+    );
+    expect(f.status).toBe('review');
+    expect(f.priority).toBe(30);
+    expect(f.dependsOn).toEqual(['a-thing', 'another']);
+  });
+});
+
 describe('feature files', () => {
   it('parses frontmatter with defaults and keeps unknown keys', () => {
     const f = parseFeature(
