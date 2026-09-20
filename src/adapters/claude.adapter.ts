@@ -694,6 +694,15 @@ export class ClaudeAdapter implements AgentAdapter {
     // What the turn cost, added to the session's tally; on Bedrock or Vertex
     // there are no account windows, so this is the usage there is.
     const u = line.usage ?? {};
+    // The turn's own cost: the vendor's figure is the session's running
+    // total, so the turn is the step from the total before it. A transcript
+    // that showed the total on every turn end was read as per-turn costs
+    // for a day (learnings #14).
+    const before = this.usage.spend.costUsd;
+    const turnCost =
+      typeof line.total_cost_usd === 'number'
+        ? Math.max(0, line.total_cost_usd - (before ?? 0))
+        : undefined;
     const inTok =
       Number(u.input_tokens ?? 0) +
       Number(u.cache_creation_input_tokens ?? 0) +
@@ -717,7 +726,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const end: Item = {
       kind: 'turn_end',
       usage: line.usage,
-      costUsd: line.total_cost_usd,
+      costUsd: turnCost,
       durationMs: line.duration_ms,
     };
     if (line.is_error) {
