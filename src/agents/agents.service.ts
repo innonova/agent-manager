@@ -45,6 +45,7 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
+import { head } from '../changes/git.js';
 import { spendOnlyUsage } from './usage.js';
 
 export interface Agent {
@@ -1579,7 +1580,8 @@ export class AgentsService
     }
     // Work landing is worth a line of its own in the transcript: the
     // vendor says it happened, nothing else in the stream does.
-    if (ingest.committed)
+    if (ingest.committed) {
+      const itemIndex = this.itemCount(agent.id); // the index the system item will take
       this.applyOp(
         agent.id,
         live,
@@ -1596,6 +1598,12 @@ export class AgentsService
         },
         record.t,
       );
+      // Record which turn made it, but only for a live event: on a replay
+      // `git rev-parse HEAD` would give the current HEAD, not the one at the
+      // commit's moment, and the row is already on disk from the first time.
+      if (!sl.attaching)
+        this.recordCommit(agent, sl.id, ingest.committed, itemIndex, record.t);
+    }
     if (ingest.send?.length) {
       if (sl.attaching)
         sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
@@ -1642,6 +1650,70 @@ export class AgentsService
     // At a turn end everything the session produced so far is final:
     // remember the adapter's state here so a restart can continue from it.
     if (turnEnded) this.settle(agent, live, sl);
+  }
+
+  /**
+   * Records that this agent's turn made a commit: the repo and hash (from
+   * HEAD in the commit's cwd, resolved now while it is live), the session,
+   * and the transcript item index of the "committed" line, so the changes
+   * list can name the agent and link to the moment. A cwd outside the
+   * project, or a HEAD that will not resolve (a race with a push), is
+   * logged and dropped rather than guessed. Async and fire-and-forget: the
+   * item index is already captured, and the row is idempotent per hash.
+   */
+  private recordCommit(
+    agent: Agent,
+    sessionId: string,
+    committed: { branch?: string; cwd?: string },
+    itemIndex: number,
+    at: number,
+  ): void {
+    let repoName: string | undefined;
+    let repoPath: string | undefined;
+    try {
+      const project = this.projects.get(agent.projectId);
+      const cwd = committed.cwd ?? agent.cwd;
+      const repo =
+        project.repos.find((r) => r.path === cwd) ??
+        project.repos.find((r) => r.path === agent.cwd);
+      repoName = repo?.name;
+      repoPath = repo?.path;
+    } catch {
+      /* project gone: nothing to attribute to */
+    }
+    if (!repoName || !repoPath) {
+      this.logger.warn(
+        `commit by ${agent.name} in ${committed.cwd ?? agent.cwd}: not one of the project's repos; not attributed`,
+      );
+      return;
+    }
+    void head(repoPath).then((hash) => {
+      if (!hash) {
+        this.logger.warn(
+          `commit by ${agent.name} in ${repoName}: HEAD did not resolve; not attributed`,
+        );
+        return;
+      }
+      this.db
+        .prepare(
+          `INSERT INTO commit_attributions
+             (project_id, repo, hash, agent_id, agent_name, session_id, item_index, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(project_id, repo, hash) DO UPDATE SET
+             agent_id = excluded.agent_id, agent_name = excluded.agent_name,
+             session_id = excluded.session_id, item_index = excluded.item_index, at = excluded.at`,
+        )
+        .run(
+          agent.projectId,
+          repoName,
+          hash,
+          agent.id,
+          agent.name,
+          sessionId,
+          itemIndex,
+          at,
+        );
+    });
   }
 
   /**

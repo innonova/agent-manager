@@ -37,6 +37,21 @@ CREATE TABLE IF NOT EXISTS project_repos (
   position INTEGER NOT NULL,
   PRIMARY KEY (project_id, name)
 );
+-- Which turn of which agent made a commit, recorded when the vendor
+-- reports it (Claude only). Keyed on repo and hash; the commits list
+-- joins it ahead of the run window, and it survives a transcript rebuild
+-- because item indexes are stable per session.
+CREATE TABLE IF NOT EXISTS commit_attributions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  repo TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  item_index INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (project_id, repo, hash)
+);
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

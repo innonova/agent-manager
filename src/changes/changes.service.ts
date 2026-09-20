@@ -46,11 +46,14 @@ export interface CommitRow {
   author: string;
   /** Author time, milliseconds. */
   at: number;
-  /** The agent's name when the commit falls in a run's window, else null (the git author is then who). */
+  /** The agent's name: the turn that made it if recorded, else a run window, else null (the git author is then who). */
   agent: string | null;
   agentId: string | null;
   /** The feature slug when the commit falls in a run's window, else null. */
   feature: string | null;
+  /** The session and transcript item index of the commit, when a turn made it and it was recorded; for linking into the transcript. */
+  sessionId: string | null;
+  item: number | null;
   /** True when the commit is after the caller's read cursor in its repository. */
   unread: boolean;
 }
@@ -281,13 +284,16 @@ export class ChangesService {
 
   /**
    * The project's commits across its repositories, newest first, each with
-   * who made it and which feature it belongs to. Attribution is by run
-   * window: a commit that falls in a run's `base..end` (in that run's own
-   * repository) carries that run's agent and feature; when it falls in more
-   * than one, the innermost wins — the run whose base is the latest ancestor
-   * of the commit, ties broken by the most recent start. A commit in no run
-   * window carries the git author and no feature. Nothing is cached: every
-   * call reads git afresh, so a rebase or amend is reflected at once.
+   * who made it and which feature it belongs to. Who is attributed in three
+   * steps: the recorded turn that made it (an agent committing through this
+   * manager, with its session and transcript item, so a client can link
+   * into the conversation), else the run window's agent, else the git
+   * author. The feature comes from the run window: a commit in a run's
+   * `base..end` (in that run's own repository) carries its slug, and when
+   * it falls in more than one, the innermost wins — the run whose base is
+   * the latest ancestor of the commit, ties broken by the most recent
+   * start. Nothing is cached: every call reads git afresh, so a rebase or
+   * amend is reflected at once.
    */
   async commits(
     userId: string,
@@ -344,12 +350,17 @@ export class ChangesService {
       }
       const commits = (await log(repo.path, { limit, since })) ?? [];
       const attribution = await this.attribute(repo.path, repo.name, commits, runs);
+      const turns = this.turnRecords(projectId, repo.name);
       for (const c of commits) {
         const isUnread = unread ? unread.has(c.hash) : true;
         if (isUnread) sinceCount++;
         const a = attribution.get(c.hash);
+        const rec = turns.get(c.hash);
+        // who: the recorded turn first, then the run window, then git author
+        const agentId = rec?.agentId ?? a?.agentId ?? null;
+        const agentName = rec?.agentName ?? a?.agent ?? null;
         if (filter.feature && a?.feature !== filter.feature) continue;
-        if (filter.agent && a?.agentId !== filter.agent) continue;
+        if (filter.agent && agentId !== filter.agent) continue;
         out.push({
           repo: repo.name,
           hash: c.hash,
@@ -357,9 +368,11 @@ export class ChangesService {
           subject: c.subject,
           author: c.author,
           at: c.at,
-          agent: a?.agent ?? null,
-          agentId: a?.agentId ?? null,
+          agent: agentName,
+          agentId,
           feature: a?.feature ?? null,
+          sessionId: rec?.sessionId ?? null,
+          item: rec?.item ?? null,
           unread: isUnread,
         });
       }
@@ -416,6 +429,35 @@ export class ChangesService {
         });
     }
     return result;
+  }
+
+  /** The recorded turn behind each commit of a repository, by hash (agents committing through this manager). */
+  private turnRecords(
+    projectId: string,
+    repoName: string,
+  ): Map<string, { agentId: string; agentName: string; sessionId: string; item: number }> {
+    const rows = this.db
+      .prepare(
+        'SELECT hash, agent_id, agent_name, session_id, item_index FROM commit_attributions WHERE project_id = ? AND repo = ?',
+      )
+      .all(projectId, repoName) as {
+      hash: string;
+      agent_id: string;
+      agent_name: string;
+      session_id: string;
+      item_index: number;
+    }[];
+    return new Map(
+      rows.map((r) => [
+        r.hash,
+        {
+          agentId: r.agent_id,
+          agentName: r.agent_name,
+          sessionId: r.session_id,
+          item: r.item_index,
+        },
+      ]),
+    );
   }
 
   /** How many commits are unread across the project's repositories (the tab badge). */
