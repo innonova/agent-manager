@@ -78,6 +78,10 @@ says so in the next turn rather than waiting.
    before one of them types. It has changed the design outright once
    and the implementation in most rounds, for about a dollar a time
    (learnings #11, #14).
+   A plan may be skipped for a small, understood change; setting the
+   feature `in-progress` may not: that transition is what opens the
+   run, and a round that goes planned to review leaves no run behind
+   (learnings #48).
 4. **Let it work.** The agent does what the feature needs, across the
    repositories it touches, fixes what it finds in its own work, and
    records what it learns as it goes (`am learn`). It stops and says
