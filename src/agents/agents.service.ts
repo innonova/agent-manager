@@ -1270,6 +1270,13 @@ export class AgentsService
         cwd: agent.cwd,
         permissions: agent.permissions,
         repos,
+        // the house view of the models, read the same way as the note
+        // itself: at session start, so an edit reaches an agent at its
+        // next restart and not before
+        models: loadHarnessTemplate(
+          this.config.modelsFile,
+          this.config.shippedModelsFile,
+        ),
       },
     );
   }

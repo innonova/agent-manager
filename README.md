@@ -30,8 +30,12 @@ daemon and are re-adopted on start.
 changes alike:
 
 1. builds the manager from this checkout;
-2. copies `dist/`, `fixtures/` and the package files to
-   `~/.local/lib/agent-manager` and installs production dependencies there;
+2. copies `dist/`, `fixtures/`, `harness.md`, `models.md` and the package
+   files to `~/.local/lib/agent-manager` and installs production
+   dependencies there, and seeds `~/.config/agent-manager/harness.md`
+   (the note every agent gets) and `models.md` (the house view of the
+   models it carries) from them — updating a copy that is still the
+   previously shipped text, keeping an edited one and saying so;
 3. copies `../agent-manager-ui/dist` to `~/.local/lib/agent-manager/ui` if
    it exists (build the UI first, or a stale UI ships silently; without a
    build the manager runs API-only);

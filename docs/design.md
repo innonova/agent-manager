@@ -314,8 +314,12 @@ features convention described well enough for a repository that has not
 started using it.
 
 The note is built from a template with `{{agent}}`, `{{project}}`,
-`{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}` and `{{repos}}`
-placeholders. The shipped text is `harness.md` at the repository root,
+`{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}`, `{{repos}}` and
+`{{models}}` placeholders. All but the last render a value inline;
+`{{models}}` brings its own heading, rendering `## Models` followed by
+the models file's text, and nothing at all when that file is empty, so
+turning the house view off leaves no empty section behind (a run of
+blank lines left by a placeholder that rendered nothing is collapsed). The shipped text is `harness.md` at the repository root,
 installed next to `dist/`; the installer copies it to
 `~/.config/agent-manager/harness.md` (`AGENT_MANAGER_HARNESS_FILE`)
 when there is no copy, or when the copy is still the text the previous
@@ -343,6 +347,42 @@ The note as rendered at the last session start is kept on the agent
 renders its own notes from its own template; `GET`/`PUT /api/harness`
 read and write the template per machine (the hub forwards by host
 name), which is how the UI edits it without a shell.
+
+The models file is the second file of this kind: `models.md` beside
+`harness.md`, the house view of which model suits which work, so an
+agent that starts a helper chooses with what we have learned in front
+of it. It behaves exactly as the note's template does — shipped at the
+repository root, installed next to `dist/`, seeded by the installer
+with the same three-way rule (seed, update while unedited, keep an
+edited copy and say so), read at every session start, missing falling
+back to the shipped text and empty turning it off — and is read and
+written over `GET`/`PUT /api/models`, forwarded by a hub the same way.
+Its row has the same shape as the harness one, including the field
+name `template`: the models file has no placeholders, so the name is a
+misnomer kept on purpose, because it lets the UI edit both files with
+one editor. One difference: the models text is pasted into every note
+of every agent, so `PUT` caps it at 8 KB where the template's cap is
+64 KB, and says so.
+
+Three decisions about it:
+
+- An agent is told the house view in its note and nowhere else. The
+  text it has is the one rendered at its session start, frozen until
+  its next restart, and an agent's token is refused `/api/models` as it
+  is refused `/api/harness`. Keeping it from drifting mid-turn is worth
+  more than letting an agent re-read it.
+- Both files are per machine, which fits the note (it describes the
+  machine) but not the models (what we have learned is not a property
+  of a box), and will not fit the run log either. A hub-wide copy that
+  spokes inherit is the later decision; until it is taken, a hub's
+  operator edits each machine's copy through the UI's host rows.
+- The file is free text, one section per model, and nothing parses it.
+  Model choice stays a person's or an agent's judgement; the manager
+  does not act on it.
+
+The run log (`features/run-log-for-model-comparison.md`) is where the
+evidence behind the file accumulates; the file itself is the conclusion,
+kept by hand.
 
 ## Adapters
 
@@ -863,6 +903,8 @@ GET    /api/profiles                                            -> daemon profil
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
 GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
 PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there
+GET    /api/models                                              -> { hosts: [...] }; the models file per machine, same row shape as /api/harness (its `template` field is the file's text; it has no placeholders)
+PUT    /api/models                  { host?, template: string | null } -> the host's row; as /api/harness, capped at 8 KB because the text goes into every agent's note
 GET    /api/health                  (public)                    -> { status: 'ok', daemon: boolean, hosts: [{ name, local, connected, daemon }] }
 
 GET    /api/projects/:id/files?path=<dir>                       -> { path, entries: [{ name, path, type: file|dir|symlink|other, size, mtime, ignored, status }] }, directories first; the root lists one dir per repository; `ignored` is git check-ignore's verdict (plus `.git` itself) and `status` is git status's (modified|added|deleted|untracked|conflict, a directory taking the most significant of its contents), null when clean; both false/null outside a repository
@@ -996,6 +1038,7 @@ swept once a minute.
 | `AGENT_MANAGER_HUB_TOKEN` | unset | lets a hub act here with this bearer token (see Hub and spokes) |
 | `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
 | `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none |
+| `AGENT_MANAGER_MODELS_FILE` | `~/.config/agent-manager/models.md` | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section |
 
 The built UI's static assets and the SPA fallback are served without
 authentication: the login page must load. Everything under `/api` except

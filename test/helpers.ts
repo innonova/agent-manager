@@ -104,6 +104,7 @@ export async function startManager(
       uiDir: null,
       loginAttemptsPerMinute: 1000,
       harnessFile: path.join(dataDir, 'harness.md'), // never the developer's own ~/.config file
+      modelsFile: path.join(dataDir, 'models.md'), // nor their models file
       spokesFile: path.join(dataDir, 'spokes.json'), // nor their spokes: a test manager must not front for a real machine
       ...overrides,
     },

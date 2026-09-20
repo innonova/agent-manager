@@ -8,8 +8,14 @@ import {
   shippedHarnessNote,
 } from './harness.js';
 
-/** The file shipped at the repository root, installed next to dist/. */
+/** The files shipped at the repository root, installed next to dist/. */
 const SHIPPED = path.resolve(import.meta.dirname, '..', '..', 'harness.md');
+const SHIPPED_MODELS = path.resolve(
+  import.meta.dirname,
+  '..',
+  '..',
+  'models.md',
+);
 
 const ctx = {
   agent: 'worker',
@@ -39,6 +45,25 @@ describe('harness note', () => {
     // description, not procedure: the note tells the agent nothing to do
     expect(note).not.toMatch(/\b(never|always|do not|must)\b/i);
   });
+  it('renders the models file under a heading of its own, or not at all', () => {
+    const shipped = shippedHarnessNote(SHIPPED);
+    expect(shipped).toContain('{{models}}'); // the note asks for it
+    const models = shippedHarnessNote(SHIPPED_MODELS);
+    expect(models).toContain('Claude Sonnet 5');
+    const note = renderHarnessNote(shipped, { ...ctx, models })!;
+    expect(note).toContain('## Models');
+    expect(note).toContain('Claude Sonnet 5');
+    expect(note).not.toMatch(/\{\{/);
+    // the shipped models text is description too, like the rest of the note
+    expect(note).not.toMatch(/\b(never|always|do not|must)\b/i);
+    // the models file is the one thing an agent is told about models: it
+    // is in the note and on no route of the API (see scopeAllows)
+    const without = renderHarnessNote(shipped, { ...ctx, models: '' })!;
+    expect(without).not.toContain('## Models');
+    expect(without).not.toMatch(/\n\n\n/); // no hole where the section was
+    expect(renderHarnessNote(shipped, ctx)).toBe(without); // no models at all: the same
+  });
+
   it('keeps an unknown placeholder and turns an empty template into no note', () => {
     expect(renderHarnessNote('for {{agent}}: {{nope}}', ctx)).toBe(
       'for worker: {{nope}}',

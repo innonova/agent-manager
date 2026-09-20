@@ -18,6 +18,13 @@ export interface HarnessContext {
   cwd: string;
   permissions: 'bypass' | 'ask';
   repos: { name: string; path: string }[];
+  /**
+   * The house view of the models (`models.md`), for `{{models}}`: what we
+   * have learned about which model suits which work, so an agent that
+   * delegates chooses with it in front of it. The text as the operator
+   * keeps it; the heading around it belongs to the note.
+   */
+  models?: string;
 }
 
 /**
@@ -35,7 +42,13 @@ export function shippedHarnessNote(file: string): string {
   }
 }
 
-/** Fills the placeholders; an unknown placeholder is left as is. Whitespace-only text means no note. */
+/**
+ * Fills the placeholders; an unknown placeholder is left as is.
+ * Whitespace-only text means no note. `{{models}}` is the one
+ * placeholder that brings its own heading: it renders `## Models` and
+ * the file's text, or nothing at all when the file is empty, so turning
+ * the models file off leaves no empty section behind.
+ */
 export function renderHarnessNote(
   template: string,
   ctx: HarnessContext,
@@ -49,13 +62,21 @@ export function renderHarnessNote(
     cwd: ctx.cwd,
     permissions: ctx.permissions,
     repos: ctx.repos.map((r) => `${r.name} (${r.path})`).join(', '),
+    models: ctx.models?.trim() ? `## Models\n\n${ctx.models.trim()}` : '',
   };
-  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key: string) =>
+  const note = template.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key: string) =>
     key in values ? values[key] : m,
   );
+  // A placeholder that rendered nothing (an empty models file) leaves the
+  // blank lines around it behind; a run of them is one blank line.
+  return note.replace(/\n{3,}/g, '\n\n');
 }
 
-/** The operator's template when the file exists (even empty), else the shipped one. */
+/**
+ * The operator's file when it exists (even empty), else the shipped one.
+ * The harness template and the models file are read the same way: an
+ * edit needs no restart, and an empty file turns the thing off.
+ */
 export function loadHarnessTemplate(file: string, shipped: string): string {
   try {
     return fs.readFileSync(file, 'utf8');

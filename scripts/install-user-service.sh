@@ -23,22 +23,31 @@ mkdir -p "$INSTALL_DIR"
 # copy is still the text the previous install shipped (unchanged by the
 # operator: the previous shipped text is the one in the install dir, read
 # before it is replaced below). An edited copy is kept and pointed out.
+# The models file rides along on the same terms: the house view of which
+# model suits which work, rendered into every note at {{models}}.
+seed_config_file() {
+  local what="$1" src="$2" target="$3"
+  if [ ! -e "$target" ]; then
+    mkdir -p "$(dirname "$target")"
+    cp "$src" "$target"
+    echo "$what seeded at $target"
+  elif cmp -s "$src" "$target"; then
+    : # already the shipped text
+  elif [ -e "$INSTALL_DIR/$(basename "$src")" ] && cmp -s "$INSTALL_DIR/$(basename "$src")" "$target"; then
+    cp "$src" "$target"
+    echo "$what updated at $target (it was the previously shipped text, unchanged)"
+  else
+    echo "$what at $target is edited; kept (the UI shows the shipped text too)"
+  fi
+}
+
 HARNESS="${AGENT_MANAGER_HARNESS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager/harness.md}"
-if [ ! -e "$HARNESS" ]; then
-  mkdir -p "$(dirname "$HARNESS")"
-  cp "$ROOT/harness.md" "$HARNESS"
-  echo "harness note seeded at $HARNESS"
-elif cmp -s "$ROOT/harness.md" "$HARNESS"; then
-  : # already the shipped text
-elif [ -e "$INSTALL_DIR/harness.md" ] && cmp -s "$INSTALL_DIR/harness.md" "$HARNESS"; then
-  cp "$ROOT/harness.md" "$HARNESS"
-  echo "harness note updated at $HARNESS (it was the previously shipped text, unchanged)"
-else
-  echo "harness note at $HARNESS is edited; kept (the UI's harness page shows the shipped text too)"
-fi
+MODELS="${AGENT_MANAGER_MODELS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager/models.md}"
+seed_config_file "harness note" "$ROOT/harness.md" "$HARNESS"
+seed_config_file "models file" "$ROOT/models.md" "$MODELS"
 
 rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/fixtures"
-cp -r "$ROOT/dist" "$ROOT/fixtures" "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/harness.md" "$INSTALL_DIR/"
+cp -r "$ROOT/dist" "$ROOT/fixtures" "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/harness.md" "$ROOT/models.md" "$INSTALL_DIR/"
 (cd "$INSTALL_DIR" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 && npm rebuild better-sqlite3 argon2 >/dev/null 2>&1)
 if [ -e "$UI_DIST/index.html" ]; then
   rm -rf "$INSTALL_DIR/ui"

@@ -553,6 +553,43 @@ describe('agents', () => {
     ).toBe(404);
   });
 
+  it('the models file is read and written like the harness template, and lands in the note', async () => {
+    const before = (await api.get('/api/models')).body.hosts;
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ source: 'built-in' });
+    expect(before[0].builtIn).toContain('Claude Sonnet 5'); // the shipped house view
+    const custom = await api.put('/api/models', {
+      template: '### Fake 1\n\nFor tests.',
+    });
+    expect(custom.status).toBe(200);
+    expect(custom.body).toMatchObject({ source: 'custom' });
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'chooser');
+    // the note carries it under a heading the renderer supplies
+    const told = (await api.get(`/api/agents/${agent.id}`)).body.agent;
+    expect(told.harnessNote).toContain('## Models');
+    expect(told.harnessNote).toContain('For tests.');
+    // an empty file turns the section off, heading and all
+    expect((await api.put('/api/models', { template: '' })).body.source).toBe(
+      'off',
+    );
+    const { agent: quiet } = await createAgent(p.id, 'unadvised');
+    const untold = (await api.get(`/api/agents/${quiet.id}`)).body.agent;
+    expect(untold.harnessNote).not.toContain('## Models');
+    expect(untold.harnessNote).toContain('Running under agent-manager'); // the rest of the note is there
+    const back = await api.put('/api/models', { template: null });
+    expect(back.body.source).toBe('built-in');
+    expect(fs.readFileSync(custom.body.file, 'utf8')).toBe(back.body.builtIn);
+    expect((await api.put('/api/models', { template: 42 })).status).toBe(400);
+    // pasted into every note, so it is capped well below the template's 64 KB
+    const tooBig = await api.put('/api/models', { template: 'x'.repeat(9000) });
+    expect(tooBig.status).toBe(400);
+    expect(tooBig.body.message).toContain('8 KB');
+    expect(
+      (await api.put('/api/models', { host: 'nowhere', template: 'x' })).status,
+    ).toBe(404);
+  });
+
   it('a restart starts the vendor spend over; the status carries the total across the sessions', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'spender');
@@ -1137,13 +1174,16 @@ describe('agents', () => {
     expect(found![1]).toBe(m.url); // its own manager, on loopback
     const own = new Api(m.url);
     own.bearer = found![2];
-    // within its project: yes; the project's own settings, users, the harness, other projects: no
+    // within its project: yes; the project's own settings, users, the
+    // harness and models files, other projects: no
     expect((await own.get(`/api/projects/${p.id}/agents`)).status).toBe(200);
     expect((await own.get(`/api/projects/${p.id}/features`)).status).toBe(200);
     expect((await own.get('/api/projects')).status).toBe(200);
     expect((await own.get('/api/auth/me')).body.user.name).toBe('agent-boss');
     expect((await own.get('/api/users')).status).toBe(403);
     expect((await own.get('/api/harness')).status).toBe(403);
+    // the house view reaches an agent in its note, not over the API
+    expect((await own.get('/api/models')).status).toBe(403);
     expect(
       (await own.patch(`/api/projects/${p.id}`, { name: 'x' })).status,
     ).toBe(403);

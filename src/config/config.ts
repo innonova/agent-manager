@@ -35,6 +35,10 @@ export interface ManagerConfig {
   harnessFile: string;
   /** The template as shipped: `harness.md` next to `dist/`; what the installer seeds the config file from. */
   shippedHarnessFile: string;
+  /** The house view of the models, rendered into every note at `{{models}}`; absent means the shipped one, empty means none. */
+  modelsFile: string;
+  /** The models file as shipped: `models.md` next to `dist/`; what the installer seeds the config file from. */
+  shippedModelsFile: string;
 }
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
@@ -109,6 +113,15 @@ export function loadConfig(
       '..',
       '..',
       'harness.md',
+    ),
+    modelsFile:
+      env.AGENT_MANAGER_MODELS_FILE ??
+      path.join(xdgConfig, 'agent-manager', 'models.md'),
+    shippedModelsFile: path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'models.md',
     ),
   };
 }

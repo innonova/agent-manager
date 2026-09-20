@@ -11,3 +11,5 @@ This session is run by agent-manager, which keeps agent CLI sessions alive in a 
 ## Features
 
 Work in these repositories is tracked as files, one per unit of work: `features/<slug>.md` in the repository it belongs to; the manager lists them per project. Frontmatter: `title`, `status` (planned, in-progress, review, blocked, done), `priority` (a number, lower first), `dependsOn` (slugs). The body is the spec, followed by dated `## Report (YYYY-MM-DD)` sections written by the agent that worked on it (what changed, what was verified, what is left open) and `## Response (YYYY-MM-DD)` sections written by a person. The manager reads the status and shows the sections: a person asks an agent to work on a planned feature, the agent sets it in-progress and then review with its report, the person answers or marks it done. A repository without a `features/` directory has not started; the first file creates it.
+
+{{models}}
