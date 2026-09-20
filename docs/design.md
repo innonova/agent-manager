@@ -236,8 +236,10 @@ agent, at every session start, what it is running under: a short note
 with only what the harness adds and the CLIs cannot know (nothing the
 CLI already tells its model: the working directory, the extra
 directories Claude and Copilot get as `--add-dir`), as description
-rather than procedure: that nobody is at a terminal and a question or
-permission request waits for the web UI, that a mid-turn message is a
+rather than procedure: that there is no terminal, someone may follow
+along in the web UI or read much later, and a question or permission
+request waits there (the permission mode itself is the CLI's own
+setting, enforced by it, not restated), that a mid-turn message is a
 person's and a held one arrives as the next turn, that the manager
 itself asks about long-running background jobs, where uploads land, the
 project's repositories (Codex has no other way to know them), and the

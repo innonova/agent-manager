@@ -487,7 +487,7 @@ describe('agents', () => {
     expect(said).toContain('Running under agent-manager'); // the built-in note, filled in
     expect(said).toContain('features/<slug>.md');
     const got = (await api.get(`/api/agents/${agent.id}`)).body.agent;
-    expect(got.harnessNote).toContain("This session's mode: bypass."); // what it was told, on the record
+    expect(got.harnessNote).toContain('There is no terminal.'); // what it was told, on the record
     // an operator template replaces the note; an empty one turns it off
     const file = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), 'am-harness-')),

@@ -27,7 +27,8 @@ describe('harness note', () => {
     expect(note).toContain(
       'The project is "demo"; its repositories: api (/r/api), ui (/r/ui).',
     );
-    expect(note).toContain("This session's mode: ask.");
+    expect(note).toContain('There is no terminal.');
+    expect(note).not.toContain('{{permissions}}'); // the CLI's own setting, not the harness's to state
     expect(note).toContain('features/<slug>.md');
     expect(note).not.toMatch(/\{\{/);
     // description, not procedure: the note tells the agent nothing to do

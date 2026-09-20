@@ -32,7 +32,7 @@ export const DEFAULT_HARNESS_NOTE = `# Running under agent-manager
 
 This session is run by agent-manager, a harness that keeps agent CLI sessions alive in a background daemon and shows them in a web UI and a terminal client. What that changes:
 
-- Nobody is at a terminal. What you write is read in the web UI, possibly much later. A question ends your turn until someone answers it there, and in "ask" permission mode a permission request waits the same way. This session's mode: {{permissions}}.
+- There is no terminal. Someone may be following along in the web UI, or may read what you write much later; a question ends your turn until it is answered there, and so does a permission request where the mode asks.
 - A message that arrives while you work was typed by a person watching and concerns the work in progress. A message sent while you cannot take one arrives as your next turn. Several people may write to the same agent; messages carry no name.
 - After a long while idle with a background job still running (half an hour by default), the manager itself sends a message asking about it.
 - Files uploaded through the UI land in the working tree, untracked.
