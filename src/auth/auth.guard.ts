@@ -35,10 +35,7 @@ export class AuthGuard implements CanActivate {
       .getRequest<Request & { user?: User; sessionId?: string }>();
     const { user, sessionId, scope } = this.auth.userForHeaders(req.headers);
     if (!user) throw new UnauthorizedException();
-    if (
-      scope &&
-      !this.auth.scopeAllows(scope, req.method, req.baseUrl + req.path)
-    )
+    if (scope && !this.auth.scopeAllows(scope, req.method, req.originalUrl))
       throw new ForbiddenException("outside this agent token's project");
     req.user = user;
     req.sessionId = sessionId ?? undefined;
