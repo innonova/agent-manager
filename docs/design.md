@@ -249,10 +249,12 @@ started using it.
 The note is built from a template with `{{agent}}`, `{{project}}`,
 `{{host}}`, `{{profile}}`, `{{cwd}}`, `{{permissions}}` and `{{repos}}`
 placeholders. The shipped text is `harness.md` at the repository root,
-installed next to `dist/`; the installer copies it once to
-`~/.config/agent-manager/harness.md` (`AGENT_MANAGER_HARNESS_FILE`) and
-never overwrites an edited copy (it says when the two differ). That
-copy is what runs, read at each session start so an edit needs no
+installed next to `dist/`; the installer copies it to
+`~/.config/agent-manager/harness.md` (`AGENT_MANAGER_HARNESS_FILE`)
+when there is no copy, or when the copy is still the text the previous
+install shipped (unchanged by the operator; the previous text is the
+one in the install directory, read before it is replaced), and keeps
+an edited copy, saying so. That copy is what runs, read at each session start so an edit needs no
 restart of the manager; a missing copy falls back to the shipped file,
 an empty one turns the note off. Each vendor
 has a per-process channel, so the note is supplied afresh with every

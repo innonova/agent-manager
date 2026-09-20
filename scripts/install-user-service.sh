@@ -17,6 +17,26 @@ echo "building in $ROOT"
 
 echo "installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
+
+# The harness note every agent gets at session start. The config copy is
+# what runs; the shipped text goes there when there is no copy, or when the
+# copy is still the text the previous install shipped (unchanged by the
+# operator: the previous shipped text is the one in the install dir, read
+# before it is replaced below). An edited copy is kept and pointed out.
+HARNESS="${AGENT_MANAGER_HARNESS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager/harness.md}"
+if [ ! -e "$HARNESS" ]; then
+  mkdir -p "$(dirname "$HARNESS")"
+  cp "$ROOT/harness.md" "$HARNESS"
+  echo "harness note seeded at $HARNESS"
+elif cmp -s "$ROOT/harness.md" "$HARNESS"; then
+  : # already the shipped text
+elif [ -e "$INSTALL_DIR/harness.md" ] && cmp -s "$INSTALL_DIR/harness.md" "$HARNESS"; then
+  cp "$ROOT/harness.md" "$HARNESS"
+  echo "harness note updated at $HARNESS (it was the previously shipped text, unchanged)"
+else
+  echo "harness note at $HARNESS is edited; kept (the UI's harness page shows the shipped text too)"
+fi
+
 rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/fixtures"
 cp -r "$ROOT/dist" "$ROOT/fixtures" "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/harness.md" "$INSTALL_DIR/"
 (cd "$INSTALL_DIR" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 && npm rebuild better-sqlite3 argon2 >/dev/null 2>&1)
@@ -26,17 +46,6 @@ if [ -e "$UI_DIST/index.html" ]; then
   echo "installed UI from $UI_DIST"
 else
   echo "no UI build at $UI_DIST; API only (build agent-manager-ui and re-run)"
-fi
-
-# The harness note every agent gets at session start: the shipped text is
-# seeded into the config directory once; an edited copy is never overwritten.
-HARNESS="${AGENT_MANAGER_HARNESS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-manager/harness.md}"
-if [ ! -e "$HARNESS" ]; then
-  mkdir -p "$(dirname "$HARNESS")"
-  cp "$ROOT/harness.md" "$HARNESS"
-  echo "harness note seeded at $HARNESS"
-elif ! cmp -s "$ROOT/harness.md" "$HARNESS"; then
-  echo "harness note at $HARNESS differs from the shipped one (kept; the UI's harness page shows both)"
 fi
 
 # The fake profile lets the UI be used without spending tokens.
