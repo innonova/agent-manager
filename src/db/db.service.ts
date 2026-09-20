@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS runs (
   report TEXT,
   transcript_file TEXT,
   -- how the reviewer judged the work, and when sent back, whose gap it was
+  -- the feature has left in-progress and the run is waiting for the end of
+  -- the turn that did it, so the cost and the commit exist before it closes
+  closing_status TEXT,
+  closing_at INTEGER,
   review_outcome TEXT,
   review_cause TEXT,
   review_note TEXT,
@@ -163,6 +167,8 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]
     ).map((c) => c.name);
     for (const [name, type] of [
+      ['closing_status', 'TEXT'],
+      ['closing_at', 'INTEGER'],
       ['review_outcome', 'TEXT'],
       ['review_cause', 'TEXT'],
       ['review_note', 'TEXT'],

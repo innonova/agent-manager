@@ -185,6 +185,40 @@ async function spendAndClose(agentId: string, slug: string): Promise<any> {
 }
 
 describe('a run across a restart of the manager', () => {
+  it('makes a close that was pending when the manager went down', async () => {
+    await agentWithSpendAndRun('lingerer', 'sprocket');
+    const startedAt = Date.now(); // the linger turn runs about 20 s by itself
+    // the feature moves inside the turn: the close waits for its end
+    writeFeature('sprocket', 'review');
+    await until('the close to be pending', async () => {
+      const run = await runOf('sprocket');
+      return run?.closing ? run : null;
+    });
+
+    // the manager goes away, and the turn ends while it is down
+    const dataDir = m.dataDir;
+    await m.stop();
+    await sleep(Math.max(0, 22_000 - (Date.now() - startedAt)));
+    m = await startManager(daemon.url, dataDir);
+    api = new Api(m.url);
+    await api.login();
+
+    // the sweep finds a pending close whose agent is no longer in a turn
+    const done = await until(
+      'the run to close after the restart',
+      async () => {
+        const run = await runOf('sprocket');
+        return run?.endedAt ? run : null;
+      },
+      30000,
+    );
+    expect(done).toMatchObject({
+      outcome: 'feature',
+      featureStatus: 'review', // the status the poller saw before the restart
+      closing: null,
+    });
+  }, 180000);
+
   it('keeps its spend comparable when the transcript cache is there', async () => {
     const { agentId, total } = await agentWithSpendAndRun('spender', 'widget');
     await settle(agentId);

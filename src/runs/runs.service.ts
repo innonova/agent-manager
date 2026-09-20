@@ -67,6 +67,11 @@ export interface Run extends RunSpend {
   report: string | null;
   /** How the reviewer judged it; null until someone says. */
   review: RunReview | null;
+  /**
+   * The status the feature moved to, while the run waits for the end of
+   * the turn that moved it. Null unless a close is pending.
+   */
+  closing: FeatureStatus | null;
 }
 
 interface RunRow {
@@ -97,6 +102,8 @@ interface RunRow {
   report: string | null;
   transcript_file: string | null;
   start_spend: string | null;
+  closing_status: string | null;
+  closing_at: number | null;
   review_outcome: string | null;
   review_cause: string | null;
   review_note: string | null;
@@ -158,9 +165,17 @@ export class RunsService
       this.closeForAgent(agentId, 'agent-removed'),
     );
     this.agents.on('state', (agentId, _projectId, status) => {
-      if (status.state !== 'exited') return;
-      void this.closeForAgent(agentId, 'agent-exited').catch((err: Error) =>
-        this.logger.warn(`run close after exit: ${err.message}`),
+      if (status.state === 'exited') {
+        void this.closeForAgent(agentId, 'agent-exited').catch((err: Error) =>
+          this.logger.warn(`run close after exit: ${err.message}`),
+        );
+        return;
+      }
+      // out of the turn: what a pending close was waiting for
+      if (status.state === 'working' || status.state === 'waiting-permission')
+        return;
+      void this.closeEndedTurns(agentId).catch((err: Error) =>
+        this.logger.warn(`run close after the turn: ${err.message}`),
       );
     });
     // A minute suits the two-hour default; a shorter timeout (a test's)
@@ -264,10 +279,15 @@ export class RunsService
     now: FeatureStatus,
   ): Promise<void> {
     if (now === 'in-progress') {
+      // A feature that comes back while its run is still waiting for the
+      // turn to end is the same round continuing: the close is cancelled
+      // rather than the run split in two.
+      if (this.cancelPending(projectId, slug)) return;
       if (was !== 'in-progress') await this.open(projectId, slug);
       return;
     }
-    if (was === 'in-progress') await this.closeForFeature(projectId, slug, now);
+    if (was === 'in-progress' || this.pendingOf(projectId, slug))
+      await this.closeForFeature(projectId, slug, now);
   }
 
   /**
@@ -337,6 +357,15 @@ export class RunsService
     this.announce(id);
   }
 
+  /**
+   * The feature has left `in-progress`. In a real round that happens
+   * inside the agent's turn — it sets the status, then commits, and the
+   * vendor reports what the turn cost with its result — so closing here
+   * would take the numbers before they exist and HEAD before the commit
+   * (learnings #32, #16). The run is marked as closing and waits for the
+   * end of that turn; with the agent not in one, there is nothing to wait
+   * for and it closes at once.
+   */
   private async closeForFeature(
     projectId: string,
     slug: string,
@@ -347,7 +376,61 @@ export class RunsService
         'SELECT * FROM runs WHERE project_id = ? AND slug = ? AND ended_at IS NULL',
       )
       .get(projectId, slug) as RunRow | undefined;
-    if (row) await this.close(row, 'feature', status);
+    if (!row) return;
+    if (!this.midTurn(row.agent_id)) {
+      await this.close(row, 'feature', status);
+      return;
+    }
+    if (row.closing_status === status) return;
+    this.db
+      .prepare(
+        'UPDATE runs SET closing_status = ?, closing_at = ? WHERE id = ?',
+      )
+      .run(status, Date.now(), row.id);
+    this.announce(row.id);
+  }
+
+  /** Whether the agent is inside a turn: mid-work, or blocked on a human in the middle of one. */
+  private midTurn(agentId: string): boolean {
+    try {
+      const state = this.agents.status(agentId).state;
+      return state === 'working' || state === 'waiting-permission';
+    } catch {
+      return false; // gone: nothing to wait for
+    }
+  }
+
+  /** The open run of a feature with a close already pending, if any. */
+  private pendingOf(projectId: string, slug: string): RunRow | undefined {
+    return this.db
+      .prepare(
+        'SELECT * FROM runs WHERE project_id = ? AND slug = ? AND ended_at IS NULL AND closing_status IS NOT NULL',
+      )
+      .get(projectId, slug) as RunRow | undefined;
+  }
+
+  /** The feature is in progress again: the run continues, as one round. */
+  private cancelPending(projectId: string, slug: string): boolean {
+    const row = this.pendingOf(projectId, slug);
+    if (!row) return false;
+    this.db
+      .prepare(
+        'UPDATE runs SET closing_status = NULL, closing_at = NULL WHERE id = ?',
+      )
+      .run(row.id);
+    this.announce(row.id);
+    return true;
+  }
+
+  /** The turn a pending close was waiting for has ended: close now, with what it produced. */
+  private async closeEndedTurns(agentId: string): Promise<void> {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM runs WHERE agent_id = ? AND ended_at IS NULL AND closing_status IS NOT NULL',
+      )
+      .all(agentId) as RunRow[];
+    for (const row of rows)
+      await this.close(row, 'feature', row.closing_status as FeatureStatus);
   }
 
   private async closeForAgent(
@@ -357,7 +440,14 @@ export class RunsService
     const rows = this.db
       .prepare('SELECT * FROM runs WHERE agent_id = ? AND ended_at IS NULL')
       .all(agentId) as RunRow[];
-    for (const row of rows) await this.close(row, outcome, null);
+    for (const row of rows)
+      // a close already pending keeps the status the poller saw; the
+      // outcome still says the agent went away mid-turn
+      await this.close(
+        row,
+        outcome,
+        (row.closing_status as FeatureStatus | null) ?? null,
+      );
   }
 
   /**
@@ -401,7 +491,8 @@ export class RunsService
         .prepare(
           `UPDATE runs SET ended_at = ?, outcome = ?, feature_status = ?, end_commit = ?,
              turns = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
-             item_to = ?, report = ?, transcript_file = ? WHERE id = ?`,
+             item_to = ?, report = ?, transcript_file = ?,
+             closing_status = NULL, closing_at = NULL WHERE id = ?`,
         )
         .run(
           Date.now(),
@@ -506,6 +597,12 @@ export class RunsService
         state = this.agents.status(row.agent_id).state;
       } catch {
         await this.close(row, 'agent-removed', null);
+        continue;
+      }
+      // A close left pending by a restart of the manager, or by an event
+      // that arrived while it was down.
+      if (row.closing_status && !this.midTurn(row.agent_id)) {
+        await this.close(row, 'feature', row.closing_status as FeatureStatus);
         continue;
       }
       if (!this.config.runIdleMs) continue;
@@ -617,6 +714,7 @@ function toRun(r: RunRow): Run {
     itemFrom: r.item_from,
     itemTo: r.item_to,
     report: r.report,
+    closing: (r.closing_status as FeatureStatus | null) ?? null,
     review: r.review_outcome
       ? {
           outcome: r.review_outcome as ReviewOutcome,

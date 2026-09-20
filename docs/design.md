@@ -799,8 +799,28 @@ transcript in the daemon's log (gone with the agent), the model on the
 agent row, the spend on the status — so a run copies what it needs and
 keeps it.
 
-A run opens when a feature goes `in-progress` and closes when it leaves
-it (`review`, `blocked`, `done`). The transitions come from the same
+A run opens when a feature goes `in-progress` and closes at the end of
+the turn in which it leaves it (`review`, `blocked`, `done`). Not at the
+moment it leaves: in a real round the agent sets the status inside its
+turn, commits after that, and the vendor reports what the turn cost with
+its result, so a run that closed when the poller saw the status change
+took its numbers before they existed and HEAD before the commit — every
+run recorded before this read zero spend. So the status the poller saw
+is kept on the run (`closing`), and the run closes when that agent
+leaves its turn, taking the spend and HEAD then; the feature's recorded
+status is still the one the poller saw, not one re-read later. With the
+agent not in a turn there is nothing to wait for and the run closes at
+once, which is the ordinary path when a person moves the feature. A
+feature that returns to `in-progress` while its close is pending cancels
+it: one round is one run. A pending close whose agent exits, or is
+forgotten, closes with that outcome and the status already recorded, and
+one left pending by a restart of the manager is made by the next sweep
+once the agent is out of its turn.
+
+The edge of the simple rule: if a person moves the feature while the
+agent happens to be working on something else, that turn's cost lands in
+the run. Matching turns to features would cost more than it is worth
+while one agent works one feature at a time. The transitions come from the same
 watch that records the commit range: the feature poller calls its
 transition hooks after the range is recorded, so a run always has the
 base commit the diff view uses. The run is attributed to the agent

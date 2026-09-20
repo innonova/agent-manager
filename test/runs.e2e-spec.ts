@@ -248,6 +248,122 @@ describe('run log', () => {
     expect(after.body.transcript.length).toBe(one.body.transcript.length);
   }, 60000);
 
+  it('closes at the end of the turn that moved the feature, with that turn\u2019s cost and commit', async () => {
+    // the shape of a real round: the agent sets the status inside its
+    // turn, then commits, and the vendor bills with the result. Closing
+    // when the poller sees the status change reads none of it
+    // (learnings #32, #16).
+    const agent = (
+      await api.post(`/api/projects/${projectId}/agents`, { name: 'biller' })
+    ).body.agent as { id: string };
+    writeFeature('gizmo', 'planned', 'Build a gizmo.');
+    await until('the poller to see the feature', async () => {
+      const r = await api.get(`/api/projects/${projectId}/features`);
+      return r.body.features?.some((f: any) => f.slug === 'gizmo') ?? false;
+    });
+    await sleep(POLL_MS + 500);
+    await api.post(`/api/agents/${agent.id}/turn`, {
+      text: 'usage 10 and linger please',
+    });
+    await until(
+      'the agent to be working',
+      async () =>
+        (await api.get(`/api/agents/${agent.id}`)).body.status.state ===
+        'working',
+    );
+    writeFeature('gizmo', 'in-progress', 'Build a gizmo.');
+    const open = await until('the run to open', async () => {
+      const [run] = await runsOf('gizmo');
+      return run ?? null;
+    });
+    expect(open.closing).toBeNull();
+
+    // still inside that turn: the status goes to review, and only then
+    // does the work land as a commit
+    writeFeature(
+      'gizmo',
+      'review',
+      'Build a gizmo.\n\n## Report (2026-09-20)\n\nBuilt it.',
+    );
+    fs.writeFileSync(path.join(repo, 'gizmo.txt'), 'done\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'the gizmo');
+    const head = git('rev-parse', 'HEAD');
+
+    // the poller sees review while the agent is still working: the run
+    // waits rather than closing on numbers that do not exist yet
+    const pending = await until('the close to be pending', async () => {
+      const [run] = await runsOf('gizmo');
+      return run?.closing ? run : null;
+    });
+    expect(pending).toMatchObject({ closing: 'review', endedAt: null });
+    await sleep(1000);
+    expect((await runsOf('gizmo'))[0].endedAt).toBeNull(); // still waiting
+
+    // the turn ends: the cost is reported with the result, and the run
+    // closes on it
+    await api.post(`/api/agents/${agent.id}/interrupt`);
+    const done = await until('the run to close', async () => {
+      const [run] = await runsOf('gizmo');
+      return run?.endedAt ? run : null;
+    });
+    expect(done).toMatchObject({
+      id: open.id,
+      outcome: 'feature',
+      featureStatus: 'review', // the status the poller saw, not one read later
+      closing: null,
+      turns: 1,
+      costUsd: 0.1,
+    });
+    expect(done.inputTokens).toBe(10_000);
+    expect(done.endCommit).toBe(head); // the commit made after the status change
+    expect(done.endCommit).not.toBe(done.baseCommit);
+    expect(done.report).toContain('Built it.');
+  }, 120000);
+
+  it('keeps one run when the feature comes back in progress before the turn ends', async () => {
+    const agent = (
+      await api.post(`/api/projects/${projectId}/agents`, { name: 'reworker' })
+    ).body.agent as { id: string };
+    writeFeature('doodad', 'planned', 'Build a doodad.');
+    await until('the poller to see the feature', async () => {
+      const r = await api.get(`/api/projects/${projectId}/features`);
+      return r.body.features?.some((f: any) => f.slug === 'doodad') ?? false;
+    });
+    await sleep(POLL_MS + 500);
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'linger please' });
+    await until(
+      'the agent to be working',
+      async () =>
+        (await api.get(`/api/agents/${agent.id}`)).body.status.state ===
+        'working',
+    );
+    writeFeature('doodad', 'in-progress', 'Build a doodad.');
+    const open = await until('the run to open', async () => {
+      const [run] = await runsOf('doodad');
+      return run ?? null;
+    });
+
+    writeFeature('doodad', 'review', 'Build a doodad.');
+    await until('the close to be pending', async () => {
+      const [run] = await runsOf('doodad');
+      return run?.closing ? run : null;
+    });
+    // the agent thinks better of it and goes back to work in the same turn
+    writeFeature('doodad', 'in-progress', 'Build a doodad. More to do.');
+    await until('the close to be cancelled', async () => {
+      const [run] = await runsOf('doodad');
+      return run && !run.closing ? run : null;
+    });
+    const runs = await runsOf('doodad');
+    expect(runs).toHaveLength(1); // one round, one run
+    expect(runs[0]).toMatchObject({ id: open.id, endedAt: null });
+
+    await api.post(`/api/agents/${agent.id}/interrupt`);
+    await sleep(1500);
+    expect((await runsOf('doodad'))[0].endedAt).toBeNull(); // nothing to close
+  }, 120000);
+
   it('records the reviewer\u2019s verdict, with a cause when sent back', async () => {
     expect(closedRunId).not.toBe(''); // the run of the test above
     const url = `/api/runs/${closedRunId}/review`;

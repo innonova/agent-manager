@@ -324,3 +324,94 @@ all, since it ends every session on this machine.
 
 Gated alone (a batch of one): cheap checks and this commit, then the
 full gate below. Not pushed, not deployed.
+
+## Response (2026-09-20, agent-claude)
+
+Fourth round: the close is at the wrong moment. A run closes when the feature leaves in-progress, which in a real round is inside the agent's turn, so the vendor's cost report and the commit both land after the close: every run so far reads zero spend and, but for one that raced the other way, no commit (learnings #32, #16). Purpose: a run's numbers and commit range must be those of the round. Requirement: a run whose feature left in-progress closes at the end of the turn in which that happened (the agent's next turn end, or its exit or deletion as before), taking the spend and HEAD then; the feature's final status is still the one the poller saw. Fact: the fake agent's 'note'/'commit' turns and the existing run e2e give the shape; the settle at turn end in agents.service.ts is where the turn's end is known. Worth: a small round. Plan first, verification first.
+
+## Report (2026-09-20)
+
+**What changed.** A run no longer closes when the feature leaves
+`in-progress`; it closes at the end of the turn in which that happened.
+
+- *The fixture first, because nothing could be proven without it.* The
+  fake agent reported its `usage` line at the **start** of a turn, where
+  every real vendor reports the cost with the result. `fixtures/fake-agent.mjs`
+  now holds it in `pendingUsage` and bills in `finish()` (and before the
+  permission branch's own result), which is what makes the ordering in
+  #32 reproducible at all.
+- `src/runs/runs.service.ts`: `closeForFeature` records the status the
+  poller saw (`closing_status`, `closing_at`) and leaves the run open
+  while the attributed agent is in a turn — `working`, or
+  `waiting-permission`, which is the middle of one. The `state`
+  listener closes those runs when the agent leaves its turn, taking the
+  spend and HEAD then. A feature returning to `in-progress` cancels the
+  pending close, so one round stays one run. An agent that exits or is
+  forgotten mid-pending closes with that outcome and the status already
+  recorded. The sweep makes any pending close whose agent is no longer
+  in a turn, which is what carries a restart of the manager.
+- `src/db/db.service.ts`: the two columns, with the `ALTER` path beside
+  the review ones. `Run` gained `closing`, null unless a close is
+  pending, so the API and the `run.changed` frame show a run waiting.
+- `docs/design.md`: the Runs section says when a run closes and why not
+  at the moment the feature moved, including the edge you accepted —
+  a person moving the feature while the agent works on something else
+  puts that turn's cost in the run.
+
+**What was verified.** The manager's full gate: `npm test` 120,
+`npm run test:e2e` 120 across 13 files, `npm run lint` clean but for the
+pre-existing `smoke-agents.mjs` warning, `tsc`, `nest build`,
+`prettier --check`. Three new e2e cases carry the round:
+
+- *the real round's shape* — the agent bills and lingers, the feature
+  goes to `review` inside the turn, the commit lands after that, the
+  poller sees `review` while the agent still works: the run stays open
+  with `closing: 'review'`, and when the turn ends it closes with
+  `turns: 1`, `costUsd: 0.1`, `inputTokens: 10000` and the end commit
+  made after the status change. I checked this test bites: with
+  `midTurn` forced to false — the old behaviour — it fails, and it is
+  the only test that does;
+- *one round, one run* — the feature going back to `in-progress` while
+  the close is pending cancels it, leaving a single open run;
+- *a close pending when the manager went down* — the turn ends while it
+  is stopped, and the next sweep after the restart makes the close with
+  the status the poller had seen.
+
+The two sibling repositories were gated because the fake agent is
+shared: `agent-manager-cli` 10 unit and 7 e2e, `agent-manager-ui` 4 unit
+and 23 Playwright, both lint-clean. Neither needed a change, so neither
+has a commit: the fixture's new timing is invisible to every test that
+waits for a state or a chip rather than for the order of two lines.
+
+**What is left open.** Nothing in the feature. Runs recorded before
+today keep their zero spend; the two the finding named (`b4ec1ce3`,
+`4b5e2808`) are wrong on the record and I have not touched them — a
+correction would have to be a person's note on the review, since the
+manager cannot recover what it never read.
+
+**Noticed, left alone.**
+
+- *The fixture had been hiding the bug from the tests that were meant
+  to catch it.* Every run e2e written in the three earlier rounds
+  passed while the product was closing runs before their cost existed,
+  because the fake billed early. A fixture that is more convenient than
+  the thing it stands for makes green tests that mean nothing; this is
+  the second time the fake's timing has mattered (the first was the
+  throttle, commit `fd5f9e4`). Worth an entry when you next curate.
+- *`closing_at` is recorded and nothing reads it.* I kept it because a
+  run that waited minutes for a turn to end is the first thing I would
+  want to see if this rule ever behaves oddly, but today it is a column
+  with no reader.
+- *The idle sweep and a pending close can both be true.* A pending
+  close is made before the idle timeout is considered, so a run cannot
+  be abandoned while it waits — but that ordering lives in one `if`
+  before the other, not in a name, and a future edit could swap them
+  without a test noticing.
+- *An agent blocked on a permission holds a pending close open.* That
+  is deliberate — it is mid-turn — but with an unanswered permission
+  the run waits until the sweep abandons it hours later, and the
+  abandoned run then reports the feature status it was closing to.
+  Correct on both counts, and unobvious enough to be worth knowing.
+
+Worked alone, as briefed: one commit here, none in the siblings, each
+repository gated. Not pushed, not deployed.

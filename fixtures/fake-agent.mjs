@@ -23,6 +23,13 @@ let turns = 0;
 let interrupted = false;
 /** The turn's output "tokens" so far: one per word streamed, reset per turn, reported like a vendor's running count. */
 let turnTokens = 0;
+/**
+ * What this turn will bill, reported with the result and not before, as
+ * every real vendor reports a turn's cost: Claude in `result`, Codex in
+ * `turn/completed`. A fixture that billed at the start of the turn hid
+ * the bug where a run closed before its cost existed.
+ */
+let pendingUsage = null;
 /** A turn is being handled; a user line arriving now steers it instead of starting another. */
 let inFlight = false;
 const steers = [];
@@ -58,12 +65,20 @@ async function handle(text) {
   }
 }
 
-/** Ends a turn: notes anything steered in meanwhile, then the result. */
+/** What the turn cost, said with its result the way a vendor says it. */
+function bill() {
+  if (!pendingUsage) return;
+  out(pendingUsage);
+  pendingUsage = null;
+}
+
+/** Ends a turn: notes anything steered in meanwhile, the cost, then the result. */
 async function finish(t0) {
   while (steers.length) {
     const batch = steers.splice(0); // more may arrive while this streams
     await stream(`Also noted: ${batch.join(' / ')}.`, 15);
   }
+  bill();
   out({ type: 'result', durationMs: Date.now() - t0 });
 }
 
@@ -72,6 +87,7 @@ async function turn(text) {
   const t0 = Date.now();
   interrupted = false;
   turnTokens = 0;
+  pendingUsage = null;
   // every request to the model is out before anything comes back, as a
   // real CLI reports it
   out({ type: 'status', status: 'requesting' });
@@ -104,6 +120,7 @@ async function turn(text) {
         ? 'Understood, not removing it.'
         : `Removed it (${decision}).`,
     );
+    bill();
     out({ type: 'result', durationMs: Date.now() - t0 });
     return;
   }
@@ -121,9 +138,10 @@ async function turn(text) {
     return;
   }
   if (text.includes('usage')) {
-    // "usage 42": the account's rolling windows, as Claude and Codex report theirs
+    // "usage 42": the account's rolling windows, as Claude and Codex
+    // report theirs — with the result at the end of the turn, not now
     const n = Number(/usage\s+(\d+)/.exec(text)?.[1] ?? 42);
-    out({ type: 'usage', fiveHour: n, sevenDay: Math.round(n / 2) });
+    pendingUsage = { type: 'usage', fiveHour: n, sevenDay: Math.round(n / 2) };
   }
   if (text.includes('background')) {
     // a job left running: reported as pending, and reported done when asked
