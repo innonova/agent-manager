@@ -1,8 +1,7 @@
 ---
 title: a commit says which turn of which agent made it
-status: review
+status: done
 priority: 3
-dependsOn: []
 ---
 
 ## Purpose

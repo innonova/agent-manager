@@ -50,30 +50,31 @@ Copilot's ACP.
 
 ## Decisions and why
 
-| Decision | Reason |
-|---|---|
-| An agent may span several daemon sessions | A headless process exits (end of input, daemon restart, crash) but the conversation continues via the vendor's resume; the user thinks in agents, not processes. |
-| Idle agent processes stay alive | Instant next turn, intact context; memory is cheap on the VM. An idle timeout with automatic resume is a later feature. |
-| Permissions are per agent: `bypass` (default) or `ask` | Bypass is the dogfooding mode on an isolated VM. Ask keeps each vendor's own gate (Claude's prompt over stdio, Codex's approval requests with its workspace sandbox, Copilot's ACP permission requests) and routes the question to the human as a `permission` transcript item with the vendor's options; the answer goes back in the vendor's protocol. Chosen at creation, applied when a session starts. No per-agent allowlists in the manager: what is gated is the vendor's business. |
-| A project is an ordered set of repositories, the first one primary | Real work spans several repos (this system is four). An agent's cwd is one repo; the others are handed to the CLI as extra directories (`--add-dir` for Claude Code and Copilot; Codex runs with full sandbox access and needs nothing). The primary repo is the default cwd and the default home of new features. |
-| Agents work directly in the repository, one writing agent per repo | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone. |
-| SQLite (better-sqlite3) for manager state | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt. |
-| Cookie session with argon2 passwords | Simplest thing that is actually secure for a small user list. The cookie carries an opaque 256-bit server-side token rather than a signed value; revocation is a row delete. |
-| One turn at a time per agent; a message during a turn steers it | A second turn while one runs is refused with 409 `agent-busy`. Sent with `steer: true` instead, the message reaches the agent during the turn where the vendor can take one (Claude reads it after the running tool; Codex has `turn/steer` for the active turn) and is queued in memory for the next turn where it cannot (Copilot ends the running prompt when another arrives, so it is never given one mid-turn; Codex before its turn id is known). Queued messages are counted in the status and dropped by a stop or a manager restart. |
-| Archived agents keep their history | Archival hides an agent from lists and refuses commands; its transcript is still rebuilt and readable. |
-| Features are markdown files in the project repo | Versioned with the code, readable by the agent, editable by the human in any editor. |
-| Changes are a diff from a base to the working tree | Git already answers "what changed since": committed, staged, unstaged and untracked in one `git diff <base>` plus `git status`. The base is a read cursor per user and repository, a feature's recorded range, or any commit; nothing is written to the tree, so an agent mid-turn is only a staleness concern. No per-hunk keep/undo: agents commit as they go, undo is a conversation or git. |
-| No feature queue; the human asks the agent in conversation | An injected turn arrives without context and cannot be given a caveat or refused; the file carries spec, report and response instead, and the agent edits it itself. See Features. |
-| A fake adapter and fake profile exist from day one | UI development and end-to-end tests must not cost tokens. |
-| Adapters are tested against recorded daemon logs | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff. |
-| Git diff is out of milestone one | Needs its own discussion; GitHub covers the gap meanwhile. Per-entry status in the file listing (`git status` and `git check-ignore` per directory) is cheap and is done, so the tree can tint entries as VS Code does. |
-| No file containment beyond rejecting `..` (judged per path component, before normalisation; only regular files are read, at most the size cap) | Agents run with permissions bypassed and sudo on an isolated VM; containing the editor would be patching a missing barn wall with toothpicks. Authentication is the boundary. Symlinks are followed. |
+| Decision                                                                                                                                       | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent may span several daemon sessions                                                                                                      | A headless process exits (end of input, daemon restart, crash) but the conversation continues via the vendor's resume; the user thinks in agents, not processes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Idle agent processes stay alive                                                                                                                | Instant next turn, intact context; memory is cheap on the VM. An idle timeout with automatic resume is a later feature.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Permissions are per agent: `bypass` (default) or `ask`                                                                                         | Bypass is the dogfooding mode on an isolated VM. Ask keeps each vendor's own gate (Claude's prompt over stdio, Codex's approval requests with its workspace sandbox, Copilot's ACP permission requests) and routes the question to the human as a `permission` transcript item with the vendor's options; the answer goes back in the vendor's protocol. Chosen at creation, applied when a session starts. No per-agent allowlists in the manager: what is gated is the vendor's business.                                                                                                                                                                                                                                                                                                                                                                       |
+| A project is an ordered set of repositories, the first one primary                                                                             | Real work spans several repos (this system is four). An agent's cwd is one repo; the others are handed to the CLI as extra directories (`--add-dir` for Claude Code and Copilot; Codex runs with full sandbox access and needs nothing). The primary repo is the default cwd and the default home of new features.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A project keeps a VS Code workspace file beside its repositories                                                                               | `<name>.code-workspace` in the parent of the primary repository (`~/projects/<name>.code-workspace` for the usual layout), written at creation, at every edit and once at start for projects from before, with the repositories as its `folders`; anything else in the file (settings, extensions) is kept, a file that is not JSON is left alone with a warning, and a directory the manager cannot write to is a warning too. `project.workspace` is its path and `project.sshHost` how a person's machine reaches this one, so a client can offer `vscode://vscode-remote/ssh-remote+<sshHost><workspace>`, which opens the project over Remote SSH in the person's own VS Code; nothing runs on the manager's side. A project on a spoke carries the spoke's own values through the hub. Deleting a project leaves the file: it may hold a person's settings. |
+| Agents work directly in the repository, one writing agent per repo                                                                             | A single agent outpaces the human providing ideas; direct work keeps the file view live. The manager warns, but does not prevent, two agents sharing a cwd. Worktrees are a later milestone.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| SQLite (better-sqlite3) for manager state                                                                                                      | Small, local, transactional, no server. What it holds is tiny; transcripts are not stored, they are rebuilt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Cookie session with argon2 passwords                                                                                                           | Simplest thing that is actually secure for a small user list. The cookie carries an opaque 256-bit server-side token rather than a signed value; revocation is a row delete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| One turn at a time per agent; a message during a turn steers it                                                                                | A second turn while one runs is refused with 409 `agent-busy`. Sent with `steer: true` instead, the message reaches the agent during the turn where the vendor can take one (Claude reads it after the running tool; Codex has `turn/steer` for the active turn) and is queued in memory for the next turn where it cannot (Copilot ends the running prompt when another arrives, so it is never given one mid-turn; Codex before its turn id is known). Queued messages are counted in the status and dropped by a stop or a manager restart.                                                                                                                                                                                                                                                                                                                    |
+| Archived agents keep their history                                                                                                             | Archival hides an agent from lists and refuses commands; its transcript is still rebuilt and readable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Features are markdown files in the project repo                                                                                                | Versioned with the code, readable by the agent, editable by the human in any editor.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Changes are a diff from a base to the working tree                                                                                             | Git already answers "what changed since": committed, staged, unstaged and untracked in one `git diff <base>` plus `git status`. The base is a read cursor per user and repository, a feature's recorded range, or any commit; nothing is written to the tree, so an agent mid-turn is only a staleness concern. No per-hunk keep/undo: agents commit as they go, undo is a conversation or git.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| No feature queue; the human asks the agent in conversation                                                                                     | An injected turn arrives without context and cannot be given a caveat or refused; the file carries spec, report and response instead, and the agent edits it itself. See Features.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A fake adapter and fake profile exist from day one                                                                                             | UI development and end-to-end tests must not cost tokens.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Adapters are tested against recorded daemon logs                                                                                               | The daemon's logs are exact transcripts; a vendor protocol change becomes a fixture diff.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Git diff is out of milestone one                                                                                                               | Needs its own discussion; GitHub covers the gap meanwhile. Per-entry status in the file listing (`git status` and `git check-ignore` per directory) is cheap and is done, so the tree can tint entries as VS Code does.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| No file containment beyond rejecting `..` (judged per path component, before normalisation; only regular files are read, at most the size cap) | Agents run with permissions bypassed and sudo on an isolated VM; containing the editor would be patching a missing barn wall with toothpicks. Authentication is the boundary. Symlinks are followed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ## Terminology
 
 - **Project**: one or more git repositories on this machine, each
   registered by absolute path under a short name, plus manager-side
-  metadata. The first repository is the *primary* one.
+  metadata. The first repository is the _primary_ one.
 - **Agent**: a named, long-lived conversation in a project: a profile
   (which CLI), a cwd, a vendor conversation id, and a history of sessions.
 - **Session**: one daemon session, i.e. one process. An agent's current
@@ -119,15 +120,15 @@ session can be attributed even if the manager's database is lost.
 
 One model for all vendors, derived by the adapter from the line stream:
 
-| State | Meaning |
-|---|---|
-| `starting` | session started, vendor has not reported ready. Claude is ready as soon as it runs (it says nothing until the first turn), so its adapter starts in `idle`; the fake agent stays `starting` until its init line. A turn arriving during `starting` waits up to 5 s for readiness. |
-| `idle` | ready for a turn |
-| `working` | a turn is in progress |
-| `waiting-input` | the agent asked the user a question and stopped (vendor-specific; e.g. ACP `end_turn` after a question is still `idle`, so this is mostly reserved) |
-| `waiting-permission` | the vendor asked whether it may use a gated tool and is blocked until the human answers (agents created with `permissions: ask`); the request is a `permission` transcript item with the vendor's options |
-| `error` | the vendor reported an error that ended the turn (usage limit, auth, API error); the process may still be alive |
-| `exited` | no live session; resumable |
+| State                | Meaning                                                                                                                                                                                                                                                                           |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `starting`           | session started, vendor has not reported ready. Claude is ready as soon as it runs (it says nothing until the first turn), so its adapter starts in `idle`; the fake agent stays `starting` until its init line. A turn arriving during `starting` waits up to 5 s for readiness. |
+| `idle`               | ready for a turn                                                                                                                                                                                                                                                                  |
+| `working`            | a turn is in progress                                                                                                                                                                                                                                                             |
+| `waiting-input`      | the agent asked the user a question and stopped (vendor-specific; e.g. ACP `end_turn` after a question is still `idle`, so this is mostly reserved)                                                                                                                               |
+| `waiting-permission` | the vendor asked whether it may use a gated tool and is blocked until the human answers (agents created with `permissions: ask`); the request is a `permission` transcript item with the vendor's options                                                                         |
+| `error`              | the vendor reported an error that ended the turn (usage limit, auth, API error); the process may still be alive                                                                                                                                                                   |
+| `exited`             | no live session; resumable                                                                                                                                                                                                                                                        |
 
 The status carries `model`, the model the vendor reports as active in
 the current session (Claude's `init`, Codex's `thread/started`,
@@ -426,7 +427,14 @@ interface AgentAdapter {
   /** state right after the process starts; default 'starting' */
   readonly initialState?: AgentState;
   /** args to add to the profile for a new conversation, or to resume one; extra repositories, permission mode, model, effort and the harness note */
-  startArgs(opts: { resume?: string | null; extraDirs?: string[]; permissions?: 'bypass' | 'ask'; model?: string | null; effort?: string | null; note?: string | null }): string[];
+  startArgs(opts: {
+    resume?: string | null;
+    extraDirs?: string[];
+    permissions?: 'bypass' | 'ask';
+    model?: string | null;
+    effort?: string | null;
+    note?: string | null;
+  }): string[];
   /** for a vendor that reads instructions from a file: its name, and the environment naming the directory the manager wrote it to */
   readonly noteFile?: string;
   startEnv?(opts: { noteDir: string }): Record<string, string>;
@@ -437,9 +445,18 @@ interface AgentAdapter {
   /** the stdin line(s) for a message the agent sees at its next step of the turn under way; absent or empty means queue it */
   steer?(text: string): unknown[];
   /** stdin lines to send once the session is running and attached (protocol handshakes) */
-  startLines?(opts: { cwd: string; resume?: string | null; note?: string | null }): unknown[];
+  startLines?(opts: {
+    cwd: string;
+    resume?: string | null;
+    note?: string | null;
+  }): unknown[];
   /** after a full replay of the log: the handshake lines still owed, judged from what the log shows was sent and answered */
-  afterReplay?(opts: { cwd: string; resume?: string | null; permissions?: 'bypass' | 'ask'; note?: string | null }): unknown[];
+  afterReplay?(opts: {
+    cwd: string;
+    resume?: string | null;
+    permissions?: 'bypass' | 'ask';
+    note?: string | null;
+  }): unknown[];
   /** whether a turn is open as far as the log shows */
   turnInProgress?(): boolean;
   /** permission requests the vendor is waiting on; and the stdin line answering one with an option */
@@ -449,9 +466,25 @@ interface AgentAdapter {
   snapshot?(): unknown;
   restore?(state: unknown): void;
   /** feed one daemon log record; returns state changes, transcript operations and lines to send in reaction */
-  ingest(record: LogRecord): { state?: AgentState; error?: string; model?: string; background?: number; activity?: { kind: 'requesting' | 'thinking' | 'writing' | 'tool'; detail?: string; tokens?: number } | null; committed?: { branch?: string; cwd?: string }; ops?: ItemOp[]; conversationId?: string; send?: unknown[] };
+  ingest(record: LogRecord): {
+    state?: AgentState;
+    error?: string;
+    model?: string;
+    background?: number;
+    activity?: {
+      kind: 'requesting' | 'thinking' | 'writing' | 'tool';
+      detail?: string;
+      tokens?: number;
+    } | null;
+    committed?: { branch?: string; cwd?: string };
+    ops?: ItemOp[];
+    conversationId?: string;
+    send?: unknown[];
+  };
 }
-type ItemOp = { op: 'append'; item: Item; key?: string } | { op: 'update'; key: string; item: Item };
+type ItemOp =
+  | { op: 'append'; item: Item; key?: string }
+  | { op: 'update'; key: string; item: Item };
 ```
 
 Streaming works through keys: an adapter appends a text item under a key
@@ -494,6 +527,7 @@ produced during an attach and drops those at or below the daemon's
 boundary at attach time), so a restart never repeats a handshake or
 starts a second thread. The adapters also read their own requests back
 from the `in` records, so request ids stay consistent after a restart.
+
 - **fake**: drives the daemon's fake agent fixture for tests and UI
   development; produces realistic items and state changes without tokens.
 
@@ -530,12 +564,12 @@ the repositories on its own disk; what is shared is the view.
 
 - **Spoke**: a manager with `AGENT_MANAGER_HUB_TOKEN` set accepts
   requests and websocket upgrades carrying `Authorization: Bearer
-  <token>` plus `X-Acting-User: <name>`; they run as that user, created
+<token>` plus `X-Acting-User: <name>`; they run as that user, created
   on the spoke on first sight with a password that cannot be used (the
   hub is their only way in). Turns are attributed and presence is shown
   under that name, so the spoke's own UI sees the same names as the hub.
 - **Hub**: a manager with `<dataDir>/spokes.json` (`[{ name, url,
-  token }]`, `AGENT_MANAGER_SPOKES_FILE` overrides the path; the file
+token }]`, `AGENT_MANAGER_SPOKES_FILE` overrides the path; the file
   must be readable by this user only, or it is ignored as a whole, and
   a name that repeats or is this machine's own, or a bad url, ignores
   it too; errors never quote an entry). It lists
@@ -563,7 +597,7 @@ the repositories on its own disk; what is shared is the view.
   `spoke-auth`, never as the user's own login expiring. Nothing about a
   spoke is stored on the hub; `spokes.json` is the whole configuration.
 - **Hosts**: `hello` and the `hosts` frame carry `[{ name, local,
-  connected, daemon, error? }]`, the hub's link to each spoke, each
+connected, daemon, error? }]`, the hub's link to each spoke, each
   host's link to its daemon, and what the last request to a spoke said
   when it failed; `/api/health` has the same list. A spoke that does
   not answer contributes no projects to the list and its requests fail
@@ -716,9 +750,9 @@ across the project anyway).
 ```markdown
 ---
 title: Login page
-status: planned          # planned | in-progress | review | blocked | done
-priority: 2              # a hint for the agent; lower first
-dependsOn: [db]          # a hint for the agent
+status: planned # planned | in-progress | review | blocked | done
+priority: 2 # a hint for the agent; lower first
+dependsOn: [db] # a hint for the agent
 ---
 
 Add a login page with a form. (The body is the spec.)
@@ -909,7 +943,7 @@ project are gone) and one NDJSON file per run under `<dataDir>/runs/`:
   every field is `null`, cost included: half an answer about money is
   worse than none. `null`, not `0`, is also what a run reports when the
   vendor said nothing by the time it ended (Copilot says nothing usable
-  at all); when the vendor first spoke *during* the run, everything it
+  at all); when the vendor first spoke _during_ the run, everything it
   has said belongs to the run. The reading at the start is kept on the
   row, so it survives a restart of the manager — and so does the
   basis, which is what a run whose turns cost $31 and read zero was
@@ -1118,7 +1152,7 @@ PATCH  /api/users/me         { name }                           -> { user }; onl
 POST   /api/users/:id/password                                  -> { password }; a new generated one; ends the user's other sessions
 DELETE /api/users/:id                                           -> { ok }; not yourself, not the last user
 
-GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.host names the machine; as a hub, the spokes' projects too, ids `<host>:<id>`
+GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.host names the machine, project.sshHost how to reach it over SSH, project.workspace its VS Code workspace file; as a hub, the spokes' projects too, ids `<host>:<id>`
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, delegation?, host? }   (`path` alone is accepted as a one-repo shorthand; `delegation` is `free` (default) or `on-request`; `host` creates on that spoke)
 GET    /api/projects/:id/profiles                               -> { profiles } of the machine the project is on
 GET    /api/projects/:id
@@ -1173,8 +1207,7 @@ POST   /api/projects/:id/features/:slug/respond { text, status? } -> appends a d
 ```
 
 File paths are `<repository name>/<path inside it>`, normalised, and
-`..` is rejected as a correctness rule; an unknown repository name is a
-404. Symlinks are followed and nothing else is
+`..` is rejected as a correctness rule; an unknown repository name is a 404. Symlinks are followed and nothing else is
 contained (see the decisions table). A symlink to a directory lists as a
 directory; other symlinks are typed `symlink`. Binary detection is a NUL
 byte in the first 8 KB.
@@ -1279,29 +1312,30 @@ swept once a minute.
 
 ## Configuration
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `AGENT_MANAGER_LISTEN` | `0.0.0.0:4268` | bind address; behind haproxy for TLS |
-| `AGENT_MANAGER_DAEMON_URL` | `ws://127.0.0.1:4267/` | the daemon |
-| `AGENT_MANAGER_DATA_DIR` | `~/.local/state/agent-manager` | `manager.db` and the `transcripts/` cache |
-| `AGENT_MANAGER_UI_DIR` | `<install>/ui` (next to `dist/`) | built UI to serve at `/`; empty string disables |
-| `AGENT_MANAGER_PUBLIC_ORIGIN` | unset | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies |
-| `AGENT_MANAGER_SECURE_COOKIE` | `0` | force Secure cookies |
-| `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10` | login throttle |
-| `AGENT_MANAGER_SESSION_TTL_MS` | `2592000000` (30 days) | how long a login (browser cookie or `am login`) lasts |
-| `AGENT_MANAGER_TRUSTED_PROXIES` | unset | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle |
-| `AGENT_MANAGER_BACKGROUND_POKE_MS` | `1800000` | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables |
-| `AGENT_MANAGER_RUN_IDLE_MS` | `7200000` (2 h) | an open run whose agent has done nothing **of its own** for this long is closed as `abandoned` (see Runs: the manager's own poke does not count, and the clock stops while the agent works or waits on a permission); 0 disables |
-| `AGENT_MANAGER_RESIDENT_ITEMS` | `500` | transcript items kept in memory per agent beyond what the transcript cache holds |
-| `AGENT_MANAGER_EVENTS_PING_MS` | `25000` | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients |
-| `AGENT_MANAGER_ADMIN_PASSWORD` | unset | creates the first admin on first start |
-| `AGENT_MANAGER_HOST_NAME` | the short hostname | how this machine is named in `project.host` and to a hub |
-| `AGENT_MANAGER_HUB_TOKEN` | unset | lets a hub act here with this bearer token (see Hub and spokes) |
-| `AGENT_MANAGER_SPOKES_FILE` | `<dataDir>/spokes.json` | the spokes this manager fronts for; absent means not a hub |
-| `AGENT_MANAGER_HARNESS_FILE` | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none |
-| `AGENT_MANAGER_METHOD_FILE` | `~/.config/agent-manager/method.md` | how work is run here, for every project on the machine (see the method paragraph under Features); seeded from the shipped `method.md`, absent falls back to it |
-| `AGENT_MANAGER_FRAMING_FILE` | `~/.config/agent-manager/framing.md` | how a feature and a brief are written, the method's companion; seeded from the shipped `framing.md`, absent falls back to it |
-| `AGENT_MANAGER_MODELS_FILE` | `~/.config/agent-manager/models.md` | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section |
+| Variable                                  | Default                              | Meaning                                                                                                                                                                                                                          |
+| ----------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_MANAGER_LISTEN`                    | `0.0.0.0:4268`                       | bind address; behind haproxy for TLS                                                                                                                                                                                             |
+| `AGENT_MANAGER_DAEMON_URL`                | `ws://127.0.0.1:4267/`               | the daemon                                                                                                                                                                                                                       |
+| `AGENT_MANAGER_DATA_DIR`                  | `~/.local/state/agent-manager`       | `manager.db` and the `transcripts/` cache                                                                                                                                                                                        |
+| `AGENT_MANAGER_UI_DIR`                    | `<install>/ui` (next to `dist/`)     | built UI to serve at `/`; empty string disables                                                                                                                                                                                  |
+| `AGENT_MANAGER_PUBLIC_ORIGIN`             | unset                                | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies                                                                                                                             |
+| `AGENT_MANAGER_SECURE_COOKIE`             | `0`                                  | force Secure cookies                                                                                                                                                                                                             |
+| `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10`                                 | login throttle                                                                                                                                                                                                                   |
+| `AGENT_MANAGER_SESSION_TTL_MS`            | `2592000000` (30 days)               | how long a login (browser cookie or `am login`) lasts                                                                                                                                                                            |
+| `AGENT_MANAGER_TRUSTED_PROXIES`           | unset                                | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle                                                                                        |
+| `AGENT_MANAGER_BACKGROUND_POKE_MS`        | `1800000`                            | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables                                                                         |
+| `AGENT_MANAGER_RUN_IDLE_MS`               | `7200000` (2 h)                      | an open run whose agent has done nothing **of its own** for this long is closed as `abandoned` (see Runs: the manager's own poke does not count, and the clock stops while the agent works or waits on a permission); 0 disables |
+| `AGENT_MANAGER_RESIDENT_ITEMS`            | `500`                                | transcript items kept in memory per agent beyond what the transcript cache holds                                                                                                                                                 |
+| `AGENT_MANAGER_EVENTS_PING_MS`            | `25000`                              | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients                                                       |
+| `AGENT_MANAGER_ADMIN_PASSWORD`            | unset                                | creates the first admin on first start                                                                                                                                                                                           |
+| `AGENT_MANAGER_HOST_NAME`                 | the short hostname                   | how this machine is named in `project.host` and to a hub                                                                                                                                                                         |
+| `AGENT_MANAGER_SSH_HOST`                  | `AGENT_MANAGER_HOST_NAME`            | how a person's own machine reaches this one over SSH (`host` or `user@host`), reported as `project.sshHost` for the links that open a project in VS Code                                                                         |
+| `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
+| `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |
+| `AGENT_MANAGER_HARNESS_FILE`              | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none                                                  |
+| `AGENT_MANAGER_METHOD_FILE`               | `~/.config/agent-manager/method.md`  | how work is run here, for every project on the machine (see the method paragraph under Features); seeded from the shipped `method.md`, absent falls back to it                                                                   |
+| `AGENT_MANAGER_FRAMING_FILE`              | `~/.config/agent-manager/framing.md` | how a feature and a brief are written, the method's companion; seeded from the shipped `framing.md`, absent falls back to it                                                                                                     |
+| `AGENT_MANAGER_MODELS_FILE`               | `~/.config/agent-manager/models.md`  | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section                                             |
 
 The built UI's static assets and the SPA fallback are served without
 authentication: the login page must load. Everything under `/api` except
@@ -1329,7 +1363,6 @@ login and health requires the cookie.
   processes, no tokens. These are the cases the review rounds found by
   hand; a change to replay, attribution or permissions should add its
   case here.
-
 
 ## Running it
 

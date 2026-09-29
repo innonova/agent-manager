@@ -1,12 +1,15 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DbService } from '../db/db.service.js';
+import { workspacePath, writeWorkspace } from './workspace.js';
 
 export interface Repo {
   name: string;
@@ -25,6 +28,8 @@ export interface Project {
   defaultProfile: string | null;
   delegation: Delegation;
   createdAt: number;
+  /** The VS Code workspace file the manager keeps beside the repositories (see `workspace.ts`). */
+  workspace: string;
 }
 
 interface Row {
@@ -50,11 +55,34 @@ const REPO_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
  * feature files.
  */
 @Injectable()
-export class ProjectsService {
+export class ProjectsService implements OnModuleInit {
+  private readonly logger = new Logger(ProjectsService.name);
   constructor(private readonly dbs: DbService) {}
 
   private get db() {
     return this.dbs.db;
+  }
+
+  /** Every project's workspace file is brought up to date at start: projects from before the file existed get one. */
+  onModuleInit(): void {
+    for (const p of this.list()) this.keepWorkspace(p);
+  }
+
+  /** Best effort: a directory the manager cannot write to, or a file it cannot parse, is logged, not an error. */
+  private keepWorkspace(p: Project): void {
+    try {
+      const r = writeWorkspace(p.name, p.repos);
+      if (r.result === 'unparseable')
+        this.logger.warn(
+          `${r.file} is not JSON; left alone (its folders may be stale)`,
+        );
+      else if (r.result === 'written')
+        this.logger.log(`wrote ${r.file} for ${p.name}`);
+    } catch (err) {
+      this.logger.warn(
+        `could not write the workspace file for ${p.name}: ${(err as Error).message}`,
+      );
+    }
   }
 
   list(): Project[] {
@@ -86,6 +114,10 @@ export class ProjectsService {
       defaultProfile: r.default_profile,
       delegation: r.delegation === 'on-request' ? 'on-request' : 'free',
       createdAt: r.created_at,
+      workspace: workspacePath(
+        r.name,
+        repos.length ? repos : [{ name: '', path: r.path }],
+      ),
     };
   }
 
@@ -142,7 +174,9 @@ export class ProjectsService {
       throw new BadRequestException('"defaultProfile" must be a string');
     }
     const delegation =
-      input.delegation === undefined ? 'free' : parseDelegation(input.delegation);
+      input.delegation === undefined
+        ? 'free'
+        : parseDelegation(input.delegation);
     const repos = this.parseRepos(input);
     const id = randomUUID();
     const createdAt = Date.now();
@@ -162,7 +196,9 @@ export class ProjectsService {
       this.saveRepos(id, repos);
     });
     tx();
-    return this.get(id);
+    const project = this.get(id);
+    this.keepWorkspace(project);
+    return project;
   }
 
   update(
@@ -204,7 +240,9 @@ export class ProjectsService {
       if (repos !== current.repos) this.saveRepos(id, repos);
     });
     tx();
-    return this.get(id);
+    const project = this.get(id);
+    this.keepWorkspace(project);
+    return project;
   }
 
   private saveRepos(id: string, repos: Repo[]): void {

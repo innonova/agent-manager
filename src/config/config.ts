@@ -29,6 +29,8 @@ export interface ManagerConfig {
   residentItems: number;
   /** How this machine is named to the UI, and by a hub that fronts for it. */
   hostName: string;
+  /** How a person's own machine reaches this one over SSH (`host` or `user@host`), for the links that open a project in an editor. */
+  sshHost: string;
   /** Accepted as a bearer token by another manager acting as a hub; null means no hub may. */
   hubToken: string | null;
   /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
@@ -108,6 +110,11 @@ export function loadConfig(
     residentItems: Number(env.AGENT_MANAGER_RESIDENT_ITEMS ?? 500),
     hostName:
       env.AGENT_MANAGER_HOST_NAME || os.hostname().split('.')[0] || 'local',
+    sshHost:
+      env.AGENT_MANAGER_SSH_HOST ||
+      env.AGENT_MANAGER_HOST_NAME ||
+      os.hostname().split('.')[0] ||
+      'local',
     hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,
     spokesFile:
       env.AGENT_MANAGER_SPOKES_FILE ??

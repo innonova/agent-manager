@@ -32,17 +32,24 @@ export class ProjectsController {
   async list(
     @Req() req: Request & { user?: User },
   ): Promise<
-    { project: Project & { host: string }; agentCounts: AgentCounts }[]
+    {
+      project: Project & { host: string; sshHost: string };
+      agentCounts: AgentCounts;
+    }[]
   > {
     const local = this.projects.list().map((project) => ({
-      project: { ...project, host: this.config.hostName },
+      project: {
+        ...project,
+        host: this.config.hostName,
+        sshHost: this.config.sshHost,
+      },
       agentCounts: this.agents.counts(project.id),
     }));
     if (!this.hub.enabled) return local;
     const remote = (await this.hub.listRemoteProjects(
       req.user?.name ?? 'hub',
     )) as {
-      project: Project & { host: string };
+      project: Project & { host: string; sshHost: string };
       agentCounts: AgentCounts;
     }[];
     return [...local, ...remote];
@@ -54,7 +61,7 @@ export class ProjectsController {
     @Req() req: Request & { user?: User },
     @Body() body: Record<string, unknown>,
   ): Promise<{
-    project: Project & { host: string };
+    project: Project & { host: string; sshHost: string };
     agentCounts: AgentCounts;
   }> {
     const { host, ...rest } = body;
@@ -67,7 +74,10 @@ export class ProjectsController {
         );
       let r: {
         status: number;
-        body: { project: Project & { host: string }; agentCounts: AgentCounts };
+        body: {
+          project: Project & { host: string; sshHost: string };
+          agentCounts: AgentCounts;
+        };
       };
       try {
         r = await this.hub.call(
@@ -93,7 +103,11 @@ export class ProjectsController {
     }
     const project = this.projects.create(rest);
     return {
-      project: { ...project, host: this.config.hostName },
+      project: {
+        ...project,
+        host: this.config.hostName,
+        sshHost: this.config.sshHost,
+      },
       agentCounts: this.agents.counts(project.id),
     };
   }
