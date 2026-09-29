@@ -29,9 +29,7 @@ export class ProjectsController {
 
   /** This machine's projects, each with `host`, and (as a hub) the spokes' projects with prefixed ids. */
   @Get()
-  async list(
-    @Req() req: Request & { user?: User },
-  ): Promise<
+  async list(@Req() req: Request & { user?: User }): Promise<
     {
       project: Project & { host: string; sshHost: string };
       agentCounts: AgentCounts;

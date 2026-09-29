@@ -31,6 +31,8 @@ export interface ManagerConfig {
   hostName: string;
   /** How a person's own machine reaches this one over SSH (`host` or `user@host`), for the links that open a project in an editor. */
   sshHost: string;
+  /** Where the projects' VS Code workspace files go; null means beside each project's repositories. */
+  workspacesDir: string | null;
   /** Accepted as a bearer token by another manager acting as a hub; null means no hub may. */
   hubToken: string | null;
   /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
@@ -115,6 +117,7 @@ export function loadConfig(
       env.AGENT_MANAGER_HOST_NAME ||
       os.hostname().split('.')[0] ||
       'local',
+    workspacesDir: env.AGENT_MANAGER_WORKSPACES_DIR || null,
     hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,
     spokesFile:
       env.AGENT_MANAGER_SPOKES_FILE ??

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -9,6 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DbService } from '../db/db.service.js';
+import { MANAGER_CONFIG } from '../config/config.js';
+import type { ManagerConfig } from '../config/config.js';
 import { workspacePath, writeWorkspace } from './workspace.js';
 
 export interface Repo {
@@ -57,7 +60,10 @@ const REPO_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 @Injectable()
 export class ProjectsService implements OnModuleInit {
   private readonly logger = new Logger(ProjectsService.name);
-  constructor(private readonly dbs: DbService) {}
+  constructor(
+    private readonly dbs: DbService,
+    @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
+  ) {}
 
   private get db() {
     return this.dbs.db;
@@ -71,7 +77,7 @@ export class ProjectsService implements OnModuleInit {
   /** Best effort: a directory the manager cannot write to, or a file it cannot parse, is logged, not an error. */
   private keepWorkspace(p: Project): void {
     try {
-      const r = writeWorkspace(p.name, p.repos);
+      const r = writeWorkspace(p.name, p.repos, this.config.workspacesDir);
       if (r.result === 'unparseable')
         this.logger.warn(
           `${r.file} is not JSON; left alone (its folders may be stale)`,
@@ -117,6 +123,7 @@ export class ProjectsService implements OnModuleInit {
       workspace: workspacePath(
         r.name,
         repos.length ? repos : [{ name: '', path: r.path }],
+        this.config.workspacesDir,
       ),
     };
   }

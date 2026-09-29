@@ -10,9 +10,16 @@ import type { Repo } from './projects.service.js';
  * `folders` list only: settings, extensions or anything else a person
  * put in the file are kept, and a file it cannot parse is left alone.
  */
-export function workspacePath(name: string, repos: Repo[]): string {
+export function workspacePath(
+  name: string,
+  repos: Repo[],
+  dir: string | null = null,
+): string {
   const safe = name.replace(/[\\/\0]/g, '-').trim() || 'project';
-  return path.join(path.dirname(repos[0].path), `${safe}.code-workspace`);
+  return path.join(
+    dir ?? path.dirname(repos[0].path),
+    `${safe}.code-workspace`,
+  );
 }
 
 /** The folders as the workspace should list them. */
@@ -30,8 +37,10 @@ export function workspaceFolders(
 export function writeWorkspace(
   name: string,
   repos: Repo[],
+  dir: string | null = null,
 ): { file: string; result: 'written' | 'unchanged' | 'unparseable' } {
-  const file = workspacePath(name, repos);
+  const file = workspacePath(name, repos, dir);
+  if (dir) fs.mkdirSync(dir, { recursive: true });
   const folders = workspaceFolders(repos);
   let existing: Record<string, unknown> = {};
   if (fs.existsSync(file)) {

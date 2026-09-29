@@ -13,19 +13,18 @@ describe('ProjectsService', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-'));
     dbs = new DbService({ ...loadConfig({}), dataDir: dir });
     dbs.onModuleInit();
-    svc = new ProjectsService(dbs);
+    svc = new ProjectsService(dbs, { ...loadConfig({}), workspacesDir: dir });
   });
   afterEach(() => dbs.onModuleDestroy());
 
   it('creates, lists, updates and removes', () => {
     const p = svc.create({ name: ' P ', path: dir });
     expect(p).toMatchObject({ name: 'P', path: dir, defaultProfile: null });
-    // the workspace file is beside the repository, listing it
-    expect(p.workspace).toBe(path.join(path.dirname(dir), 'P.code-workspace'));
+    // the workspace file (here in the test's own dir, never beside a real repository) lists the repository
+    expect(p.workspace).toBe(path.join(dir, 'P.code-workspace'));
     expect(JSON.parse(fs.readFileSync(p.workspace, 'utf8')).folders).toEqual([
       { name: path.basename(dir), path: dir },
     ]);
-    fs.rmSync(p.workspace);
     expect(svc.list().map((x) => x.id)).toEqual([p.id]);
     expect(svc.update(p.id, { defaultProfile: 'fake' }).defaultProfile).toBe(
       'fake',

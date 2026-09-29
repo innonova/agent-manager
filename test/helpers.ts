@@ -108,6 +108,7 @@ export async function startManager(
       methodFile: path.join(dataDir, 'method.md'), // nor their method
       framingFile: path.join(dataDir, 'framing.md'), // nor their framing
       spokesFile: path.join(dataDir, 'spokes.json'), // nor their spokes: a test manager must not front for a real machine
+      workspacesDir: path.join(dataDir, 'workspaces'), // nor a workspace file beside a real repository
       ...overrides,
     },
     { quiet: !process.env.TEST_VERBOSE },
