@@ -91,6 +91,12 @@ export interface AgentStatus {
   usage: AccountUsage | null;
   /** What the last thing on the stream was doing; null outside a turn. */
   activity: Activity;
+  /**
+   * Until when the agent said its background wait is expected (unix ms),
+   * so the watchdog leaves it alone; null when it said nothing. Set by
+   * the agent itself (`am hold`), cleared when the time passes.
+   */
+  holdUntil: number | null;
 }
 
 export interface StoredItem {
@@ -118,6 +124,7 @@ interface AgentRow {
   effort: string | null;
   harness_note: string | null;
   created_by: string | null;
+  hold_until: number | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -371,17 +378,29 @@ export class AgentsService
     const now = Date.now();
     for (const [id, live] of this.live) {
       const st = live.status;
+      // A hold the agent set: no poke until it passes, and once it has
+      // passed the hold is cleared (the agent said this long, not longer).
+      let heldUntil: number | null = null;
+      if (st.holdUntil !== null) {
+        if (now < st.holdUntil) continue;
+        heldUntil = st.holdUntil;
+        const agent = this.find(id);
+        if (agent) this.setHold(agent, live, null);
+      }
       if (st.state !== 'idle' || !st.background) continue;
-      if (now - st.lastActivityAt < limit) continue;
+      if (heldUntil === null && now - st.lastActivityAt < limit) continue;
       if (live.lastPokeAt && now - live.lastPokeAt < limit) continue;
       live.lastPokeAt = now;
       const minutes = Math.round((now - st.lastActivityAt) / 60_000);
       const jobs = `${st.background} background job${st.background === 1 ? '' : 's'}`;
       this.logger.log(`poking agent ${id}: ${jobs} pending for ${minutes} min`);
+      const held = heldUntil
+        ? `The hold you set until ${new Date(heldUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} has passed. `
+        : '';
       try {
         await this.turn(
           id,
-          `You have had ${jobs} pending for ${minutes} minutes with no news. Check whether they are still running; if one has finished or died, act on it or report it. If all is well and still running, say so briefly.`,
+          `${held}You have had ${jobs} pending for ${minutes} minutes with no news. Check whether they are still running; if one has finished or died, act on it or report it. If all is well and still running, say so briefly, and if the wait is expected to go on, say until when with \`am hold\`.`,
           MANAGER_AUTHOR, // the transcript says the manager asked, not a person
         );
       } catch (err) {
@@ -390,6 +409,35 @@ export class AgentsService
         );
       }
     }
+  }
+
+  /** The agent's own word on how long its background wait is expected: the watchdog holds its poke until then. */
+  hold(id: string, until: number | null): AgentStatus {
+    const agent = this.get(id);
+    const live = this.ensureLive(agent);
+    if (until !== null) {
+      if (!Number.isFinite(until) || until <= Date.now())
+        throw new BadRequestException('"until" must be a time in the future');
+      if (until > Date.now() + 7 * 24 * 3600_000)
+        throw new BadRequestException('"until" is more than a week away');
+    }
+    this.setHold(agent, live, until);
+    return live.status;
+  }
+
+  private setHold(agent: Agent, live: Live, until: number | null): void {
+    this.db
+      .prepare('UPDATE agents SET hold_until = ? WHERE id = ?')
+      .run(until, agent.id);
+    live.status = { ...live.status, holdUntil: until };
+    this.emit('state', agent.id, agent.projectId, live.status);
+  }
+
+  private holdOf(agentId: string): number | null {
+    const r = this.db
+      .prepare('SELECT hold_until FROM agents WHERE id = ?')
+      .get(agentId) as { hold_until: number | null } | undefined;
+    return r?.hold_until ?? null;
   }
 
   onModuleDestroy(): void {
@@ -1223,6 +1271,7 @@ export class AgentsService
     const own = {
       AGENT_MANAGER_URL: this.ownUrl(),
       AGENT_MANAGER_TOKEN: token,
+      AGENT_MANAGER_AGENT: agent.name, // so `am hold 2h` means this agent
     };
     const note = this.harnessNote(agent);
     this.db
@@ -2325,6 +2374,7 @@ export class AgentsService
           queued: 0,
           usage: null,
           activity: null,
+          holdUntil: this.holdOf(agent.id),
         },
         items: [],
         itemBase: 0,
@@ -2470,6 +2520,7 @@ export class AgentsService
       queued: live.status.queued,
       usage: live.status.usage,
       activity,
+      holdUntil: live.status.holdUntil,
     };
     // A message held for the next turn goes as soon as the agent can take
     // one; a transition replayed from history is not that moment.

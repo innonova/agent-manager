@@ -107,6 +107,62 @@ describe('background watchdog', () => {
       // the manager asked, not a person, and the transcript says so; the
       // run log reads the same marker to keep a poke off a run's idle clock
       expect(poke.item.item.by).toBe('manager');
+      // a hold the agent sets keeps the watchdog off until it passes; then
+      // the hold clears and the poke says so
+      await ev.waitFor(
+        (f) =>
+          f.type === 'agent.state' &&
+          f.agentId === agent.id &&
+          f.status.state === 'idle',
+        10000,
+        mark,
+      );
+      mark = ev.mark();
+      await api2.post(`/api/agents/${agent.id}/turn`, {
+        text: 'start a background job',
+      });
+      await ev.waitFor(
+        (f) =>
+          f.type === 'agent.state' &&
+          f.agentId === agent.id &&
+          f.status.state === 'idle' &&
+          f.status.background === 1,
+        10000,
+        mark,
+      );
+      const until = Date.now() + 1500;
+      expect(
+        (await api2.post(`/api/agents/${agent.id}/hold`, { until })).body,
+      ).toEqual({ ok: true, holdUntil: until });
+      expect(
+        (await api2.post(`/api/agents/${agent.id}/hold`, { until: 5 })).status,
+      ).toBe(400);
+      await sleep(400);
+      const before = (await api2.get(`/api/agents/${agent.id}/items`)).body
+        .items.length;
+      await (m2.app.get(AgentsService) as any).pokeStalled();
+      expect(
+        (await api2.get(`/api/agents/${agent.id}/items`)).body.items.length,
+      ).toBe(before); // held: no poke
+      expect(
+        (await api2.get(`/api/agents/${agent.id}`)).body.status.holdUntil,
+      ).toBe(until);
+      await sleep(1300);
+      mark = ev.mark();
+      await (m2.app.get(AgentsService) as any).pokeStalled();
+      const late = await ev.waitFor(
+        (f) =>
+          f.type === 'agent.item' &&
+          f.agentId === agent.id &&
+          f.item.item.kind === 'user' &&
+          /hold you set/.test(f.item.item.text),
+        10000,
+        mark,
+      );
+      expect(late.item.item.by).toBe('manager');
+      expect(
+        (await api2.get(`/api/agents/${agent.id}`)).body.status.holdUntil,
+      ).toBeNull();
       await ev.waitFor(
         (f) =>
           f.type === 'agent.state' &&

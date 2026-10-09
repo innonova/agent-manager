@@ -314,7 +314,15 @@ or a job started. An agent idle with background jobs and no activity for
 `AGENT_MANAGER_BACKGROUND_POKE_MS` (30 minutes) is poked: a short turn
 asking it to check whether the jobs are still alive, since a job that
 died without notifying leaves the agent waiting forever. At most one poke
-per interval, none while the daemon is disconnected.
+per interval, none while the daemon is disconnected. An agent that knows
+its wait is long says so: `POST /api/agents/:id/hold { until }` (`am
+hold <time|duration>` in its own session, which knows its agent from
+`AGENT_MANAGER_AGENT` in the environment) sets `status.holdUntil`, kept
+on the agent row across restarts; the watchdog leaves a held agent
+alone, and once the time has passed it clears the hold and pokes at
+once, saying the hold has passed, so an agent that set it and then
+forgot is still asked. A hold is at most a week ahead; `until: null`
+clears it.
 
 Transitions are events, broadcast to the UI and aggregated per project as
 counts by state. `error` carries the vendor message verbatim (for Claude,
@@ -1169,6 +1177,7 @@ POST   /api/agents/:id/permission { requestId, option }       -> answers a pendi
 POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/restart      -> { ok }; stops and resumes this agent with the current settings (repositories, harness note), conversation intact; an exited one is started; 409 while working, waiting on a permission or with background jobs
+POST   /api/agents/:id/hold         { until: unix ms | null }     -> { ok, holdUntil }; holds the background watchdog's poke until then (400 if past or more than a week ahead); null clears
 POST   /api/agents/:id/archive
 DELETE /api/agents/:id             -> { ok }; forgets the agent for good: process stopped, the daemon's logs of its sessions removed, transcript cache and rows gone (the vendor's own conversation store stays); for helpers whose work is in git and the feature's report
 GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first

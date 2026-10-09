@@ -152,6 +152,20 @@ export class AgentsController {
     return { ok: true };
   }
 
+  /** The agent's own word on its background wait: `until` (unix ms) holds the watchdog's poke until then; null clears it. */
+  @Post('agents/:id/hold')
+  hold(
+    @Param('id') id: string,
+    @Body() body: { until?: unknown },
+  ): { ok: true; holdUntil: number | null } {
+    const until = body?.until ?? null;
+    if (until !== null && typeof until !== 'number')
+      throw new BadRequestException(
+        '"until" must be a number (unix ms) or null',
+      );
+    return { ok: true, holdUntil: this.agents.hold(id, until).holdUntil };
+  }
+
   @Post('agents/:id/archive')
   async archive(@Param('id') id: string): Promise<{ ok: true }> {
     await this.agents.archive(id);

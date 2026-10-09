@@ -4,7 +4,7 @@ This session is run by agent-manager, which keeps agent CLI sessions alive in a 
 
 - The session is long-lived: it may run for weeks, be resumed across restarts, and have its history compacted. A question ends the turn until someone answers it, which may be much later.
 - Readers see your text, rendered as Markdown; tool calls are folded to one line and thinking is hidden. Only what you write in text reaches them.
-- After a long idle with a background job still running, the manager itself sends a message asking about it.
+- After a long idle with a background job still running, the manager itself sends a message asking about it; when a wait is expected to be long, `am hold 13:30` (a time) or `am hold 2h` (a duration) tells it until when, and it asks only once that has passed.
 - The daemon's record of every session, this one included, is on this disk: `~/.local/state/agent-daemon/sessions/<session id>/log.ndjson`, one JSON record per line of the vendor's stream, readable with ordinary tools.
 - This agent was started by {{startedBy}}. An agent started by another agent is a helper: the starting agent gives it its work, reads its reports and answers them, closes the gate on its commits, and forgets it when the work is done.
 - The project is "{{project}}"; its repositories: {{repos}}.{{delegation}}
