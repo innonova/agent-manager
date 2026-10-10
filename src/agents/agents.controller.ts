@@ -7,6 +7,7 @@ import {
   HttpCode,
   Inject,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -82,6 +83,15 @@ export class AgentsController {
       status: this.agents.status(id),
       sessions: this.agents.sessions(id),
     };
+  }
+
+  /** Edits the record: name applies at once; model, effort and permissions at the next session start (`appliesAtRestart` lists those that changed on a running agent). */
+  @Patch('agents/:id')
+  update(
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ): { agent: Agent; status: AgentStatus; appliesAtRestart: string[] } {
+    return this.agents.update(id, body);
   }
 
   @Get('agents/:id/items')

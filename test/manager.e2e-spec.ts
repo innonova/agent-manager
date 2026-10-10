@@ -237,6 +237,69 @@ describe('projects', () => {
     expect((await api.get(`/api/projects/${p.id}`)).status).toBe(404);
   });
 
+  it('editing an agent renames it at once and says which settings wait for a restart', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'editable');
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'idle',
+      10000,
+    );
+    const mark = events.mark();
+    const r = await api.patch(`/api/agents/${agent.id}`, {
+      name: 'edited',
+      model: 'fake-2',
+      effort: 'high',
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.agent).toMatchObject({
+      name: 'edited',
+      model: 'fake-2',
+      effort: 'high',
+      permissions: 'bypass',
+    });
+    expect(r.body.appliesAtRestart).toEqual(['model', 'effort']);
+    const frame = await events.waitFor(
+      (f) => f.type === 'agent.updated' && f.agent.id === agent.id,
+      5000,
+      mark,
+    );
+    expect(frame.agent.name).toBe('edited');
+    expect((await api.get(`/api/agents/${agent.id}`)).body.agent.name).toBe(
+      'edited',
+    );
+    // a rename alone needs no restart; a bad value is refused
+    expect(
+      (await api.patch(`/api/agents/${agent.id}`, { name: 'edited again' }))
+        .body.appliesAtRestart,
+    ).toEqual([]);
+    expect(
+      (await api.patch(`/api/agents/${agent.id}`, { effort: 'very high!' }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await api.patch(`/api/agents/${agent.id}`, { permissions: 'maybe' }))
+        .status,
+    ).toBe(400);
+    // the restart starts the session with the new settings
+    await api.post(`/api/agents/${agent.id}/restart`, {});
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'idle',
+      10000,
+      mark,
+    );
+    expect(
+      (await api.patch(`/api/agents/${agent.id}`, { effort: 'high' })).body
+        .appliesAtRestart,
+    ).toEqual([]); // unchanged: nothing waits
+    await api.delete(`/api/agents/${agent.id}`);
+  });
+
   it('restarting a project resumes idle agents and skips busy ones', async () => {
     const p = await createProject();
     const { agent: idle } = await createAgent(p.id, 'idle-one');
@@ -531,8 +594,9 @@ describe('agents', () => {
       })
     ).body.project;
     expect(onreq.delegation).toBe('on-request');
-    const a = (await api.post(`/api/projects/${onreq.id}/agents`, { name: 'g1' }))
-      .body.agent;
+    const a = (
+      await api.post(`/api/projects/${onreq.id}/agents`, { name: 'g1' })
+    ).body.agent;
     expect(a.harnessNote).toContain(
       'agents delegate only when a person has expressly asked for it',
     );
@@ -546,25 +610,29 @@ describe('agents', () => {
       })
     ).body.project;
     expect(free.delegation).toBe('free');
-    const b = (await api.post(`/api/projects/${free.id}/agents`, { name: 'f1' }))
-      .body.agent;
+    const b = (
+      await api.post(`/api/projects/${free.id}/agents`, { name: 'f1' })
+    ).body.agent;
     expect(b.harnessNote).not.toContain('agents delegate only when');
     expect(b.harnessNote).not.toMatch(/\n\n\n/);
 
     // the setting can be edited, and a restart of the agent reads the change
     expect(
-      (await api.patch(`/api/projects/${onreq.id}`, { delegation: 'free' })).body
-        .project.delegation,
+      (await api.patch(`/api/projects/${onreq.id}`, { delegation: 'free' }))
+        .body.project.delegation,
     ).toBe('free');
     // restart is refused unless the agent is idle: wait for the fresh session
     const waitIdle = async (id: string) => {
       for (let i = 0; i < 60; i++) {
-        if ((await api.get(`/api/agents/${id}`)).body.status.state === 'idle') return;
+        if ((await api.get(`/api/agents/${id}`)).body.status.state === 'idle')
+          return;
         await new Promise((r) => setTimeout(r, 100));
       }
     };
     await waitIdle(a.id);
-    expect((await api.post(`/api/agents/${a.id}/restart`, {})).status).toBe(201);
+    expect((await api.post(`/api/agents/${a.id}/restart`, {})).status).toBe(
+      201,
+    );
     const after = (await api.get(`/api/agents/${a.id}`)).body.agent;
     expect(after.harnessNote).not.toContain('agents delegate only when');
 

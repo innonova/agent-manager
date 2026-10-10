@@ -1171,6 +1171,7 @@ DELETE /api/projects/:id            (does not touch the repository)
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt, background, model, queued, activity }
 POST   /api/projects/:id/agents     { name, profile, cwd?, permissions?, model?, effort? } -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
 GET    /api/agents/:id                                          -> { agent, status, sessions }
+PATCH  /api/agents/:id              { name?, model?, effort?, permissions? } -> { agent, status, appliesAtRestart: string[] }; the name applies at once, the rest at the next session start (`appliesAtRestart` lists those that changed while a session is up, so a client can offer a restart); broadcast as `agent.updated`
 GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
 POST   /api/agents/:id/turn         { text, steer?, images? }   -> 202 { mode: 'sent' | 'steered' | 'queued' }; images: [{ mediaType, data }] base64, png/jpeg/gif/webp, at most 4, 3 MB each and 6 MB per turn (400 otherwise); without `steer`, 409 { code: 'agent-busy' } while a turn runs (with it, the message is steered into the turn or queued for the next one; still 409 while starting or waiting on a permission); 503 { code: 'agent-unavailable' } if the session's output cannot be attached
 POST   /api/agents/:id/permission { requestId, option }       -> answers a pending permission request with one of the options the item offered; 404 if none is pending
@@ -1265,6 +1266,7 @@ agent.item       { agentId, item }                 // item = StoredItem { index,
 agent.session    { agentId, session }              // a new session started or one ended
 agent.reset      { agentId }                       // the transcript was rebuilt; refetch items from 0
 agent.created    { agent, status }                 // a new agent exists; add it to the project's list (ids prefixed on a hub)
+agent.updated    { agent, status }                 // its record was edited (name, model, effort, permissions); replace the row
 agent.archived   { agentId, projectId }            // archived: off the active list but still readable; drop it from the list
 agent.removed    { agentId, projectId }            // forgotten for good; drop it
 feature.changed  { projectId, feature }            // a feature file changed (status, report, response, edit)

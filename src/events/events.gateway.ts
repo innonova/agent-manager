@@ -79,6 +79,9 @@ export class EventsGateway
     this.agents.on('created', (agent, status) =>
       this.broadcast({ type: 'agent.created', agent, status }),
     );
+    this.agents.on('updated', (agent, status) =>
+      this.broadcast({ type: 'agent.updated', agent, status }),
+    );
     this.agents.on('archived', (agentId, projectId) =>
       this.broadcast({ type: 'agent.archived', agentId, projectId }),
     );

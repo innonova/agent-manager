@@ -231,6 +231,8 @@ export interface AgentEvents {
   counts: [projectId: string, counts: AgentCounts];
   /** A new agent was created; clients add it to the active list. */
   created: [agent: Agent, status: AgentStatus];
+  /** The record changed by a person (name, model, effort, permissions); model, effort and permissions apply at the next session start. */
+  updated: [agent: Agent, status: AgentStatus];
   /** The agent was archived: off the active list but still readable; clients drop it from the active list. */
   archived: [agentId: string, projectId: string];
   /** The agent was forgotten for good; clients drop it. */
@@ -248,6 +250,17 @@ export const MANAGER_AUTHOR = 'manager';
 const SYNC_WAIT_MS = 10_000;
 const STARTING_GRACE_MS = 5000;
 const LOCK_PATIENCE_MS = 2000;
+
+/** A model or effort as the vendor names it: passed through at session start, so only its shape is checked here. */
+function vendorSetting(v: unknown, what: string): string | null {
+  if (v === undefined || v === null || v === '') return null;
+  if (
+    typeof v !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,127}$/.test(v)
+  )
+    throw new BadRequestException(`"${what}" must be a short vendor name`);
+  return v;
+}
 
 const toAgent = (r: AgentRow): Agent => ({
   id: r.id,
@@ -409,6 +422,58 @@ export class AgentsService
         );
       }
     }
+  }
+
+  /**
+   * A person changes the record: the name at once; model, effort and
+   * permissions are session-start settings, so they apply at the next
+   * restart (the reply says which of them changed, for a client to offer
+   * one). The agent's `am` keeps the old name in its environment until
+   * then, which only matters to `am hold` without an argument.
+   */
+  update(
+    id: string,
+    input: {
+      name?: unknown;
+      model?: unknown;
+      effort?: unknown;
+      permissions?: unknown;
+    },
+  ): { agent: Agent; status: AgentStatus; appliesAtRestart: string[] } {
+    const current = this.get(id);
+    const name = input.name === undefined ? current.name : input.name;
+    if (typeof name !== 'string' || name.trim() === '')
+      throw new BadRequestException('"name" must be a non-empty string');
+    const permissions =
+      input.permissions === undefined ? current.permissions : input.permissions;
+    if (permissions !== 'bypass' && permissions !== 'ask')
+      throw new BadRequestException('"permissions" must be "bypass" or "ask"');
+    const model =
+      input.model === undefined
+        ? current.model
+        : vendorSetting(input.model, 'model');
+    const effort =
+      input.effort === undefined
+        ? current.effort
+        : vendorSetting(input.effort, 'effort');
+    this.db
+      .prepare(
+        'UPDATE agents SET name = ?, model = ?, effort = ?, permissions = ? WHERE id = ?',
+      )
+      .run(name.trim(), model, effort, permissions, id);
+    const agent = this.get(id);
+    const live = this.ensureLive(agent);
+    const appliesAtRestart = (
+      [
+        ['model', current.model !== agent.model],
+        ['effort', current.effort !== agent.effort],
+        ['permissions', current.permissions !== agent.permissions],
+      ] as const
+    )
+      .filter(([, changed]) => changed && agent.currentSessionId !== null)
+      .map(([what]) => what);
+    this.emit('updated', agent, live.status);
+    return { agent, status: live.status, appliesAtRestart };
   }
 
   /** The agent's own word on how long its background wait is expected: the watchdog holds its poke until then. */
@@ -683,17 +748,8 @@ export class AgentsService
         : (input.permissions as Permissions);
     if (permissions !== 'bypass' && permissions !== 'ask')
       throw new BadRequestException('"permissions" must be "bypass" or "ask"');
-    const setting = (v: unknown, what: string): string | null => {
-      if (v === undefined || v === null || v === '') return null;
-      if (
-        typeof v !== 'string' ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,127}$/.test(v)
-      )
-        throw new BadRequestException(`"${what}" must be a short vendor name`);
-      return v;
-    };
-    const model = setting(input.model, 'model');
-    const effort = setting(input.effort, 'effort');
+    const model = vendorSetting(input.model, 'model');
+    const effort = vendorSetting(input.effort, 'effort');
     // cwd is one of the project's repos, by name or absolute path; default the primary.
     const cwd = input.cwd
       ? this.projects.repoOf(project, input.cwd as string)?.path
