@@ -23,7 +23,8 @@
     "install:service": "scripts/install-user-service.sh",
     "install:ui": "scripts/install-ui.sh",
     "user:add": "node scripts/user-add.mjs",
-    "smoke:agents": "node scripts/smoke-agents.mjs"
+    "smoke:agents": "node scripts/smoke-agents.mjs",
+    "install:windows": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",

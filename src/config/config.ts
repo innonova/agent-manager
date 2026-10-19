@@ -57,8 +57,31 @@ export interface ManagerConfig {
 
 export const MANAGER_CONFIG = Symbol('MANAGER_CONFIG');
 
+/**
+ * The base of state (data, cache, spokes) and config (the four operator
+ * texts): the XDG dirs on Linux and macOS, and on Windows the profile's
+ * Local and Roaming AppData, where a per-user service keeps its files.
+ */
+export function baseDir(
+  env: NodeJS.ProcessEnv,
+  kind: 'config' | 'state',
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === 'win32')
+    return kind === 'config'
+      ? env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+      : env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const xdg = kind === 'config' ? env.XDG_CONFIG_HOME : env.XDG_STATE_HOME;
+  if (xdg && xdg.length > 0) return xdg;
+  return path.join(
+    os.homedir(),
+    kind === 'config' ? '.config' : '.local/state',
+  );
+}
+
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): ManagerConfig {
   const listen = env.AGENT_MANAGER_LISTEN ?? '0.0.0.0:4268';
   const idx = listen.lastIndexOf(':');
@@ -67,14 +90,8 @@ export function loadConfig(
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`AGENT_MANAGER_LISTEN has an invalid port: ${listen}`);
   }
-  const xdgState =
-    env.XDG_STATE_HOME && env.XDG_STATE_HOME.length > 0
-      ? env.XDG_STATE_HOME
-      : path.join(os.homedir(), '.local/state');
-  const xdgConfig =
-    env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.length > 0
-      ? env.XDG_CONFIG_HOME
-      : path.join(os.homedir(), '.config');
+  const xdgState = baseDir(env, 'state', platform);
+  const xdgConfig = baseDir(env, 'config', platform);
   return {
     host: host || '0.0.0.0',
     port,

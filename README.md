@@ -74,7 +74,9 @@ from one UI, make one manager the hub:
    the `host.conf` drop-in by the installer); a spoke must not share the
    hub's name.
 
-The hub's project list then shows every machine's projects with the
+A Windows spoke is installed with `scripts\install-windows.ps1` (a
+scheduled task in the user's interactive session, so its agents see the
+desktop; `../agent-daemon/docs/install.md`, 3c). The hub's project list then shows every machine's projects with the
 machine's name; agents are driven through the hub as the logged-in user,
 who is created on the spoke by name. `docs/design.md` (Hub and spokes)
 has the details and the limits.

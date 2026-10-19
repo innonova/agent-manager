@@ -1,6 +1,16 @@
 import { loadConfig } from './config.js';
 
 describe('loadConfig', () => {
+  it('keeps state in Local and config in Roaming AppData on Windows', () => {
+    const c = loadConfig(
+      { APPDATA: 'C:\\U\\Roaming', LOCALAPPDATA: 'C:\\U\\Local' },
+      'win32',
+    );
+    expect(c.dataDir.startsWith('C:\\U\\Local')).toBe(true);
+    expect(c.harnessFile.startsWith('C:\\U\\Roaming')).toBe(true);
+    expect(c.spokesFile.startsWith('C:\\U\\Local')).toBe(true);
+  });
+
   it('has documented defaults', () => {
     const c = loadConfig({ HOME: '/h' });
     expect(c).toMatchObject({
