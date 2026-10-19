@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import WebSocket from 'ws';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -28,6 +29,25 @@ let events: Events;
 let spokeApi: Api;
 const TOKEN = 'hub-token-for-tests';
 let projectDir: string;
+
+/** The sessions a daemon holds, asked over its own socket. */
+async function daemonSessions(url: string): Promise<{ id: string }[]> {
+  const ws = new WebSocket(url);
+  await new Promise<void>((res, rej) => {
+    ws.once('open', () => res());
+    ws.once('error', rej);
+  });
+  const reply = new Promise<{ id: string }[]>((res) => {
+    ws.on('message', (data) => {
+      const f = JSON.parse(String(data));
+      if (f.ref === 'q') res(f.sessions ?? []);
+    });
+  });
+  ws.send(JSON.stringify({ type: 'sessions.list', ref: 'q' }));
+  const out = await reply;
+  ws.close();
+  return out;
+}
 
 beforeAll(async () => {
   spokeDaemon = await startDaemon();
@@ -309,6 +329,95 @@ describe('hub', () => {
       201,
     );
   }, 40000);
+
+  it('an agent of a hub project runs on the spoke: its session on the spoke daemon, its transcript here', async () => {
+    // the project is the hub's own; only the agent is far away
+    const project = (
+      await api.post('/api/projects', { name: 'home', path: projectDir })
+    ).body.project;
+    expect(project.host).toBe('main');
+    // a host the hub has no daemon for, and a relative path, are refused
+    expect(
+      (
+        await api.post(`/api/projects/${project.id}/agents`, {
+          name: 'far',
+          profile: 'fake',
+          host: 'nowhere',
+          cwd: '/tmp',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await api.post(`/api/projects/${project.id}/agents`, {
+          name: 'far',
+          profile: 'fake',
+          host: 'vibe',
+          cwd: 'relative',
+        })
+      ).status,
+    ).toBe(400);
+    // the spoke's profiles are what a form offers for it
+    const profiles = (await api.get('/api/profiles?host=vibe')).body.profiles;
+    expect(profiles.map((p: { name: string }) => p.name)).toContain('fake');
+    expect((await api.get('/api/profiles?host=nowhere')).status).toBe(404);
+    const created = await api.post(`/api/projects/${project.id}/agents`, {
+      name: 'far',
+      profile: 'fake',
+      host: 'vibe',
+      cwd: os.tmpdir(),
+    });
+    expect(created.status).toBe(201);
+    const agent = created.body.agent;
+    expect(agent.host).toBe('vibe');
+    expect(agent.id).not.toMatch(/^vibe:/); // a hub agent, plain id
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'idle',
+      15000,
+    );
+    // the session lives on the spoke's daemon, not the hub's
+    const fresh = (await api.get(`/api/agents/${agent.id}`)).body;
+    const sid = fresh.agent.currentSessionId as string;
+    expect((await daemonSessions(spokeDaemon.url)).map((x) => x.id)).toContain(
+      sid,
+    );
+    expect(
+      (await daemonSessions(hubDaemon.url)).map((x) => x.id),
+    ).not.toContain(sid);
+    // and its note says where it is
+    expect(fresh.agent.harnessNote).toContain('runs on vibe');
+    expect(fresh.agent.harnessNote).toContain('on the hub main');
+    // a turn through the hub, answered on the spoke, read here
+    const mark = events.mark();
+    expect(
+      (await api.post(`/api/agents/${agent.id}/turn`, { text: 'hello far' }))
+        .status,
+    ).toBe(202);
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.item' &&
+        f.agentId === agent.id &&
+        f.item.item.kind === 'turn_end',
+      15000,
+      mark,
+    );
+    const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as any[];
+    expect(
+      items.some(
+        (s) =>
+          s.item.kind === 'text' && /You said: hello far/.test(s.item.text),
+      ),
+    ).toBe(true);
+    // the hosts picture says the spoke's daemon is reachable through the tunnel
+    const hosts = (await api.get('/api/health')).body.hosts as any[];
+    expect(hosts.find((h) => h.name === 'vibe').daemon).toBe(true);
+    await api.delete(`/api/agents/${agent.id}`);
+    await api.delete(`/api/projects/${project.id}`); // the later cases count the hub's projects
+  });
 
   it('reads a spoke\u2019s run log and reviews a run there, with the id prefixed once', async () => {
     // a run of the spoke's own project, put there directly: what is under

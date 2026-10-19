@@ -1,12 +1,12 @@
 import { Controller, Get } from '@nestjs/common';
 import { Public } from './auth/auth.guard.js';
-import { DaemonClient } from './daemon/daemon-client.js';
+import { DaemonClients } from './daemon/daemon-clients.js';
 import { HostStatus, HubService } from './hub/hub.service.js';
 
 @Controller('api/health')
 export class HealthController {
   constructor(
-    private readonly daemon: DaemonClient,
+    private readonly daemons: DaemonClients,
     private readonly hub: HubService,
   ) {}
 
@@ -16,7 +16,7 @@ export class HealthController {
   health(): { status: 'ok'; daemon: boolean; hosts: HostStatus[] } {
     return {
       status: 'ok',
-      daemon: this.daemon.connected,
+      daemon: this.daemons.local.connected,
       hosts: this.hub.hosts(),
     };
   }

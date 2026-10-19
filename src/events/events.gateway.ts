@@ -13,7 +13,7 @@ import { AgentsService } from '../agents/agents.service.js';
 import { AuthService } from '../auth/auth.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
-import { DaemonClient } from '../daemon/daemon-client.js';
+import { DaemonClients } from '../daemon/daemon-clients.js';
 import { FeaturesService } from '../features/features.service.js';
 import { RunsService } from '../runs/runs.service.js';
 import { HubService } from '../hub/hub.service.js';
@@ -57,7 +57,7 @@ export class EventsGateway
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly auth: AuthService,
     private readonly agents: AgentsService,
-    private readonly daemon: DaemonClient,
+    private readonly daemons: DaemonClients,
     private readonly features: FeaturesService,
     private readonly runs: RunsService,
     private readonly hub: HubService,
@@ -99,7 +99,7 @@ export class EventsGateway
     this.agents.on('counts', (projectId, counts) =>
       this.broadcast({ type: 'project.counts', projectId, counts }),
     );
-    this.daemon.on('connected', () =>
+    this.daemons.local.on('connected', () =>
       this.broadcast({ type: 'daemon', connected: true }),
     );
     // A hub: the spokes' streams, ids prefixed; their presence merged into
@@ -111,13 +111,14 @@ export class EventsGateway
     this.hub.on('reconnected', (name) =>
       this.broadcast({ type: 'host.reconnected', name }),
     );
-    this.daemon.on('connected', () =>
+    // any host's daemon link changing is a change of the hosts picture
+    this.daemons.on('connected', () =>
       this.broadcast({ type: 'hosts', hosts: this.hub.hosts() }),
     );
-    this.daemon.on('disconnected', () =>
+    this.daemons.on('disconnected', () =>
       this.broadcast({ type: 'hosts', hosts: this.hub.hosts() }),
     );
-    this.daemon.on('disconnected', () =>
+    this.daemons.local.on('disconnected', () =>
       this.broadcast({ type: 'daemon', connected: false }),
     );
     this.auth.on('users', (users) => {
@@ -305,7 +306,7 @@ export class EventsGateway
       JSON.stringify({
         type: 'hello',
         user: user.name,
-        daemon: { connected: this.daemon.connected },
+        daemon: { connected: this.daemons.local.connected },
         presence: this.presenceSnapshot(),
         uiBuild: this.uiBuild,
         hosts: this.hub.hosts(),

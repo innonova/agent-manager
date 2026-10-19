@@ -36,11 +36,12 @@ import {
   TRANSCRIPT_CACHE_VERSION,
 } from './transcript-cache.js';
 import {
-  DaemonClient,
   DaemonError,
   DaemonSession,
   LogRecord,
 } from '../daemon/daemon-client.js';
+import type { DaemonClient } from '../daemon/daemon-client.js';
+import { DaemonClients } from '../daemon/daemon-clients.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
@@ -68,6 +69,8 @@ export interface Agent {
   harnessNote: string | null;
   /** Who created it: a person's name, or `agent-<name>` for a helper started by another agent. */
   createdBy: string | null;
+  /** The machine its sessions run on: null for this one, else a spoke's name; `cwd` is a path there. */
+  host: string | null;
 }
 
 export interface AgentSessionRef {
@@ -125,6 +128,7 @@ interface AgentRow {
   harness_note: string | null;
   created_by: string | null;
   hold_until: number | null;
+  host: string | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -213,6 +217,8 @@ interface Live {
   activityFlush: NodeJS.Timeout | null;
   /** What the current activity is about (an adapter's `id`), so a refinement of the same tool call keeps its `since`. */
   activityId: string | null;
+  /** The agent's host, so a daemon's loss gates only the agents on it. */
+  host: string | null;
   /**
    * The status changed while a replay was in flight and has not been
    * announced: states derived from history are applied silently and only
@@ -274,6 +280,7 @@ const toAgent = (r: AgentRow): Agent => ({
   effort: r.effort ?? null,
   harnessNote: r.harness_note ?? null,
   createdBy: r.created_by ?? null,
+  host: r.host ?? null,
   currentSessionId: r.current_session_id,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
@@ -354,7 +361,7 @@ export class AgentsService
   constructor(
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly dbs: DbService,
-    private readonly daemon: DaemonClient,
+    private readonly daemons: DaemonClients,
     private readonly adapters: AdaptersService,
     private readonly projects: ProjectsService,
     private readonly auth: AuthService,
@@ -387,10 +394,11 @@ export class AgentsService
 
   private async pokeStalled(): Promise<void> {
     const limit = this.config.backgroundPokeMs;
-    if (!limit || !this.daemon.connected) return;
+    if (!limit) return;
     const now = Date.now();
     for (const [id, live] of this.live) {
       const st = live.status;
+      if (!this.daemons.for(live.host)?.connected) continue;
       // A hold the agent set: no poke until it passes, and once it has
       // passed the hold is cleared (the agent said this long, not longer).
       let heldUntil: number | null = null;
@@ -511,10 +519,12 @@ export class AgentsService
 
   onModuleInit(): void {
     this.startWatchdog();
-    this.daemon.on('output', (id, record) => this.onOutput(id, record));
-    this.daemon.on('changed', (session) => this.onSessionChanged(session));
-    this.daemon.on('connected', () => this.scheduleResync());
-    this.daemon.on('disconnected', () => this.onDaemonLost());
+    this.daemons.on('output', (_host, id, record) => this.onOutput(id, record));
+    this.daemons.on('changed', (_host, session) =>
+      this.onSessionChanged(session),
+    );
+    this.daemons.on('connected', () => this.scheduleResync());
+    this.daemons.on('disconnected', (host) => this.onDaemonLost(host));
   }
 
   // ---- queries ------------------------------------------------------------
@@ -646,7 +656,7 @@ export class AgentsService
       const agent = this.find(id);
       if (!agent) return;
       await this.loadCache(agent, live); // what the cache has is served even with the daemon down
-      if (!this.daemon.connected) return;
+      if (!this.daemons.for(agent.host)?.connected) return;
       try {
         await this.resyncAgent(id, this.resyncGeneration, live);
       } catch (err) {
@@ -725,6 +735,7 @@ export class AgentsService
       permissions?: unknown;
       model?: unknown;
       effort?: unknown;
+      host?: unknown;
     },
     createdBy: string | null = null,
   ): Promise<{ agent: Agent; status: AgentStatus }> {
@@ -750,10 +761,32 @@ export class AgentsService
       throw new BadRequestException('"permissions" must be "bypass" or "ask"');
     const model = vendorSetting(input.model, 'model');
     const effort = vendorSetting(input.effort, 'effort');
+    // The host its sessions run on: this machine unless a spoke is named,
+    // in which case cwd is a path there (any absolute one; the project's
+    // repositories live here and are not checked against it).
+    const host =
+      input.host === undefined ||
+      input.host === null ||
+      input.host === '' ||
+      input.host === this.config.hostName
+        ? null
+        : input.host;
+    if (host !== null) {
+      if (typeof host !== 'string' || !this.daemons.for(host))
+        throw new BadRequestException(
+          `"host" must be this machine or one of its spokes: ${this.daemons.hosts().join(', ')}`,
+        );
+      if (typeof input.cwd !== 'string' || !/^([A-Za-z]:\\|\/)/.test(input.cwd))
+        throw new BadRequestException(
+          '"cwd" must be an absolute path on that host',
+        );
+    }
     // cwd is one of the project's repos, by name or absolute path; default the primary.
-    const cwd = input.cwd
-      ? this.projects.repoOf(project, input.cwd as string)?.path
-      : project.path;
+    const cwd = host
+      ? (input.cwd as string)
+      : input.cwd
+        ? this.projects.repoOf(project, input.cwd as string)?.path
+        : project.path;
     if (!cwd)
       throw new BadRequestException(
         `"cwd" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`,
@@ -781,10 +814,11 @@ export class AgentsService
       effort,
       harnessNote: null, // set when the session starts
       createdBy,
+      host,
     };
     this.db
       .prepare(
-        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions, model, effort, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions, model, effort, created_by, host) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         agent.id,
@@ -797,6 +831,7 @@ export class AgentsService
         model,
         effort,
         createdBy,
+        host,
       );
     const live = this.ensureLive(agent);
     live.cache.loaded = true; // nothing on disk for a new agent
@@ -921,7 +956,7 @@ export class AgentsService
         if (userId) live.pendingAuthors.push(userId);
         try {
           for (const line of lines)
-            await this.daemon.input(agent.currentSessionId!, line);
+            await this.daemonOf(agent).input(agent.currentSessionId!, line);
         } catch (err) {
           const uncertain =
             err instanceof DaemonError && err.code === 'disconnected';
@@ -943,7 +978,7 @@ export class AgentsService
       if (userId) live.pendingAuthors.push(userId);
       try {
         for (const line of lines)
-          await this.daemon.input(agent.currentSessionId!, line);
+          await this.daemonOf(agent).input(agent.currentSessionId!, line);
       } catch (err) {
         // A request lost in flight may still have been delivered; the resync
         // reconciles that from the log. Only a certain refusal reverts.
@@ -1048,7 +1083,7 @@ export class AgentsService
         );
       try {
         for (const line of lines)
-          await this.daemon.input(agent.currentSessionId!, line);
+          await this.daemonOf(agent).input(agent.currentSessionId!, line);
       } catch (err) {
         // Refused for certain: the answer can be given again. A lost link
         // is uncertain; the replay that follows decides (afterReplay
@@ -1080,7 +1115,7 @@ export class AgentsService
     // Deliberately outside the lock: an interrupt must reach a turn that is blocked on stdin.
     try {
       for (const line of lines)
-        await this.daemon.input(agent.currentSessionId!, line);
+        await this.daemonOf(agent).input(agent.currentSessionId!, line);
     } catch (err) {
       throw asHttp(err);
     }
@@ -1193,11 +1228,13 @@ export class AgentsService
       this.live.delete(id);
       for (const ref of refs) {
         this.sessionOwner.delete(ref.daemonSessionId);
-        await this.daemon.remove(ref.daemonSessionId).catch((err: Error) => {
-          this.logger.warn(
-            `agent ${id}: daemon log of ${ref.daemonSessionId} not removed: ${err.message}`,
-          );
-        });
+        await this.daemonOf(agent)
+          .remove(ref.daemonSessionId)
+          .catch((err: Error) => {
+            this.logger.warn(
+              `agent ${id}: daemon log of ${ref.daemonSessionId} not removed: ${err.message}`,
+            );
+          });
       }
       await this.cache.clear(id).catch(() => undefined);
       await fs
@@ -1259,20 +1296,20 @@ export class AgentsService
     if (!agent.currentSessionId && liveAgent.adoptionNeeded) {
       // The resync has not reached this agent yet; an empty pointer proves
       // nothing until adoption has had its say.
-      this.adoptSessions(agent, await this.daemon.listSessions());
+      this.adoptSessions(agent, await this.daemonOf(agent).listSessions());
       liveAgent.adoptionNeeded = false;
     }
     const id = agent.currentSessionId;
     if (!id) return;
     try {
-      await this.daemon.endInput(id);
+      await this.daemonOf(agent).endInput(id);
     } catch (err) {
       if (!(err instanceof DaemonError)) throw err;
       if (err.code === 'disconnected' || err.code === 'not-connected')
         throw unavailable(err.message);
       if (err.code !== 'unknown-session') {
         try {
-          await this.daemon.signal(id, 'SIGTERM');
+          await this.daemonOf(agent).signal(id, 'SIGTERM');
         } catch (e2) {
           if (
             !(e2 instanceof DaemonError) ||
@@ -1288,11 +1325,14 @@ export class AgentsService
       ['SIGTERM', 2000],
       ['SIGKILL', 2000],
     ] as const) {
-      if (signal) await this.daemon.signal(id, signal).catch(() => undefined);
+      if (signal)
+        await this.daemonOf(agent)
+          .signal(id, signal)
+          .catch(() => undefined);
       const until = Date.now() + ms;
       while (Date.now() < until) {
         try {
-          const s = await this.daemon.getSession(id);
+          const s = await this.daemonOf(agent).getSession(id);
           if (s.state === 'exited') return;
         } catch (err) {
           if (err instanceof DaemonError && err.code === 'unknown-session')
@@ -1325,7 +1365,9 @@ export class AgentsService
     // its own way back in: `am` in the process reads these
     const token = this.auth.issueAgentToken(agent.id, agent.projectId);
     const own = {
-      AGENT_MANAGER_URL: this.ownUrl(),
+      AGENT_MANAGER_URL: agent.host
+        ? (this.config.agentUrl ?? this.ownUrl())
+        : this.ownUrl(),
       AGENT_MANAGER_TOKEN: token,
       AGENT_MANAGER_AGENT: agent.name, // so `am hold 2h` means this agent
     };
@@ -1336,7 +1378,7 @@ export class AgentsService
     agent.harnessNote = note;
     let session: DaemonSession;
     try {
-      session = await this.daemon.start({
+      session = await this.daemonOf(agent).start({
         id,
         profile: agent.profile,
         args: adapter.startArgs({
@@ -1432,7 +1474,8 @@ export class AgentsService
       {
         agent: agent.name,
         project,
-        host: this.config.hostName,
+        host: agent.host ?? this.config.hostName,
+        hub: agent.host ? this.config.hostName : null,
         profile: agent.profile,
         cwd: agent.cwd,
         permissions: agent.permissions,
@@ -1473,6 +1516,7 @@ export class AgentsService
 
   /** The project's other repositories, for agents that need to be told about them. */
   private extraDirs(agent: Agent): string[] {
+    if (agent.host) return []; // the project's repositories are here, not there
     try {
       return this.projects
         .get(agent.projectId)
@@ -1525,7 +1569,7 @@ export class AgentsService
     sl.suspended = false;
     let boundary = Number.MAX_SAFE_INTEGER;
     try {
-      boundary = await this.daemon.attach(sl.id, sl.lastSeq + 1);
+      boundary = await this.daemonOf(agent).attach(sl.id, sl.lastSeq + 1);
       sl.replayed = true;
       sl.complete = true;
     } catch (err) {
@@ -1583,7 +1627,7 @@ export class AgentsService
     const fresh = this.find(agent.id);
     if (!fresh || fresh.currentSessionId !== sl.id) return;
     void (async () => {
-      for (const line of lines) await this.daemon.input(sl.id, line);
+      for (const line of lines) await this.daemonOf(agent).input(sl.id, line);
     })().catch((err: Error) =>
       this.logger.warn(
         `agent ${agent.id}: could not send protocol line: ${err.message}`,
@@ -1631,7 +1675,7 @@ export class AgentsService
     if (!fresh?.currentSessionId) return;
     agent.currentSessionId = fresh.currentSessionId;
     try {
-      const s = await this.daemon.getSession(fresh.currentSessionId);
+      const s = await this.daemonOf(agent).getSession(fresh.currentSessionId);
       if (s.state === 'exited') this.applyExit(agent, live, s);
     } catch (err) {
       if (err instanceof DaemonError && err.code === 'unknown-session') {
@@ -2185,7 +2229,7 @@ export class AgentsService
    * request open and run it whenever the link returns.
    */
   private async awaitSynced(live: Live): Promise<void> {
-    if (!this.daemon.connected)
+    if (!this.daemons.for(live.host)?.connected)
       throw unavailable('the daemon is not connected');
     const timeout = new Promise<'timeout'>((r) =>
       setTimeout(() => r('timeout'), SYNC_WAIT_MS).unref(),
@@ -2208,11 +2252,19 @@ export class AgentsService
   }
 
   /** The socket the attachments lived on is gone; every session must be re-attached before it is trusted. */
-  private onDaemonLost(): void {
+  private onDaemonLost(host: string): void {
     for (const live of this.live.values()) {
+      if ((live.host ?? this.config.hostName) !== host) continue;
       for (const sl of live.sessions.values()) sl.replayed = false;
       this.gate(live);
     }
+  }
+
+  /** The daemon an agent's sessions live on; a host that is not configured here cannot be driven. */
+  private daemonOf(agent: Pick<Agent, 'host'>): DaemonClient {
+    const d = this.daemons.for(agent.host);
+    if (!d) throw unavailable(`no daemon for host ${agent.host}`);
+    return d;
   }
 
   /**
@@ -2239,7 +2291,7 @@ export class AgentsService
       } catch (err) {
         // The daemon link going away mid-resync ends it for everyone (a
         // new one follows the reconnect); anything else is this agent's.
-        if (!this.daemon.connected) throw err;
+        if (!this.daemons.for(live.host)?.connected) throw err;
         this.logger.warn(
           `agent ${id}: resync failed: ${(err as Error).message}`,
         );
@@ -2260,7 +2312,7 @@ export class AgentsService
     const agent = this.find(id);
     if (!agent || generation !== this.resyncGeneration) return;
     await this.loadCache(agent, live);
-    const sessions = await this.daemon.listSessions();
+    const sessions = await this.daemonOf(agent).listSessions();
     const byId = new Map(sessions.map((s) => [s.id, s]));
     this.adoptSessions(agent, sessions);
     live.adoptionNeeded = false;
@@ -2408,7 +2460,9 @@ export class AgentsService
           this.logger.warn(
             `agent ${agent.id} has a second live session ${extra.id}; ending it`,
           );
-          void this.daemon.endInput(extra.id).catch(() => undefined);
+          void this.daemonOf(agent)
+            .endInput(extra.id)
+            .catch(() => undefined);
         }
       }
     }
@@ -2457,6 +2511,7 @@ export class AgentsService
         lastActivityEmitAt: 0,
         activityFlush: null,
         activityId: null,
+        host: agent.host,
       };
       this.live.set(agent.id, live);
     }
@@ -2509,7 +2564,10 @@ export class AgentsService
       this.logger.warn(
         `agent ${agentId}: a command is blocked; sending ${signal} to free it`,
       );
-      await this.daemon.signal(sid, signal).catch(() => undefined);
+      await this.daemons
+        .for(this.find(agentId)?.host)
+        ?.signal(sid, signal)
+        .catch(() => undefined);
     }
     return run;
   }

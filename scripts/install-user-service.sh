@@ -76,6 +76,11 @@ if [ -n "${AGENT_MANAGER_HOST_NAME:-}" ]; then
   mkdir -p "$UNIT_DIR/agent-manager.service.d"
   printf '[Service]\nEnvironment="AGENT_MANAGER_HOST_NAME=%s"\n' "$AGENT_MANAGER_HOST_NAME" > "$UNIT_DIR/agent-manager.service.d/host.conf"
 fi
+if [ -n "${AGENT_MANAGER_AGENT_URL:-}" ]; then
+  # The address an agent on another machine reaches this manager at; kept like the host name.
+  mkdir -p "$UNIT_DIR/agent-manager.service.d"
+  printf '[Service]\nEnvironment="AGENT_MANAGER_AGENT_URL=%s"\n' "$AGENT_MANAGER_AGENT_URL" > "$UNIT_DIR/agent-manager.service.d/agent-url.conf"
+fi
 echo "installed unit $UNIT_DIR/agent-manager.service"
 
 systemctl --user daemon-reload

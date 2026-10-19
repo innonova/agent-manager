@@ -1,14 +1,6 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
-import { MANAGER_CONFIG } from '../config/config.js';
-import type { ManagerConfig } from '../config/config.js';
 
 /** Mirror of the daemon's log record and session record; see agent-daemon/docs/design.md. */
 export interface LogRecord {
@@ -64,17 +56,15 @@ interface DaemonEvents {
 type Frame = Record<string, unknown> & { type: string; ref?: string };
 
 /**
- * The manager's single connection to agent-daemon: request/reply with
- * refs, live events, automatic reconnect. Attachments are the caller's to
- * redo after `connected`. Listener errors are logged and never allowed to
- * break the socket handling.
+ * One connection to one agent-daemon: request/reply with refs, live
+ * events, automatic reconnect. The local daemon's socket is plain; a
+ * spoke's is the tunnel its manager offers at `/api/daemon`, opened with
+ * the hub token (`headers`). Attachments are the caller's to redo after
+ * `connected`. Listener errors are logged and never allowed to break the
+ * socket handling. `DaemonClients` holds one per host and runs them.
  */
-@Injectable()
-export class DaemonClient
-  extends EventEmitter<DaemonEvents>
-  implements OnModuleInit, OnModuleDestroy
-{
-  private readonly logger = new Logger(DaemonClient.name);
+export class DaemonClient extends EventEmitter<DaemonEvents> {
+  private readonly logger: Logger;
   private ws: WebSocket | null = null;
   private pending = new Map<
     string,
@@ -86,15 +76,21 @@ export class DaemonClient
   private reconnectTimer: NodeJS.Timeout | null = null;
   connected = false;
 
-  constructor(@Inject(MANAGER_CONFIG) private readonly config: ManagerConfig) {
+  constructor(
+    /** The host it belongs to, for the log and for the agents service. */
+    readonly host: string,
+    private readonly url: string,
+    private readonly headers: Record<string, string> = {},
+  ) {
     super();
+    this.logger = new Logger(`${DaemonClient.name}:${host}`);
   }
 
-  onModuleInit(): void {
+  open(): void {
     this.connect();
   }
 
-  onModuleDestroy(): void {
+  close(): void {
     this.closing = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     // Nobody should react to the socket closing during shutdown; the
@@ -105,10 +101,10 @@ export class DaemonClient
 
   private connect(): void {
     if (this.closing) return;
-    const ws = new WebSocket(this.config.daemonUrl);
+    const ws = new WebSocket(this.url, { headers: this.headers });
     this.ws = ws;
     ws.on('open', () => {
-      this.logger.log(`connected to daemon at ${this.config.daemonUrl}`);
+      this.logger.log(`connected to daemon at ${this.url}`);
       this.backoff = 500;
       this.connected = true;
       this.safeEmit('connected');

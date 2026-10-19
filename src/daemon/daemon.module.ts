@@ -1,6 +1,10 @@
 import { Global, Module } from '@nestjs/common';
-import { DaemonClient } from './daemon-client.js';
+import { DaemonClients } from './daemon-clients.js';
+import { DaemonTunnelGateway } from './daemon-tunnel.gateway.js';
 
 @Global()
-@Module({ providers: [DaemonClient], exports: [DaemonClient] })
+@Module({
+  providers: [DaemonClients, DaemonTunnelGateway],
+  exports: [DaemonClients],
+})
 export class DaemonModule {}

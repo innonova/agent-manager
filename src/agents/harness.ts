@@ -22,6 +22,8 @@ export interface HarnessContext {
   delegation: 'free' | 'on-request';
   /** Who created the agent: a person, or `agent-<name>` for a helper; null when unknown (agents from before the field). */
   startedBy?: string | null;
+  /** For an agent on another machine: the hub's name, where the project's repositories live; `host` is then the agent's own machine. */
+  hub?: string | null;
   /**
    * The house view of the models (`models.md`), for `{{models}}`: what we
    * have learned about which model suits which work, so an agent that
@@ -65,7 +67,11 @@ export function renderHarnessNote(
     profile: ctx.profile,
     cwd: ctx.cwd,
     permissions: ctx.permissions,
-    repos: ctx.repos.map((r) => `${r.name} (${r.path})`).join(', '),
+    // A remote agent's repositories are on the hub, not beside it; its own
+    // directory is what it has.
+    repos: ctx.hub
+      ? `${ctx.repos.map((r) => `${r.name} (${r.path})`).join(', ')}, on the hub ${ctx.hub}. This session runs on ${ctx.host}, in ${ctx.cwd}; what the project's repositories hold is reached from here by git, not by path`
+      : ctx.repos.map((r) => `${r.name} (${r.path})`).join(', '),
     startedBy: ctx.startedBy ?? 'a person',
     // A description of the project, not an instruction to the agent; nothing
     // for a free project, so its placeholder collapses away with no blank line.

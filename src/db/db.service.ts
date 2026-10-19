@@ -180,6 +180,8 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec('ALTER TABLE agents ADD COLUMN created_by TEXT');
     if (!agentCols.includes('hold_until'))
       this.db.exec('ALTER TABLE agents ADD COLUMN hold_until INTEGER');
+    if (!agentCols.includes('host'))
+      this.db.exec('ALTER TABLE agents ADD COLUMN host TEXT');
     // The review of a run, added after the runs table shipped.
     const runCols = (
       this.db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]

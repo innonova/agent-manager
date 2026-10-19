@@ -570,6 +570,31 @@ covers several machines. Each machine keeps its own daemon and manager
 exactly as before, because a manager's files, changes and features read
 the repositories on its own disk; what is shared is the view.
 
+There are two ways a spoke takes part, and the second is the one to
+build on. A spoke can own projects of its own, fronted by the hub with
+prefixed ids (the rest of this section). Or, since October 2026, **an
+agent of a hub project can run on a spoke**: the project, its
+repositories, features, run log and transcripts all stay on the hub,
+and only the agent's session lives on the spoke's daemon. The hub
+drives that daemon directly, through a websocket the spoke's manager
+offers at `/api/daemon`, opened with the hub token and piped frame for
+frame to the spoke's local daemon (`DaemonTunnelGateway`): the daemon
+itself stays the unauthenticated local component it is, with the tunnel
+as its one door. The hub holds a `DaemonClient` per host
+(`DaemonClients`: its own daemon and one per entry of `spokes.json`),
+and the agents service asks for the client by the agent's `host`; a
+daemon's loss gates only the agents on it, the watchdog skips them, a
+resync reads each agent's own daemon. The agent record carries `host`
+(null here) and, for a remote agent, `cwd` is any absolute path on that
+host (the project's repositories are not checked against it; the agent
+keeps its own checkout in sync by git); it gets no `--add-dir`s, its
+`AGENT_MANAGER_URL` is `AGENT_MANAGER_AGENT_URL` (an address the host
+can reach) rather than the hub's loopback, and its harness note says
+which machine it runs on and that the repositories are on the hub. A
+machine that is a test target rather than a place to build, a Windows
+VM with a desktop, is the case this exists for: the feature stays on the
+hub, the agent that verifies it sits where the desktop is.
+
 - **Spoke**: a manager with `AGENT_MANAGER_HUB_TOKEN` set accepts
   requests and websocket upgrades carrying `Authorization: Bearer
 <token>` plus `X-Acting-User: <name>`; they run as that user, created
@@ -605,8 +630,9 @@ token }]`, `AGENT_MANAGER_SPOKES_FILE` overrides the path; the file
   `spoke-auth`, never as the user's own login expiring. Nothing about a
   spoke is stored on the hub; `spokes.json` is the whole configuration.
 - **Hosts**: `hello` and the `hosts` frame carry `[{ name, local,
-connected, daemon, error? }]`, the hub's link to each spoke, each
-  host's link to its daemon, and what the last request to a spoke said
+connected, daemon, error? }]`, the hub's link to each spoke, the hub's
+  own link to each host's daemon (through the tunnel for a spoke: what
+  an agent there needs), and what the last request to a spoke said
   when it failed; `/api/health` has the same list. A spoke that does
   not answer contributes no projects to the list and its requests fail
   with 502 `spoke-unreachable`; the hub reconnects with backoff.
@@ -1169,7 +1195,7 @@ POST   /api/projects/:id/agents/restart -> { restarted: [agentId], skipped: [{ i
 DELETE /api/projects/:id            (does not touch the repository)
 
 GET    /api/projects/:id/agents                                 -> [{ agent, status }]   status = { state, error, lastActivityAt, background, model, queued, activity }
-POST   /api/projects/:id/agents     { name, profile, cwd?, permissions?, model?, effort? } -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default
+POST   /api/projects/:id/agents     { name, profile, cwd?, permissions?, model?, effort?, host? } -> starts a session; cwd is a repository name or path, default the primary repo; `permissions` is `bypass` (default) or `ask`; `model` and `effort` are vendor names passed at session start, null for the vendor's default; `host` names a spoke the agent's session runs on (then `cwd` is an absolute path there; 400 for a host the hub has no daemon for)
 GET    /api/agents/:id                                          -> { agent, status, sessions }
 PATCH  /api/agents/:id              { name?, model?, effort?, permissions? } -> { agent, status, appliesAtRestart: string[] }; the name applies at once, the rest at the next session start (`appliesAtRestart` lists those that changed while a session is up, so a client can offer a restart); broadcast as `agent.updated`
 GET    /api/agents/:id/items?from=I | tail=N | before=I&limit=N       -> { items: [...], total }; from: everything at or after index I (live sync); tail: the last N; before/limit: the N before index I (paging backwards). Indexes are stable.
@@ -1183,7 +1209,7 @@ POST   /api/agents/:id/archive
 DELETE /api/agents/:id             -> { ok }; forgets the agent for good: process stopped, the daemon's logs of its sessions removed, transcript cache and rows gone (the vendor's own conversation store stays); for helpers whose work is in git and the feature's report
 GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first
 
-GET    /api/profiles                                            -> daemon profiles, each with `supported` (an adapter exists)
+GET    /api/profiles[?host=<name>]                              -> daemon profiles (of that spoke's daemon with `host`; 404 for an unknown host), each with `supported` (an adapter exists)
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
 GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
 PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there
@@ -1341,6 +1367,7 @@ swept once a minute.
 | `AGENT_MANAGER_ADMIN_PASSWORD`            | unset                                | creates the first admin on first start                                                                                                                                                                                           |
 | `AGENT_MANAGER_HOST_NAME`                 | the short hostname                   | how this machine is named in `project.host` and to a hub                                                                                                                                                                         |
 | `AGENT_MANAGER_SSH_HOST`                  | `AGENT_MANAGER_HOST_NAME`            | how a person's own machine reaches this one over SSH (`host` or `user@host`), reported as `project.sshHost` for the links that open a project in VS Code                                                                         |
+| `AGENT_MANAGER_AGENT_URL`                 | unset                                | the address an agent on another machine reaches this manager at, as its `AGENT_MANAGER_URL` (the listening address otherwise, which only local agents can use)                                                                   |
 | `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
 | `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
 | `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |

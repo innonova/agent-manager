@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
-import { DaemonClient } from '../src/daemon/daemon-client.js';
+import { DaemonClients } from '../src/daemon/daemon-clients.js';
 import { DbService } from '../src/db/db.service.js';
 import {
   Api,
@@ -1390,7 +1390,7 @@ describe('agents', () => {
     );
     expect((await api.get(`/api/agents/${agent.id}`)).status).toBe(404);
     expect((await api.get(`/api/projects/${p.id}/agents`)).body).toEqual([]);
-    const daemonIds = (await m.app.get(DaemonClient).listSessions()).map(
+    const daemonIds = (await m.app.get(DaemonClients).local.listSessions()).map(
       (s) => s.id,
     );
     expect(daemonIds).not.toContain(sessions[0].daemonSessionId);
@@ -1511,7 +1511,7 @@ describe('resilience', () => {
       mark,
     );
     // drop only the manager's socket to the daemon; the agent keeps talking and then exits
-    (m.app.get(DaemonClient) as unknown as { ws: WebSocket }).ws.terminate();
+    (m.app.get(DaemonClients).local as unknown as { ws: WebSocket }).ws.terminate();
     await events.waitFor(
       (f) => f.type === 'daemon' && f.connected === false,
       10000,

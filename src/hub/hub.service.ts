@@ -6,19 +6,12 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
-import fs from 'node:fs';
-import path from 'node:path';
 import WebSocket from 'ws';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
-import { DaemonClient } from '../daemon/daemon-client.js';
-
-/** One remote manager this one fronts for. */
-export interface Spoke {
-  name: string;
-  url: string;
-  token: string;
-}
+import { DaemonClients } from '../daemon/daemon-clients.js';
+import { loadSpokes, type Spoke } from './spokes.js';
+export type { Spoke } from './spokes.js';
 
 export interface HostStatus {
   name: string;
@@ -43,7 +36,6 @@ const LIST_TIMEOUT_MS = 4_000;
 /** A spoke socket that has not opened, or not sent anything (it pings every 25 s), by then is dead. */
 const OPEN_TIMEOUT_MS = 10_000;
 const SILENCE_TIMEOUT_MS = 90_000;
-const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
 /** Ids on a spoke are uuids; anything else is not forwarded (a `..` would leave the project/agent routes). */
 export const REMOTE_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -88,7 +80,7 @@ export class HubService
 
   constructor(
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
-    private readonly daemon: DaemonClient,
+    private readonly daemons: DaemonClients,
   ) {
     super();
     for (const s of loadSpokes(config.spokesFile, config.hostName, this.logger))
@@ -131,7 +123,7 @@ export class HubService
         name: this.config.hostName,
         local: true,
         connected: true,
-        daemon: this.daemon.connected,
+        daemon: this.daemons.local.connected,
       },
       ...[...this.spokes.keys()].map((name) => {
         const l = this.links.get(name);
@@ -139,7 +131,8 @@ export class HubService
           name,
           local: false,
           connected: l?.connected ?? false,
-          daemon: l?.daemon ?? false,
+          // the host's daemon as the hub reaches it through the tunnel: what an agent there needs
+          daemon: this.daemons.for(name)?.connected ?? false,
           ...(l?.error ? { error: l.error } : {}),
         };
       }),
@@ -448,63 +441,6 @@ export class HubService
  * the file is readable by other users (the tokens are credentials).
  * Errors never quote an entry, since the entry holds the token.
  */
-function loadSpokes(file: string, localName: string, logger: Logger): Spoke[] {
-  let raw: string;
-  try {
-    const st = fs.statSync(file);
-    if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) {
-      logger.error(
-        `${file} is readable by other users; chmod 600 it (the spokes are ignored until then)`,
-      );
-      return [];
-    }
-    raw = fs.readFileSync(file, 'utf8');
-  } catch {
-    return [];
-  }
-  let list: unknown;
-  try {
-    list = JSON.parse(raw);
-  } catch {
-    logger.error(`${path.basename(file)} ignored: not valid JSON`); // never the parser's message: it quotes the text
-    return [];
-  }
-  try {
-    if (!Array.isArray(list)) throw new Error('not a list');
-    const out: Spoke[] = [];
-    for (const [i, s] of (list as Record<string, unknown>[]).entries()) {
-      const name = String(s?.name ?? '');
-      const url = String(s?.url ?? '');
-      const token = String(s?.token ?? '');
-      if (!NAME_RE.test(name)) throw new Error(`entry ${i + 1}: bad name`);
-      if (name === localName)
-        throw new Error(
-          `entry ${i + 1} (${name}): a spoke cannot be named like this machine (AGENT_MANAGER_HOST_NAME)`,
-        );
-      if (out.some((o) => o.name === name))
-        throw new Error(`entry ${i + 1} (${name}): the name repeats`);
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new Error(`entry ${i + 1} (${name}): bad url`);
-      }
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-        throw new Error(`entry ${i + 1} (${name}): url must be http(s)`);
-      if (!token) throw new Error(`entry ${i + 1} (${name}): no token`);
-      out.push({
-        name,
-        url: parsed.origin + parsed.pathname.replace(/\/$/, ''),
-        token,
-      });
-    }
-    return out;
-  } catch (err) {
-    logger.error(`${path.basename(file)} ignored: ${(err as Error).message}`);
-    return [];
-  }
-}
-
 function withHost(row: unknown, host: string): unknown {
   if (row && typeof row === 'object' && 'project' in row) {
     const r = row as { project: Record<string, unknown> };

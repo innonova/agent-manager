@@ -93,12 +93,17 @@ describe('harness note', () => {
     expect(free).toContain('.\n- `am`, the manager');
     expect(free).not.toMatch(/\n\n\n/);
 
-    const onRequest = renderHarnessNote(shipped, { ...ctx, delegation: 'on-request' })!;
+    const onRequest = renderHarnessNote(shipped, {
+      ...ctx,
+      delegation: 'on-request',
+    })!;
     expect(onRequest).toContain(
       'In this project, agents delegate only when a person has expressly asked for it in the conversation.',
     );
     // it sits directly under the project line
-    expect(onRequest).toMatch(/its repositories:[^\n]*\.\n- In this project, agents delegate/);
+    expect(onRequest).toMatch(
+      /its repositories:[^\n]*\.\n- In this project, agents delegate/,
+    );
     // description, not an instruction to the agent
     expect(onRequest).not.toMatch(/\b(never|always|do not|must)\b/i);
   });
