@@ -49,14 +49,22 @@ else { Write-Warning "no UI build at $UiDist; API only (build agent-manager-ui a
 
 # the fake profile lets the UI be used without spending tokens
 $fake = @{ description = 'fake agent for development and tests (agent-manager)'; command = $Node; args = @("$Lib\fixtures\fake-agent.mjs") }
-$fake | ConvertTo-Json | Set-Content -Path (Join-Path $DaemonConfig 'profiles\fake.json') -Encoding UTF8
+[IO.File]::WriteAllText((Join-Path $DaemonConfig 'profiles\fake.json'), ($fake | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) # no byte-order mark
 
 $Log = Join-Path $State 'manager.log'
 $Env = Join-Path $Lib 'env.cmd'
+# Settings not given this run are kept from the last one, like the systemd
+# drop-ins on Linux survive a reinstall; a re-run with no parameters is an
+# upgrade, not a reset.
+$kept = @{}
+if (Test-Path $Env) {
+  foreach ($l in Get-Content $Env) { if ($l -match '^set (AGENT_MANAGER_(ADMIN_PASSWORD|HUB_TOKEN|HOST_NAME))=(.*)$') { $kept[$Matches[1]] = $Matches[3] } }
+}
+if ($AdminPassword -ne '') { $kept['AGENT_MANAGER_ADMIN_PASSWORD'] = $AdminPassword }
+if ($HubToken -ne '')      { $kept['AGENT_MANAGER_HUB_TOKEN'] = $HubToken }
+if ($HostName -ne '')      { $kept['AGENT_MANAGER_HOST_NAME'] = $HostName }
 $lines = @('@echo off', "set AGENT_MANAGER_LISTEN=$Listen", "set AGENT_MANAGER_UI_DIR=$Lib\ui", 'set ELECTRON_RUN_AS_NODE=', "set PATH=$env:USERPROFILE\.local\bin;$env:PATH")
-if ($AdminPassword -ne '') { $lines += "set AGENT_MANAGER_ADMIN_PASSWORD=$AdminPassword" }
-if ($HubToken -ne '')      { $lines += "set AGENT_MANAGER_HUB_TOKEN=$HubToken" }
-if ($HostName -ne '')      { $lines += "set AGENT_MANAGER_HOST_NAME=$HostName" }
+foreach ($k in $kept.Keys) { $lines += "set $k=$($kept[$k])" }
 $lines | Set-Content -Path $Env -Encoding ASCII
 # this user only: the file holds credentials
 icacls $Env /inheritance:r /grant:r "${env:USERNAME}:F" | Out-Null
