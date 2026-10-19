@@ -30,7 +30,16 @@ if ($UiDist -eq '') { $UiDist = Join-Path $Root '..\agent-manager-ui\dist' }
 
 Write-Host "building in $Root"
 Push-Location $Root
-try { npm run build | Out-Null } finally { Pop-Location }
+try { npm run build | Out-Null; if ($LASTEXITCODE) { throw "npm run build failed ($LASTEXITCODE)" } } finally { Pop-Location }
+
+# Stop a running install first: Windows will not let npm replace files a
+# process holds open, and a half-replaced node_modules is worse than none.
+if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
+  Stop-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
+  # Windows PowerShell 5 has no CommandLine on Get-Process; WMI has it
+  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*agent-manager\lib\dist\main.js*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Unregister-ScheduledTask -TaskName $Task -Confirm:$false
+}
 
 New-Item -ItemType Directory -Force $Lib, $State, (Join-Path $DaemonConfig 'profiles') | Out-Null
 foreach ($d in 'dist', 'fixtures', 'ui') { Remove-Item -Recurse -Force (Join-Path $Lib $d) -ErrorAction SilentlyContinue }
@@ -39,10 +48,12 @@ Copy-Item (Join-Path $Root 'package.json'), (Join-Path $Root 'package-lock.json'
 Push-Location $Lib
 try {
   npm ci --omit=dev --ignore-scripts | Out-Null
+  if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
   # the two native modules fetch their prebuilt binaries in their install
   # scripts; npm 11.16+ runs no install script it has not been told to allow
   npm approve-scripts better-sqlite3 argon2 2>$null | Out-Null
   npm rebuild better-sqlite3 argon2 | Out-Null
+  if ($LASTEXITCODE) { throw "npm rebuild failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 if (Test-Path $UiDist) { Copy-Item -Recurse $UiDist (Join-Path $Lib 'ui'); Write-Host "UI from $UiDist" }
 else { Write-Warning "no UI build at $UiDist; API only (build agent-manager-ui and re-run)" }
@@ -78,12 +89,6 @@ $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $trigger.Delay = 'PT5S' # after the daemon's task
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
-  Stop-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
-  # Windows PowerShell 5 has no CommandLine on Get-Process; WMI has it
-  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*agent-manager\lib\dist\main.js*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-  Unregister-ScheduledTask -TaskName $Task -Confirm:$false
-}
 Register-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'agent-manager: projects, agents and the UI on top of agent-daemon' | Out-Null
 Write-Host "registered scheduled task $Task (at logon of $env:USERNAME, interactive)"
 
