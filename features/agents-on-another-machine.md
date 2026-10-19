@@ -1,6 +1,6 @@
 ---
 title: an agent of a project here can run on another machine
-status: in-progress
+status: review
 priority: 2
 dependsOn: []
 ---
@@ -77,3 +77,54 @@ A `DaemonClients` service holding the local client and one per spoke
 daemon and pipes frames both ways. The hub e2e (two managers, two
 daemons) can create an agent of a hub project on host `vibe` with the
 spoke daemon's fake profile and see its transcript on the hub.
+
+## Report (2026-10-19)
+
+Gated alone (manager unit 123, lint clean, e2e 131 with a new hub case;
+UI 25; CLI 8). Deployed: hub reinstalled with
+`AGENT_MANAGER_AGENT_URL=http://192.168.80.81:4268`, the UI and `am`
+swapped in, the spoke's manager rebuilt from the new tree.
+
+**Changed.** `DaemonClient` is a plain class, one per daemon, opened
+with a URL and headers; `DaemonClients` holds the hub's own and one per
+`spokes.json` entry (the loader moved to `src/hub/spokes.ts`) and
+re-emits their events with the host. `DaemonTunnelGateway` on
+`/api/daemon` accepts the hub token and pipes frames to the local
+daemon. The agents service asks for the client by the agent's `host`
+(new column, `Live.host`); a daemon's loss gates only its agents, the
+watchdog skips agents whose daemon is away, a resync reads each agent's
+own daemon. `POST .../agents` takes `host` (must be a configured spoke;
+`cwd` then an absolute path there, Windows or POSIX, unchecked against
+the repositories); a remote agent gets no `--add-dir`, its
+`AGENT_MANAGER_URL` is `AGENT_MANAGER_AGENT_URL`, and its note says
+which machine it runs on and that the repositories are on the hub.
+`GET /api/profiles?host=` lists a spoke's daemon profiles. The hosts
+status reports the hub's tunnel to each daemon. UI: a Machine select in
+the new-agent form when there are several hosts, a path field and the
+host's profiles for a remote one, a host chip in the agent details.
+CLI: `am new --host H --cwd PATH`. Installer: `agent-url.conf` drop-in.
+Docs: the manager's Hub and spokes section, the API lines, the env
+table; the UI's hub section; the README.
+
+**Verified.** The hub e2e: an agent of a hub project on host `vibe`
+with the spoke daemon's fake profile; 400 for an unknown host and a
+relative path; the session listed on the spoke's daemon and not the
+hub's; the note's wording; a turn answered through the tunnel; the
+hosts picture. Then for real: `win-scout`, an agent of agent-system on
+`win`, took a screenshot of the VM's desktop from console session 2 and
+reported `AGENT_MANAGER_URL` as the hub's LAN address. The spoke-owned
+`playground` project is deleted.
+
+**Left open.** `am` is not installed on the VM, so a remote agent's
+`am hold`/`am learn` do not work yet; the CLI's Windows install is a
+small follow-up. A remote agent cannot edit a feature file (the file is
+on the hub): the starting agent writes the report from its answer, or a
+report route comes later. The files and changes views stay the
+project's; a remote agent's own tree is not browsable. The spoke-owned
+project model is still there; nothing new is built on it. Auto-logon on
+the VM is the person's call.
+
+**Noticed, left alone.** The hub's tunnel client logs "socket hang up"
+every backoff while a spoke runs an older manager; harmless, and gone
+once the spoke is updated. Session ids are the daemons' UUIDs; two
+daemons colliding is not handled, by the odds.
