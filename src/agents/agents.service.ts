@@ -1482,6 +1482,7 @@ export class AgentsService
         repos,
         delegation,
         startedBy: agent.createdBy,
+        hosts: this.daemons.remoteHosts(),
         // the house view of the models, read the same way as the note
         // itself: at session start, so an edit reaches an agent at its
         // next restart and not before

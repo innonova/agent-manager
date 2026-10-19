@@ -45,6 +45,18 @@ describe('harness note', () => {
       renderHarnessNote(shipped, { ...ctx, startedBy: 'agent-boss' }),
     ).toContain('started by agent-boss');
     expect(note).not.toContain('{{permissions}}'); // the CLI's own setting, not the harness's to state
+    // other machines: a line only when there are some, naming what each is for
+    expect(note).not.toContain('another machine');
+    const withHosts = renderHarnessNote(shipped, {
+      ...ctx,
+      hosts: [
+        { name: 'win', description: 'a Windows 11 VM with a desktop' },
+        { name: 'mac' },
+      ],
+    })!;
+    expect(withHosts).toContain('win (a Windows 11 VM with a desktop); mac');
+    expect(withHosts).toContain('am new "demo" <name> --host <machine>');
+    expect(withHosts).not.toMatch(/\{\{/);
     expect(note).toContain('features/<slug>.md');
     expect(note).not.toMatch(/\{\{/);
     // description, not procedure: the note tells the agent nothing to do

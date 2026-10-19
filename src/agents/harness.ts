@@ -24,6 +24,8 @@ export interface HarnessContext {
   startedBy?: string | null;
   /** For an agent on another machine: the hub's name, where the project's repositories live; `host` is then the agent's own machine. */
   hub?: string | null;
+  /** The other machines an agent of this project can be started on, for `{{hosts}}`: nothing when there are none. */
+  hosts?: { name: string; description?: string }[];
   /**
    * The house view of the models (`models.md`), for `{{models}}`: what we
    * have learned about which model suits which work, so an agent that
@@ -73,6 +75,15 @@ export function renderHarnessNote(
       ? `${ctx.repos.map((r) => `${r.name} (${r.path})`).join(', ')}, on the hub ${ctx.hub}. This session runs on ${ctx.host}, in ${ctx.cwd}; what the project's repositories hold is reached from here by git, not by path`
       : ctx.repos.map((r) => `${r.name} (${r.path})`).join(', '),
     startedBy: ctx.startedBy ?? 'a person',
+    // Other machines, as a fact with a way to use it; the placeholder
+    // collapses away when there are none, like the delegation line.
+    hosts: ctx.hosts?.length
+      ? `\n- An agent of this project can also run on another machine, its session there and the project here: ${ctx.hosts
+          .map((h) => (h.description ? `${h.name} (${h.description})` : h.name))
+          .join(
+            '; ',
+          )}. \`am new "${ctx.project}" <name> --host <machine> --cwd <an absolute path there>\` starts one; it works in that directory, usually a checkout of the project it keeps in sync itself, and reports here.`
+      : '',
     // A description of the project, not an instruction to the agent; nothing
     // for a free project, so its placeholder collapses away with no blank line.
     delegation:

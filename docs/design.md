@@ -584,7 +584,10 @@ as its one door. The hub holds a `DaemonClient` per host
 (`DaemonClients`: its own daemon and one per entry of `spokes.json`),
 and the agents service asks for the client by the agent's `host`; a
 daemon's loss gates only the agents on it, the watchdog skips them, a
-resync reads each agent's own daemon. The agent record carries `host`
+resync reads each agent's own daemon. Every agent's note names the
+other machines (`{{hosts}}`, from `spokes.json`'s optional
+`description` per spoke) and the `am new --host` that starts one
+there, so an agent that could use a desktop knows one exists. The agent record carries `host`
 (null here) and, for a remote agent, `cwd` is any absolute path on that
 host (the project's repositories are not checked against it; the agent
 keeps its own checkout in sync by git); it gets no `--add-dir`s, its

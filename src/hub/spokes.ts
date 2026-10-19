@@ -7,6 +7,8 @@ export interface Spoke {
   name: string;
   url: string;
   token: string;
+  /** What the machine is and is for, in a phrase: told to every agent, so one that could use it knows it exists. */
+  description?: string;
 }
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/; // a host name, as hub.service checks it
@@ -65,10 +67,15 @@ export function loadSpokes(
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
         throw new Error(`entry ${i + 1} (${name}): url must be http(s)`);
       if (!token) throw new Error(`entry ${i + 1} (${name}): no token`);
+      const description =
+        typeof s?.description === 'string' && s.description.trim()
+          ? s.description.trim().slice(0, 200)
+          : undefined;
       out.push({
         name,
         url: parsed.origin + parsed.pathname.replace(/\/$/, ''),
         token,
+        ...(description ? { description } : {}),
       });
     }
     return out;
