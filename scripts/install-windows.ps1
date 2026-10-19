@@ -53,7 +53,7 @@ $fake | ConvertTo-Json | Set-Content -Path (Join-Path $DaemonConfig 'profiles\fa
 
 $Log = Join-Path $State 'manager.log'
 $Env = Join-Path $Lib 'env.cmd'
-$lines = @('@echo off', "set AGENT_MANAGER_LISTEN=$Listen", "set AGENT_MANAGER_UI_DIR=$Lib\ui", 'set ELECTRON_RUN_AS_NODE=', "set PATH=$env:PATH")
+$lines = @('@echo off', "set AGENT_MANAGER_LISTEN=$Listen", "set AGENT_MANAGER_UI_DIR=$Lib\ui", 'set ELECTRON_RUN_AS_NODE=', "set PATH=$env:USERPROFILE\.local\bin;$env:PATH")
 if ($AdminPassword -ne '') { $lines += "set AGENT_MANAGER_ADMIN_PASSWORD=$AdminPassword" }
 if ($HubToken -ne '')      { $lines += "set AGENT_MANAGER_HUB_TOKEN=$HubToken" }
 if ($HostName -ne '')      { $lines += "set AGENT_MANAGER_HOST_NAME=$HostName" }
