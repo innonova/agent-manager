@@ -74,6 +74,7 @@ export class ClaudeAdapter implements AgentAdapter {
     model,
     effort,
     note,
+    settings,
   }: {
     resume?: string | null;
     extraDirs?: string[];
@@ -81,6 +82,7 @@ export class ClaudeAdapter implements AgentAdapter {
     model?: string | null;
     effort?: string | null;
     note?: string | null;
+    settings?: string | null;
   }): string[] {
     // Ask mode: gated tools produce a control_request on stdout that we
     // answer on stdin; without the flag Claude just denies them.
@@ -93,6 +95,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (effort) args.push('--effort', effort);
     for (const d of extraDirs) args.push('--add-dir', d); // the project's other repositories
     if (note) args.push('--append-system-prompt', note); // the harness note, per process: a restart carries the current one
+    if (settings) args.push('--settings', settings); // the manager's hooks (the clock), merged over the person's own settings
     return args;
   }
 

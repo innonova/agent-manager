@@ -1389,6 +1389,7 @@ export class AgentsService
           model: agent.model,
           effort: agent.effort,
           note,
+          settings: agent.host ? null : await this.claudeSettingsFile(), // the file and its hook are on this disk
         }),
         cwd: agent.cwd,
         env: { ...own, ...(await this.noteEnv(agent, adapter, note)) },
@@ -2261,6 +2262,38 @@ export class AgentsService
       this.gate(live);
     }
   }
+
+  /**
+   * A settings file for Claude sessions started here, with the clock hook
+   * on: `<dataDir>/claude-settings.json`, written on first use and
+   * whenever the interval or the paths changed. Null when the clock is
+   * off. Claude merges it over the person's own settings on the machine,
+   * so their hooks stay. The hook's command quotes both paths: node and
+   * the script can sit under a path with spaces, as on Windows.
+   */
+  private async claudeSettingsFile(): Promise<string | null> {
+    if (!this.config.clockMs) return null;
+    const file = path.join(this.config.dataDir, 'claude-settings.json');
+    const command = `"${process.execPath}" "${this.config.clockHook}" --every ${this.config.clockMs}`;
+    const text = `${JSON.stringify(
+      {
+        hooks: {
+          PostToolUse: [
+            { matcher: '', hooks: [{ type: 'command', command, timeout: 10 }] },
+          ],
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    if (this.claudeSettingsWritten !== text) {
+      await fs.mkdir(this.config.dataDir, { recursive: true });
+      await fs.writeFile(file, text);
+      this.claudeSettingsWritten = text;
+    }
+    return file;
+  }
+  private claudeSettingsWritten: string | null = null;
 
   /** The daemon an agent's sessions live on; a host that is not configured here cannot be driven. */
   private daemonOf(agent: Pick<Agent, 'host'>): DaemonClient {

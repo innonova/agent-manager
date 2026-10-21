@@ -241,6 +241,8 @@ export interface AgentAdapter {
     effort?: string | null;
     /** The harness note, for vendors that take instructions as an argument. */
     note?: string | null;
+    /** A settings file of the manager's, for vendors that take one (Claude: the clock hook). */
+    settings?: string | null;
   }): string[];
   /**
    * For vendors that read instructions from a file: its name. The manager

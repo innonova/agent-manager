@@ -35,6 +35,10 @@ export interface ManagerConfig {
   workspacesDir: string | null;
   /** The address an agent on another machine reaches this manager at (its `AGENT_MANAGER_URL`); null means the listening address, which is right for local agents only. */
   agentUrl: string | null;
+  /** How often, at most, a Claude agent is told the time beside a tool result (ms); 0 never. */
+  clockMs: number;
+  /** The hook script that does it, shipped beside the fake agent. */
+  clockHook: string;
   /** Accepted as a bearer token by another manager acting as a hub; null means no hub may. */
   hubToken: string | null;
   /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
@@ -138,6 +142,14 @@ export function loadConfig(
       'local',
     workspacesDir: env.AGENT_MANAGER_WORKSPACES_DIR || null,
     agentUrl: env.AGENT_MANAGER_AGENT_URL?.replace(/\/$/, '') || null,
+    clockMs: Number(env.AGENT_MANAGER_CLOCK_MS ?? 10 * 60_000),
+    clockHook: path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'fixtures',
+      'clock-hook.mjs',
+    ),
     hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,
     spokesFile:
       env.AGENT_MANAGER_SPOKES_FILE ??

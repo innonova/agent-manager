@@ -984,6 +984,12 @@ describe('ClaudeAdapter', () => {
       '--append-system-prompt',
       'You run here.',
     ]);
+    // the manager's settings file (the clock hook) rides along when given
+    expect(a.startArgs({ settings: '/d/claude-settings.json' })).toEqual([
+      '--dangerously-skip-permissions',
+      '--settings',
+      '/d/claude-settings.json',
+    ]);
     expect(
       a.startArgs({ resume: null, extraDirs: ['/r/ui', '/r/api'] }),
     ).toEqual([

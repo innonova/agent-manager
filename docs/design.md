@@ -563,6 +563,28 @@ once, retire every pending request when the turn ends or errors, derive
 decided when our answer appears as an input record. A decision is sent
 under the agent's lock on a replayed session, like a turn.
 
+## The clock: agents told the time
+
+An agent with a time box overestimates the passage of time: nothing in
+a conversation says how long a tool call took or how long the turn has
+run. So a Claude session started here gets a clock: a PostToolUse hook
+(`fixtures/clock-hook.mjs`, shipped beside the fake agent) that prints
+`additionalContext` with the local date and time, at most once per
+`AGENT_MANAGER_CLOCK_MS` per session, and on the first tool call of a
+session so the agent starts on the clock. Claude attaches it to the
+tool result for the model ("PostToolUse:Bash hook additional context:
+The time is …"), where nothing in the transcript shows it, which is
+the point: the agent is grounded without a message. The manager turns
+it on with `--settings <dataDir>/claude-settings.json`, written on
+first use with the hook's command (node and the script, both quoted,
+since on Windows both sit under paths with spaces); Claude merges it
+over the person's own settings, so their hooks on that machine stay.
+The hook keeps a stamp per session under the temp dir. Not for an
+agent on another machine (the file and the script are this disk's)
+and not for Codex or Copilot, which have no such hook; the daemon
+knows nothing of it. Verified in headless stream-json mode before it
+was built: the context reaches the model there as it does interactively.
+
 ## Notes: the small actionable items
 
 A project's notes are the person's small actionable items about it,
@@ -1399,6 +1421,7 @@ swept once a minute.
 | `AGENT_MANAGER_HOST_NAME`                 | the short hostname                   | how this machine is named in `project.host` and to a hub                                                                                                                                                                         |
 | `AGENT_MANAGER_SSH_HOST`                  | `AGENT_MANAGER_HOST_NAME`            | how a person's own machine reaches this one over SSH (`host` or `user@host`), reported as `project.sshHost` for the links that open a project in VS Code                                                                         |
 | `AGENT_MANAGER_AGENT_URL`                 | unset                                | the address an agent on another machine reaches this manager at, as its `AGENT_MANAGER_URL` (the listening address otherwise, which only local agents can use)                                                                   |
+| `AGENT_MANAGER_CLOCK_MS`                  | `600000` (10 min)                    | how often, at most, a Claude agent started here is told the time beside a tool result (see Agents: the clock); 0 never                                                                                                           |
 | `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
 | `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
 | `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |
