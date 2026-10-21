@@ -6,11 +6,11 @@ import { randomBytes } from 'node:crypto';
  * A project's notes: the person's small actionable items about it, written
  * as they come up, often while an agent works on something else. Not
  * features: no report, no status beyond done, no gate per item. One file
- * per note under `notes/` in the primary repository, beside `features/`,
- * so adding one never touches a file an agent is editing and ticking one
- * is a one-line change in one small file:
+ * per note under the manager's data directory, `notes/<project id>/<id>.md`,
+ * and deliberately not in the repository: a note added while an agent
+ * works would otherwise land in its next commit, and a tick would dirty
+ * its tree mid-feature. Agents reach them through `am notes`.
  *
- *     notes/k3f9a.md
  *     ---
  *     date: 2026-10-21
  *     done: false
@@ -20,10 +20,9 @@ import { randomBytes } from 'node:crypto';
  *     In the right panel, the same numbers the hangar shows.
  *
  * The id is the file name; the first line of the text is the title, the
- * rest its body. An agent ticks a note by `am note done <id>` or by
- * writing `done: true` itself; both are the same edit.
+ * rest its body. One file per note, so adding never touches a file being
+ * edited and ticking is a one-line change in one small file.
  */
-export const NOTES_DIR = 'notes';
 
 export interface NoteItem {
   id: string;
@@ -79,10 +78,10 @@ export function splitText(text: string): { title: string; body: string } {
   };
 }
 
-export const notesDir = (repoPath: string): string =>
-  path.join(repoPath, NOTES_DIR);
-export const notePath = (repoPath: string, id: string): string =>
-  path.join(repoPath, NOTES_DIR, `${id}.md`);
+/** The directory is the base itself: `<dataDir>/notes/<project id>`, handed in by the service. */
+export const notesDir = (base: string): string => base;
+export const notePath = (base: string, id: string): string =>
+  path.join(base, `${id}.md`);
 
 /** Every note, open first, then by date and id; a missing directory is no notes. */
 export async function readNotes(repoPath: string): Promise<NoteItem[]> {

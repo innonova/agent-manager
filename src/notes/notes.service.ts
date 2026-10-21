@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -7,6 +8,9 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
+import { MANAGER_CONFIG } from '../config/config.js';
+import type { ManagerConfig } from '../config/config.js';
 import { ProjectsService } from '../projects/projects.service.js';
 import {
   newNoteId,
@@ -21,7 +25,7 @@ import {
 } from './notes-file.js';
 
 export interface Notes {
-  /** Where they live, relative to the primary repository. */
+  /** Where they live on the manager's disk, for the curious; not in any repository. */
   dir: string;
   items: NoteItem[];
   /** Open items, for a count. */
@@ -45,7 +49,10 @@ export class NotesService
   private readonly seen = new Map<string, number>();
   private polling = false;
 
-  constructor(private readonly projects: ProjectsService) {
+  constructor(
+    @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
+    private readonly projects: ProjectsService,
+  ) {
     super();
   }
 
@@ -64,13 +71,16 @@ export class NotesService
     if (this.timer) clearInterval(this.timer);
   }
 
+  /** The project's directory under the manager's data dir; the project must exist. */
   private repoOf(projectId: string): string {
-    return this.projects.get(projectId).path;
+    this.projects.get(projectId);
+    return path.join(this.config.dataDir, 'notes', projectId);
   }
 
   async read(projectId: string): Promise<Notes> {
-    const items = await readNotes(this.repoOf(projectId));
-    return { dir: 'notes', items, open: items.filter((i) => !i.done).length };
+    const dir = this.repoOf(projectId);
+    const items = await readNotes(dir);
+    return { dir, items, open: items.filter((i) => !i.done).length };
   }
 
   async add(projectId: string, text: unknown): Promise<Notes> {
@@ -127,7 +137,9 @@ export class NotesService
     this.polling = true;
     try {
       for (const p of this.projects.list()) {
-        const mtime = await notesMtime(p.path);
+        const mtime = await notesMtime(
+          path.join(this.config.dataDir, 'notes', p.id),
+        );
         const last = this.seen.get(p.id);
         if (last === undefined) {
           this.seen.set(p.id, mtime); // first sight: nothing changed yet

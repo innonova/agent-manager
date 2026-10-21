@@ -570,21 +570,21 @@ written as they come up, often while an agent works on something else:
 "show the stats of the selected weapon", never a feature, still a thing
 to do. Not a scratchpad (each is one item with an id and a done state)
 and not a feature (no report, no status beyond done, no gate per item).
-One file per note, `notes/<id>.md` in the primary repository beside
-`features/`, with `date` and `done` in a front matter and the text
-below, the first line its title: so adding a note never touches a file
-an agent is editing, ticking one is a one-line change in one small
-file, and the files read as themselves in any checkout. `NotesService`
-lists them open first (then by date), adds (a fresh five-character id),
-ticks, edits and removes through `/api/projects/:id/notes`, and polls
-the directory every three seconds so an agent ticking a note by editing
-its file (`done: true`) reaches every tab as `notes.changed`. A file
-written by hand without a front matter is a note too, open and undated.
-Agents learn of the directory and of `am notes` / `am note done` from
-the harness note; a session's environment carries
-`AGENT_MANAGER_PROJECT` so `am notes` inside one needs no project name.
-"Take care of the notes" is the whole protocol: work through them, tick
-each as it is done, gate the batch once, say what each came to.
+One file per note, `<dataDir>/notes/<project id>/<id>.md`, with `date`
+and `done` in a front matter and the text below, the first line its
+title. Deliberately not in the repository: a note added while an agent
+works would land in its next commit, and a tick would dirty its tree
+mid-feature; notes are the person's working list, not the project's
+record, so they live with the manager like the run log, and agents
+reach them through `am notes` (a remote agent the same way). One file
+per note so adding never touches a file being edited and ticking is a
+one-line change in one small file. `NotesService` lists them open first
+(then by date), adds (a fresh five-character id), ticks, edits and
+removes through `/api/projects/:id/notes`, and polls the directory
+every three seconds so a tick by hand reaches every tab as
+`notes.changed`. Agents learn of them from the harness note; a
+session's environment carries `AGENT_MANAGER_PROJECT` so `am notes`
+inside one needs no project name.
 
 ## Hub and spokes: several machines in one UI
 

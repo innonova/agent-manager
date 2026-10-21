@@ -5,8 +5,8 @@ import { startDaemon, startManager, Api, Events, sleep } from './helpers.js';
 import type { TestDaemon, TestManager } from './helpers.js';
 
 /**
- * A project's notes: small actionable items, one file each under
- * `notes/` in the primary repository. Added from the UI while an agent
+ * A project's notes: small actionable items, one file each under the
+ * manager's data directory, never the repository. Added from the UI while an agent
  * works, ticked by the agent (through the API or by editing the file),
  * and every tab hears about it.
  */
@@ -36,11 +36,9 @@ afterAll(async () => {
 
 describe('notes', () => {
   it('adds, lists open first, ticks, edits and removes; each change is a file and an event', async () => {
-    expect((await api.get(`/api/projects/${project.id}/notes`)).body).toEqual({
-      dir: 'notes',
-      items: [],
-      open: 0,
-    });
+    const first = (await api.get(`/api/projects/${project.id}/notes`)).body;
+    expect(first).toMatchObject({ items: [], open: 0 });
+    expect(first.dir).toBe(path.join(m.dataDir, 'notes', project.id)); // the manager's disk, never the repository
     let mark = events.mark();
     const added = await api.post(`/api/projects/${project.id}/notes`, {
       text: 'show the stats of the selected weapon\n\nIn the right panel, the same numbers the hangar shows.',
@@ -54,7 +52,9 @@ describe('notes', () => {
     });
     expect(it.id).toMatch(/^[a-z0-9]{5}$/);
     expect(it.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(fs.existsSync(path.join(repo, 'notes', `${it.id}.md`))).toBe(true);
+    expect(
+      fs.existsSync(path.join(m.dataDir, 'notes', project.id, `${it.id}.md`)),
+    ).toBe(true);
     await events.waitFor(
       (f) =>
         f.type === 'notes.changed' &&
@@ -80,7 +80,10 @@ describe('notes', () => {
     ]);
     expect(ticked.body.open).toBe(1);
     expect(
-      fs.readFileSync(path.join(repo, 'notes', `${it.id}.md`), 'utf8'),
+      fs.readFileSync(
+        path.join(m.dataDir, 'notes', project.id, `${it.id}.md`),
+        'utf8',
+      ),
     ).toContain('done: true');
     // edited text keeps the id and the date
     const edited = (
@@ -116,7 +119,9 @@ describe('notes', () => {
     expect(
       (await api.delete(`/api/projects/${project.id}/notes/${it.id}`)).status,
     ).toBe(200);
-    expect(fs.existsSync(path.join(repo, 'notes', `${it.id}.md`))).toBe(false);
+    expect(
+      fs.existsSync(path.join(m.dataDir, 'notes', project.id, `${it.id}.md`)),
+    ).toBe(false);
     expect(
       (await api.delete(`/api/projects/${project.id}/notes/${it.id}`)).status,
     ).toBe(404);
@@ -128,7 +133,7 @@ describe('notes', () => {
     ).body.items.find((x: { title: string }) => x.title === 'by hand');
     await sleep(200);
     const mark = events.mark();
-    const file = path.join(repo, 'notes', `${added.id}.md`);
+    const file = path.join(m.dataDir, 'notes', project.id, `${added.id}.md`);
     fs.writeFileSync(
       file,
       fs.readFileSync(file, 'utf8').replace('done: false', 'done: true'),
@@ -148,7 +153,7 @@ describe('notes', () => {
     ).toBe(true);
     // a note written by hand without front matter is listed too, open and undated
     fs.writeFileSync(
-      path.join(repo, 'notes', 'byhand.md'),
+      path.join(m.dataDir, 'notes', project.id, 'byhand.md'),
       'typed straight into a file\n',
     );
     await events.waitFor(

@@ -58,7 +58,7 @@ describe('note files', () => {
       title: 'earlier',
       body: 'x',
     });
-    fs.writeFileSync(path.join(repo, 'notes', 'README'), 'not a note');
+    fs.writeFileSync(path.join(repo, 'README'), 'not a note');
     expect((await readNotes(repo)).map((i) => i.id)).toEqual([
       'ccccc',
       'bbbbb',
