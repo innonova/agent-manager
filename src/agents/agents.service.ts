@@ -1370,6 +1370,7 @@ export class AgentsService
         : this.ownUrl(),
       AGENT_MANAGER_TOKEN: token,
       AGENT_MANAGER_AGENT: agent.name, // so `am hold 2h` means this agent
+      AGENT_MANAGER_PROJECT: this.projects.get(agent.projectId).name, // and `am notes` this project
     };
     const note = this.harnessNote(agent);
     this.db

@@ -563,6 +563,29 @@ once, retire every pending request when the turn ends or errors, derive
 decided when our answer appears as an input record. A decision is sent
 under the agent's lock on a replayed session, like a turn.
 
+## Notes: the small actionable items
+
+A project's notes are the person's small actionable items about it,
+written as they come up, often while an agent works on something else:
+"show the stats of the selected weapon", never a feature, still a thing
+to do. Not a scratchpad (each is one item with an id and a done state)
+and not a feature (no report, no status beyond done, no gate per item).
+One file per note, `notes/<id>.md` in the primary repository beside
+`features/`, with `date` and `done` in a front matter and the text
+below, the first line its title: so adding a note never touches a file
+an agent is editing, ticking one is a one-line change in one small
+file, and the files read as themselves in any checkout. `NotesService`
+lists them open first (then by date), adds (a fresh five-character id),
+ticks, edits and removes through `/api/projects/:id/notes`, and polls
+the directory every three seconds so an agent ticking a note by editing
+its file (`done: true`) reaches every tab as `notes.changed`. A file
+written by hand without a front matter is a note too, open and undated.
+Agents learn of the directory and of `am notes` / `am note done` from
+the harness note; a session's environment carries
+`AGENT_MANAGER_PROJECT` so `am notes` inside one needs no project name.
+"Take care of the notes" is the whole protocol: work through them, tick
+each as it is done, gate the batch once, say what each came to.
+
 ## Hub and spokes: several machines in one UI
 
 A manager can front for other managers, so one UI (and one login)
@@ -1243,6 +1266,10 @@ POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?,
 GET    /api/projects/:id/features/:slug
 PATCH  /api/projects/:id/features/:slug  { status?, title?, body?, priority?, dependsOn? } -> the human's edits; status may be planned, review, blocked or done (in-progress is the agent's)
 POST   /api/projects/:id/features/:slug/respond { text, status? } -> appends a dated "## Response" section; status defaults to planned
+GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
+POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
+PATCH  /api/projects/:id/notes/:noteId { done?, text? }         -> the list; 404 for an unknown note
+DELETE /api/projects/:id/notes/:noteId                          -> the list
 ```
 
 File paths are `<repository name>/<path inside it>`, normalised, and
@@ -1299,6 +1326,7 @@ agent.updated    { agent, status }                 // its record was edited (nam
 agent.archived   { agentId, projectId }            // archived: off the active list but still readable; drop it from the list
 agent.removed    { agentId, projectId }            // forgotten for good; drop it
 feature.changed  { projectId, feature }            // a feature file changed (status, report, response, edit)
+notes.changed    { projectId, notes }              // the project's notes changed: added, ticked, edited, removed, by anyone
 ```
 
 Clients subscribe to nothing; they receive everything for the projects
