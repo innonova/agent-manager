@@ -384,9 +384,14 @@ describe('projects', () => {
 
   it('lists daemon profiles with adapter support', async () => {
     const r = await api.get('/api/profiles');
-    expect(r.body.profiles).toEqual([
-      expect.objectContaining({ name: 'fake', supported: true }),
-    ]);
+    // the fake agent is one an adapter drives; the shell profile (am exec) is not an agent
+    expect(r.body.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'fake', supported: true }),
+        expect.objectContaining({ name: 'shell', supported: false }),
+      ]),
+    );
+    expect(r.body.profiles).toHaveLength(2);
   });
 });
 
@@ -1511,7 +1516,9 @@ describe('resilience', () => {
       mark,
     );
     // drop only the manager's socket to the daemon; the agent keeps talking and then exits
-    (m.app.get(DaemonClients).local as unknown as { ws: WebSocket }).ws.terminate();
+    (
+      m.app.get(DaemonClients).local as unknown as { ws: WebSocket }
+    ).ws.terminate();
     await events.waitFor(
       (f) => f.type === 'daemon' && f.connected === false,
       10000,

@@ -563,6 +563,27 @@ once, retire every pending request when the turn ends or errors, derive
 decided when our answer appears as an input record. A decision is sent
 under the agent's lock on a replayed session, like a turn.
 
+## Exec: one command on a host, in the daemon's session
+
+`POST /api/hosts/:name/exec` runs one command on a host, this machine
+or a spoke, through that host's daemon: a one-shot session of the
+`shell` profile (which every daemon's installer writes: `bash -lc`
+here, `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+-Command` on Windows) with the command as its argument, attached from
+its first record, its stdout and stderr collected until it exits, the
+session then removed. The reply carries the exit code, both streams
+and the duration; a command still running at `timeoutMs` (ten minutes
+by default, an hour at most) is killed and the reply says so. `am exec
+<host> -- <command>` is the terminal form, and every agent's note names
+it beside `am new --host`. What this gives over ssh is the session: the
+daemon runs where the user is logged on, so on Windows the command
+sees the desktop, the clipboard and the running apps, which an ssh
+login (session 0) does not. For an agent it is one call with the output
+back rather than a conversation with another agent about running
+something. Any agent's token may use it on any host the hub knows: no
+more than the shell an agent already has on its own machine, and the
+hosts are the person's.
+
 ## The clock: agents told the time
 
 An agent with a time box overestimates the passage of time: nothing in
@@ -1258,6 +1279,7 @@ DELETE /api/agents/:id             -> { ok }; forgets the agent for good: proces
 GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first
 
 GET    /api/profiles[?host=<name>]                              -> daemon profiles (of that spoke's daemon with `host`; 404 for an unknown host), each with `supported` (an adapter exists)
+POST   /api/hosts/:name/exec       { command, cwd?, timeoutMs? } -> { host, exitCode, signal, stdout, stderr, durationMs, timedOut }; one command on that host through its daemon's `shell` profile (see Exec); 404 for an unknown host, 400 when the host has no shell profile
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
 GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
 PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there

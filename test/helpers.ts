@@ -37,6 +37,11 @@ export async function startDaemon(
   const configDir = path.join(root, 'config');
   const stateDir = path.join(root, 'state');
   fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
+  // what every real daemon's installer writes too: a shell that takes one command (am exec)
+  fs.writeFileSync(
+    path.join(configDir, 'profiles', 'shell.json'),
+    JSON.stringify({ command: 'bash', args: ['-lc'] }),
+  );
   fs.writeFileSync(
     path.join(configDir, 'profiles', 'fake.json'),
     JSON.stringify({ command: process.execPath, args: [FAKE_AGENT] }),

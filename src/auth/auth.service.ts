@@ -393,6 +393,8 @@ export class AuthService
     // a property of a project, and an agent mid-work is the usual author
     // of a learning. The method and its framing it may read, not rewrite.
     if (p === '/api/learnings') return method === 'GET' || method === 'POST';
+    // one command on a machine the hub knows: no more than the shell an agent already has on its own
+    if (/^\/api\/hosts\/[^/]+\/exec$/.test(p)) return method === 'POST';
     if (p === '/api/method' || p === '/api/framing') return method === 'GET';
     // the run log of its own project: the list filtered to it, and a run of it
     if (p === '/api/runs') {

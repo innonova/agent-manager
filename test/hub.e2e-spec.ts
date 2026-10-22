@@ -419,6 +419,21 @@ describe('hub', () => {
     await api.delete(`/api/projects/${project.id}`); // the later cases count the hub's projects
   });
 
+  it('runs one command on the spoke through its daemon, and returns what came back', async () => {
+    const r = await api.post('/api/hosts/vibe/exec', {
+      command: 'echo on the spoke; exit 4',
+    });
+    expect(r.status).toBe(201);
+    expect(r.body).toMatchObject({
+      host: 'vibe',
+      exitCode: 4,
+      stdout: 'on the spoke\n',
+    });
+    expect(
+      (await api.post('/api/hosts/nowhere/exec', { command: 'true' })).status,
+    ).toBe(404);
+  });
+
   it('reads a spoke\u2019s run log and reviews a run there, with the id prefixed once', async () => {
     // a run of the spoke's own project, put there directly: what is under
     // test is the forwarding and the id rewriting, not the opening, which

@@ -56,6 +56,7 @@ describe('harness note', () => {
     })!;
     expect(withHosts).toContain('win (a Windows 11 VM with a desktop); mac');
     expect(withHosts).toContain('am new "demo" <name> --host <machine>');
+    expect(withHosts).toContain('am exec <machine> -- <command>');
     expect(withHosts).not.toMatch(/\{\{/);
     expect(note).toContain('features/<slug>.md');
     expect(note).not.toMatch(/\{\{/);

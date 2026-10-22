@@ -82,7 +82,7 @@ export function renderHarnessNote(
           .map((h) => (h.description ? `${h.name} (${h.description})` : h.name))
           .join(
             '; ',
-          )}. \`am new "${ctx.project}" <name> --host <machine> --cwd <an absolute path there>\` starts one; it works in that directory, usually a checkout of the project it keeps in sync itself, and reports here.`
+          )}. \`am new "${ctx.project}" <name> --host <machine> --cwd <an absolute path there>\` starts one; it works in that directory, usually a checkout of the project it keeps in sync itself, and reports here. \`am exec <machine> -- <command>\` runs one command there instead, in the session that machine's daemon runs in (the logged-in desktop on Windows, which an ssh login is not), and prints what came back.`
       : '',
     // A description of the project, not an instruction to the agent; nothing
     // for a free project, so its placeholder collapses away with no blank line.
