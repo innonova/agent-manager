@@ -24,7 +24,8 @@
     "install:ui": "scripts/install-ui.sh",
     "user:add": "node scripts/user-add.mjs",
     "smoke:agents": "node scripts/smoke-agents.mjs",
-    "install:windows": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1"
+    "install:windows": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "onboard:windows": "scripts/onboard-windows.sh"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",

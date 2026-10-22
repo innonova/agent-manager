@@ -77,7 +77,8 @@ from one UI, make one manager the hub:
 An agent of a project here can also run on a spoke (its session there,
 everything else here): create it with a host, and give this manager an
 address the spoke can reach for the agent's `am` (`AGENT_MANAGER_AGENT_URL=http://<lan address>:4268 npm run install:service`,
-kept in the `agent-url.conf` drop-in). A Windows spoke is installed with `scripts\install-windows.ps1` (a
+kept in the `agent-url.conf` drop-in). A Windows machine is onboarded as a spoke from the hub with
+`npm run onboard:windows -- <ssh host> <name> [description]`, or by hand with `scripts\install-windows.ps1` (a
 scheduled task in the user's interactive session, so its agents see the
 desktop; `../agent-daemon/docs/install.md`, 3c). The hub's project list then shows every machine's projects with the
 machine's name; agents are driven through the hub as the logged-in user,
