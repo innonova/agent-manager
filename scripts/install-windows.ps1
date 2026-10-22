@@ -49,11 +49,14 @@ Push-Location $Lib
 try {
   npm ci --omit=dev --ignore-scripts | Out-Null
   if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
-  # the two native modules fetch their prebuilt binaries in their install
-  # scripts; npm 11.16+ runs no install script it has not been told to allow
-  npm approve-scripts better-sqlite3 argon2 2>$null | Out-Null
-  npm rebuild better-sqlite3 argon2 | Out-Null
-  if ($LASTEXITCODE) { throw "npm rebuild failed ($LASTEXITCODE)" }
+  # No install scripts at all: the two native modules ship prebuilt Windows
+  # binaries inside their packages and load them at runtime; their install
+  # scripts would compile with node-gyp, which needs Visual Studio build
+  # tools and fails without them. Check that they load instead.
+  Set-Content -Path native-check.cjs -Value "require('better-sqlite3'); require('argon2')" -Encoding ASCII
+  node native-check.cjs
+  if ($LASTEXITCODE) { throw 'the native modules (better-sqlite3, argon2) do not load; no prebuilt binary for this Node/platform?' }
+  Remove-Item native-check.cjs
 } finally { Pop-Location }
 if (Test-Path $UiDist) { Copy-Item -Recurse $UiDist (Join-Path $Lib 'ui'); Write-Host "UI from $UiDist" }
 else { Write-Warning "no UI build at $UiDist; API only (build agent-manager-ui and re-run)" }

@@ -64,8 +64,9 @@ foreach (\$r in 'agent-daemon','agent-manager','agent-manager-ui','agent-manager
   tar -xzf \$tgz -C \$base
   Remove-Item \$tgz
   Push-Location (Join-Path \$base \$r)
-  # through cmd, so npm's stderr (deprecation notes) stays text rather than becoming PowerShell error records
-  cmd /c "npm ci --no-audit --no-fund 2>&1" | Select-Object -Last 1 | Out-String | Write-Host
+  # through cmd, so npm's stderr (deprecation notes) stays text rather than becoming PowerShell error records;
+  # no install scripts: the native modules ship prebuilt binaries, and a compile needs build tools
+  cmd /c "npm ci --no-audit --no-fund --ignore-scripts 2>&1" | Select-Object -Last 1 | Out-String | Write-Host
   if (\$LASTEXITCODE) { throw "npm ci failed in \$r" }
   Pop-Location
 }
@@ -82,7 +83,8 @@ cmd /c "query user 2>nul" | Out-String | Write-Host
 PS
 scp -q /tmp/onboard-remote.ps1 "$HOST:onboard-remote.ps1"
 rm -f /tmp/onboard-remote.ps1
-ssh -T "$HOST" 'powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\onboard-remote.ps1"; Remove-Item "$env:USERPROFILE\onboard-remote.ps1"' | tr -d '\r' | sed 's/^/   /'
+# the remote script's own exit code decides; the cleanup after it must not mask it
+ssh -T "$HOST" 'powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\onboard-remote.ps1"; $rc = $LASTEXITCODE; Remove-Item "$env:USERPROFILE\onboard-remote.ps1"; exit $rc' | tr -d '\r' | sed 's/^/   /'
 
 echo "== registering the spoke on this hub"
 python3 - "$SPOKES" "$NAME" "http://$ADDR:4268" "$TOKEN" "$DESC" <<'PY'
