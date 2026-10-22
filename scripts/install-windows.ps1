@@ -64,6 +64,14 @@ else { Write-Warning "no UI build at $UiDist; API only (build agent-manager-ui a
 # the fake profile lets the UI be used without spending tokens
 $fake = @{ description = 'fake agent for development and tests (agent-manager)'; command = $Node; args = @("$Lib\fixtures\fake-agent.mjs") }
 [IO.File]::WriteAllText((Join-Path $DaemonConfig 'profiles\fake.json'), ($fake | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) # no byte-order mark
+# The daemon reads its profiles at start; on Linux the installer reloads it with a
+# signal, here the task is restarted so the fake profile is there at once.
+if (Get-ScheduledTask -TaskName 'agent-daemon' -ErrorAction SilentlyContinue) {
+  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like "*agent-daemon\lib\dist\main.js*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Start-Sleep -Seconds 1
+  Start-ScheduledTask -TaskName 'agent-daemon'
+  Write-Host 'daemon task restarted (profiles reloaded)'
+}
 
 $Log = Join-Path $State 'manager.log'
 $Env = Join-Path $Lib 'env.cmd'
