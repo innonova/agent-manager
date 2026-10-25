@@ -50,7 +50,7 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
-import { head } from '../changes/git.js';
+import { git, head } from '../changes/git.js';
 import { spendOnlyUsage } from './usage.js';
 
 export interface Agent {
