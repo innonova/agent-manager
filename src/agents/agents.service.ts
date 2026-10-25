@@ -42,6 +42,10 @@ import {
 } from '../daemon/daemon-client.js';
 import type { DaemonClient } from '../daemon/daemon-client.js';
 import { DaemonClients } from '../daemon/daemon-clients.js';
+import {
+  conversationFile,
+  withdrawLastPrompt,
+} from '../adapters/claude-conversation.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
@@ -267,6 +271,20 @@ function vendorSetting(v: unknown, what: string): string | null {
     throw new BadRequestException(`"${what}" must be a short vendor name`);
   return v;
 }
+
+/** Tools that only look: a turn made of these alone changed nothing, so withdrawing it is clean. */
+const READ_ONLY_TOOLS = new Set([
+  'Read',
+  'Glob',
+  'Grep',
+  'LS',
+  'WebFetch',
+  'WebSearch',
+  'ToolSearch',
+  'view',
+  'grep',
+  'glob',
+]);
 
 const toAgent = (r: AgentRow): Agent => ({
   id: r.id,
@@ -2294,6 +2312,89 @@ export class AgentsService
     return file;
   }
   private claudeSettingsWritten: string | null = null;
+
+  /**
+   * Withdraws the last message sent to the agent: the agent comes back
+   * with no memory of it or of its reply, as if it had never been sent.
+   * Only while idle, only for Claude (its conversation is a file the
+   * manager can cut back; see `claude-conversation.ts`), and only when
+   * the reply did nothing but read: a turn that ran a command, edited a
+   * file or committed is refused with what it did, since no cut of the
+   * text undoes that. The withdrawn items stay in the transcript under a
+   * marker that says they are no longer in the agent's context.
+   */
+  async undo(id: string): Promise<{ withdrawn: number }> {
+    const live = this.ensureLive(this.get(id));
+    await this.awaitSynced(live);
+    return this.withLock(live, async () => {
+      const agent = this.get(id);
+      if (agent.profile !== 'claude')
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'undo-unsupported',
+          message: `withdrawing is for Claude agents; ${agent.profile} keeps its conversation where the manager cannot reach`,
+        });
+      if (!agent.vendorConversationId)
+        throw new ConflictException('nothing to withdraw: no conversation yet');
+      if (live.status.state !== 'idle' && live.status.state !== 'exited')
+        throw new ConflictException(
+          `agent is ${live.status.state}; interrupt it first`,
+        );
+      const last = this.lastPrompt(live);
+      if (!last) throw new ConflictException('nothing to withdraw');
+      const effects = this.effectsAfter(live, last.index);
+      if (effects.length)
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'turn-had-effects',
+          message: `the reply did more than read: ${effects.join(', ')}; withdrawing the text would not undo that`,
+          effects,
+        });
+      if (agent.currentSessionId) await this.stopLocked(agent, true);
+      const file = conversationFile(agent.cwd, agent.vendorConversationId);
+      let removed = 0;
+      try {
+        removed = withdrawLastPrompt(file, last.text).removed;
+      } catch (err) {
+        this.logger.warn(`undo for ${id}: ${(err as Error).message}`);
+      }
+      const fresh = this.get(id);
+      await this.startSession(fresh, live);
+      if (!removed)
+        throw new ConflictException(
+          "the message was not found in the agent's conversation; nothing withdrawn (the session was restarted)",
+        );
+      this.appendItem(agent.id, live, fresh.currentSessionId!, 0, {
+        kind: 'system',
+        text: "withdrawn: the last message and the reply to it are no longer in the agent's context",
+        withdrawnFrom: last.index,
+      });
+      return { withdrawn: removed };
+    });
+  }
+
+  /** The last prompt in memory: a user item with text, by anyone, and its index in the transcript. */
+  private lastPrompt(live: Live): { index: number; text: string } | null {
+    for (let i = live.items.length - 1; i >= 0; i--) {
+      const it = live.items[i]!.item;
+      if (it.kind === 'user' && it.text)
+        return { index: live.itemBase + i, text: it.text };
+    }
+    return null;
+  }
+
+  /** What the items after a prompt did to the world: tool calls that are not reads, and commits. Empty means a clean withdrawal. */
+  private effectsAfter(live: Live, fromIndex: number): string[] {
+    const out: string[] = [];
+    for (let i = fromIndex - live.itemBase + 1; i < live.items.length; i++) {
+      const it = live.items[i]!.item;
+      if (it.kind === 'tool_use' && !READ_ONLY_TOOLS.has(it.name))
+        out.push(it.name);
+      else if (it.kind === 'system' && it.text.startsWith('committed'))
+        out.push('a commit');
+    }
+    return [...new Set(out)];
+  }
 
   /** Who sent the agent's latest turn (a user's name, `agent-<name>`, or the manager), from the items in memory; null when unknown. */
   lastTurnBy(agentId: string): string | null {

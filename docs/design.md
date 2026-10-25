@@ -609,6 +609,32 @@ something. Any agent's token may use it on any host the hub knows: no
 more than the shell an agent already has on its own machine, and the
 hosts are the person's.
 
+## Withdrawing a message
+
+A message sent to the wrong agent, caught too late to interrupt: `POST
+/api/agents/:id/undo` takes it back. Claude Code keeps each conversation
+as a file of one record per line (`~/.claude/projects/<cwd with every
+separator as "-">/<conversation id>.jsonl`) and `--resume` continues
+from wherever it ends, so the manager stops the session, cuts the file
+back to the record before the message (`claude-conversation.ts`, at a
+record boundary, matched by the prompt's text), and resumes: the agent
+comes back with no memory of the message or its reply. Only while idle
+(interrupt first), only the last message, only for Claude (Codex and
+Copilot keep their conversations where the manager does not reach), and
+only when the reply did nothing but read: the transcript knows the
+turn's tool calls, and one that ran a command, edited a file or
+committed is refused with what it did (`turn-had-effects`), since no
+cut of the text undoes that. The usual wrong-session reply, "this does
+not look like something for me", is clean. The withdrawn items stay in
+the transcript, since the daemon's log is append-only and they are the
+record of what the agent did, under a `system` marker with
+`withdrawnFrom`: a client folds the items from there to the marker as
+no longer in the agent's context. The format of the file is Anthropic's,
+not ours, so a Claude Code release could move or reshape it; the cut
+reads as little of it as it can and refuses when the message is not
+found rather than guess. Verified against a real Claude session: two
+messages, one withdrawn, the agent asked what it was told.
+
 ## The clock: agents told the time
 
 An agent with a time box overestimates the passage of time: nothing in
@@ -1299,6 +1325,7 @@ POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/restart      -> { ok }; stops and resumes this agent with the current settings (repositories, harness note), conversation intact; an exited one is started; 409 while working, waiting on a permission or with background jobs
 POST   /api/agents/:id/hold         { until: unix ms | null }     -> { ok, holdUntil }; holds the background watchdog's poke until then (400 if past or more than a week ahead); null clears
+POST   /api/agents/:id/undo         -> { withdrawn }; withdraws the last message sent to the agent (see Withdrawing a message); 409 `undo-unsupported` (not Claude), `turn-had-effects` (the reply ran a command, edited or committed; `effects` lists them), or busy
 POST   /api/agents/:id/archive
 DELETE /api/agents/:id             -> { ok }; forgets the agent for good: process stopped, the daemon's logs of its sessions removed, transcript cache and rows gone (the vendor's own conversation store stays); for helpers whose work is in git and the feature's report
 GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first

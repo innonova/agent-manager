@@ -300,6 +300,22 @@ describe('projects', () => {
     await api.delete(`/api/agents/${agent.id}`);
   });
 
+  it('withdrawing the last message is refused for a profile whose conversation the manager cannot reach', async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'undoable');
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === agent.id &&
+        f.status.state === 'idle',
+      10000,
+    );
+    const r = await api.post(`/api/agents/${agent.id}/undo`, {});
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('undo-unsupported');
+    await api.delete(`/api/agents/${agent.id}`);
+  });
+
   it('restarting a project resumes idle agents and skips busy ones', async () => {
     const p = await createProject();
     const { agent: idle } = await createAgent(p.id, 'idle-one');

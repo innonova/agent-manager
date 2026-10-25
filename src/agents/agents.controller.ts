@@ -176,6 +176,12 @@ export class AgentsController {
     return { ok: true, holdUntil: this.agents.hold(id, until).holdUntil };
   }
 
+  /** Withdraws the last message sent to the agent (Claude, idle, a reply that only read); 409 with `code` otherwise. */
+  @Post('agents/:id/undo')
+  undo(@Param('id') id: string): Promise<{ withdrawn: number }> {
+    return this.agents.undo(id);
+  }
+
   @Post('agents/:id/archive')
   async archive(@Param('id') id: string): Promise<{ ok: true }> {
     await this.agents.archive(id);
