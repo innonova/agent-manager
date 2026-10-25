@@ -637,7 +637,10 @@ record of what the agent did, under a `system` marker with
 no longer in the agent's context. The format of the file is Anthropic's,
 not ours, so a Claude Code release could move or reshape it; the cut
 reads as little of it as it can and refuses when the message is not
-found rather than guess. Verified against a real Claude session: two
+found rather than guess. Withdrawing the conversation's first message
+leaves nothing to resume (Claude reports no conversation at all), so
+the manager forgets the conversation id and the agent starts afresh,
+which is the state before that message. Verified against a real Claude session: two
 messages, one withdrawn, the agent asked what it was told.
 
 ## The clock: agents told the time

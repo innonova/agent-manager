@@ -2353,10 +2353,20 @@ export class AgentsService
       if (agent.currentSessionId) await this.stopLocked(agent, true);
       const file = conversationFile(agent.cwd, agent.vendorConversationId);
       let removed = 0;
+      let promptsLeft = -1;
       try {
-        removed = withdrawLastPrompt(file, last.text).removed;
+        ({ removed, promptsLeft } = withdrawLastPrompt(file, last.text));
       } catch (err) {
         this.logger.warn(`undo for ${id}: ${(err as Error).message}`);
+      }
+      if (removed && promptsLeft === 0) {
+        // the first message of the conversation: nothing is left to resume,
+        // and the state before it is no conversation at all
+        this.db
+          .prepare(
+            'UPDATE agents SET vendor_conversation_id = NULL WHERE id = ?',
+          )
+          .run(id);
       }
       const fresh = this.get(id);
       await this.startSession(fresh, live);

@@ -76,6 +76,7 @@ describe('claude conversation file', () => {
     expect(withdrawLastPrompt(file, 'oops wrong window')).toEqual({
       removed: 4,
       kept: 2,
+      promptsLeft: 1,
     });
     expect(fs.readFileSync(file, 'utf8')).toBe(
       lines.slice(0, 2).join('\n') + '\n',
@@ -84,6 +85,7 @@ describe('claude conversation file', () => {
     expect(withdrawLastPrompt(file, 'never sent')).toEqual({
       removed: 0,
       kept: 2,
+      promptsLeft: -1,
     });
     expect(fs.readFileSync(file, 'utf8')).toBe(
       lines.slice(0, 2).join('\n') + '\n',

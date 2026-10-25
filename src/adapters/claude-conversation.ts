@@ -44,12 +44,14 @@ function promptText(record: unknown): string | null {
 /**
  * Cuts the file back to just before the last prompt whose text is `text`;
  * returns how many records went, 0 when no such prompt is there (the file
- * is then untouched). Written whole to a temp file and renamed.
+ * is then untouched), and how many prompts are left: none means Claude
+ * has no conversation to resume and the caller starts a fresh one.
+ * Written whole to a temp file and renamed.
  */
 export function withdrawLastPrompt(
   file: string,
   text: string,
-): { removed: number; kept: number } {
+): { removed: number; kept: number; promptsLeft: number } {
   const raw = fs.readFileSync(file, 'utf8');
   const lines = raw.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
@@ -67,10 +69,18 @@ export function withdrawLastPrompt(
       break;
     }
   }
-  if (cut < 0) return { removed: 0, kept: lines.length };
+  if (cut < 0) return { removed: 0, kept: lines.length, promptsLeft: -1 };
   const kept = lines.slice(0, cut);
+  let promptsLeft = 0;
+  for (const l of kept) {
+    try {
+      if (promptText(JSON.parse(l)) !== null) promptsLeft++;
+    } catch {
+      /* not a record */
+    }
+  }
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, kept.length ? `${kept.join('\n')}\n` : '');
   fs.renameSync(tmp, file);
-  return { removed: lines.length - cut, kept: kept.length };
+  return { removed: lines.length - cut, kept: kept.length, promptsLeft };
 }
