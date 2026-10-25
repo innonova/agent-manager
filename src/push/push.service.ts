@@ -9,7 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import webPush from 'web-push';
 import { AgentsService, MANAGER_AUTHOR } from '../agents/agents.service.js';
-import type { AgentState, AgentStatus } from '../agents/agents.service.js';
+import type { AgentStatus } from '../agents/agents.service.js';
+import type { AgentState } from '../adapters/adapter.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
@@ -212,8 +213,12 @@ export class PushService implements OnModuleInit {
         text = 'is ready for more';
     }
     if (!text) return;
-    const agent = this.agents.find(agentId);
-    if (!agent) return;
+    let agent;
+    try {
+      agent = this.agents.get(agentId);
+    } catch {
+      return; // forgotten meanwhile
+    }
     await this.notify(null, {
       title: `${agent.name} ${text}`,
       body: 'agent-manager',
