@@ -2376,7 +2376,7 @@ export class AgentsService
         );
       this.appendItem(agent.id, live, fresh.currentSessionId!, 0, {
         kind: 'system',
-        text: "withdrawn: the last message and the reply to it are no longer in the agent's context",
+        text: "withdrawn: a message and the reply to it, no longer in the agent's context",
         withdrawnFrom: last.index,
       });
       return { withdrawn: removed };
@@ -2389,6 +2389,9 @@ export class AgentsService
   ): { index: number; text: string; at: number } | null {
     for (let i = live.items.length - 1; i >= 0; i--) {
       const s = live.items[i]!;
+      // a withdrawal's marker: the message before it is gone already, and only the last message is offered
+      if (s.item.kind === 'system' && s.item.withdrawnFrom !== undefined)
+        return null;
       if (s.item.kind === 'user' && s.item.text)
         return { index: live.itemBase + i, text: s.item.text, at: s.at };
     }
