@@ -563,6 +563,31 @@ once, retire every pending request when the turn ends or errors, derive
 decided when our answer appears as an input record. A decision is sent
 under the agent's lock on a replayed session, like a turn.
 
+## Push: the phone hears
+
+What the desktop notification says in a tab (an agent needs your
+input, failed, or finished a turn you sent) also goes by web push to
+every browser that asked for it, which is what makes a phone useful:
+the tab can be closed and the phone in a pocket. The install has a
+VAPID key pair of its own, made on first start into
+`<dataDir>/push-keys.json` (mode 600); a browser subscribes with the
+public key (`GET /api/push/key`) and hands its subscription to `POST
+/api/push/subscriptions`, kept by user and endpoint
+(`push_subscriptions`); `DELETE` with the endpoint forgets it; `POST
+/api/push/test` sends "this is a test" to the caller's own, which is
+how a phone is checked. `PushService` follows the agents' state
+changes with the desktop rule, server side: `waiting-input` or
+`waiting-permission` entered, `error` entered, or `idle` after
+`working` with no background job when the turn was a person's (the
+last user item's `by` is not `manager` nor `agent-…`: a helper's turn
+or the manager's poke is nobody's wait). Everyone subscribed hears; the
+people here are the few who run the place. One notification per agent
+at a time (the `tag`), a tap opens the agent. A subscription the push
+service answers 404 or 410 for is dropped on its word. Agent tokens
+cannot touch these routes (nothing in the scope allows them). Agents
+of a spoke's own projects are not followed, only the hub's. The UI
+side: `agent-manager-ui/docs/design.md`, Installable and push.
+
 ## Exec: one command on a host, in the daemon's session
 
 `POST /api/hosts/:name/exec` runs one command on a host, this machine
@@ -1280,6 +1305,10 @@ GET    /api/projects/:id/agents?archived=1                      -> the archived 
 
 GET    /api/profiles[?host=<name>]                              -> daemon profiles (of that spoke's daemon with `host`; 404 for an unknown host), each with `supported` (an adapter exists)
 POST   /api/hosts/:name/exec       { command, cwd?, timeoutMs? } -> { host, exitCode, signal, stdout, stderr, durationMs, timedOut }; one command on that host through its daemon's `shell` profile (see Exec); 404 for an unknown host, 400 when the host has no shell profile
+GET    /api/push/key                                            -> { publicKey }; the install's VAPID public key (login sessions only, as the rest of /api/push)
+POST   /api/push/subscriptions      { subscription }            -> { count }; keeps a browser's push subscription for the user; the same endpoint again updates it
+DELETE /api/push/subscriptions?endpoint=<url-encoded>          -> { count }
+POST   /api/push/test                                           -> { sent }; a test notification to the caller's own subscriptions
 GET    /api/usage                                               -> { hosts: [{ host, accounts: [{ profile, agentId, usage }] }] }; the vendor accounts' limits as last reported through an agent, per machine
 GET    /api/harness                                             -> { hosts: [{ host, source: built-in | custom | off, template, builtIn, file }] }; the harness note's template per machine (a hub asks its spokes)
 PUT    /api/harness                 { host?, template: string | null } -> the host's row; writes the template file (empty turns the note off), null writes the shipped text back into it; `host` names a spoke to write there

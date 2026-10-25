@@ -2295,6 +2295,17 @@ export class AgentsService
   }
   private claudeSettingsWritten: string | null = null;
 
+  /** Who sent the agent's latest turn (a user's name, `agent-<name>`, or the manager), from the items in memory; null when unknown. */
+  lastTurnBy(agentId: string): string | null {
+    const live = this.live.get(agentId);
+    if (!live) return null;
+    for (let i = live.items.length - 1; i >= 0; i--) {
+      const it = live.items[i]!.item;
+      if (it.kind === 'user') return it.by ?? null;
+    }
+    return null;
+  }
+
   /** The daemon an agent's sessions live on; a host that is not configured here cannot be driven. */
   private daemonOf(agent: Pick<Agent, 'host'>): DaemonClient {
     const d = this.daemons.for(agent.host);

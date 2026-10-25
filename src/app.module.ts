@@ -10,6 +10,7 @@ import { DbModule } from './db/db.module.js';
 import { EventsModule } from './events/events.module.js';
 import { FeaturesModule } from './features/features.module.js';
 import { NotesModule } from './notes/notes.module.js';
+import { PushModule } from './push/push.module.js';
 import { FilesModule } from './files/files.module.js';
 import { HealthController } from './health.controller.js';
 import { HubModule } from './hub/hub.module.js';
@@ -36,6 +37,7 @@ export class AppModule {
         FilesModule,
         FeaturesModule,
         NotesModule,
+        PushModule,
         ChangesModule,
         RunsModule,
         LearningsModule,

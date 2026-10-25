@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS project_repos (
 -- reports it (Claude only). Keyed on repo and hash; the commits list
 -- joins it ahead of the run window, and it survives a transcript rebuild
 -- because item indexes are stable per session.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS commit_attributions (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   repo TEXT NOT NULL,
