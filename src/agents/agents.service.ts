@@ -2342,7 +2342,7 @@ export class AgentsService
         );
       const last = this.lastPrompt(live);
       if (!last) throw new ConflictException('nothing to withdraw');
-      const effects = this.effectsAfter(live, last.index);
+      const effects = await this.effectsAfter(agent, live, last.index, last.at);
       if (effects.length)
         throw new ConflictException({
           statusCode: 409,
@@ -2373,25 +2373,70 @@ export class AgentsService
     });
   }
 
-  /** The last prompt in memory: a user item with text, by anyone, and its index in the transcript. */
-  private lastPrompt(live: Live): { index: number; text: string } | null {
+  /** The last prompt in memory: a user item with text, by anyone, its index in the transcript and when it was sent. */
+  private lastPrompt(
+    live: Live,
+  ): { index: number; text: string; at: number } | null {
     for (let i = live.items.length - 1; i >= 0; i--) {
-      const it = live.items[i]!.item;
-      if (it.kind === 'user' && it.text)
-        return { index: live.itemBase + i, text: it.text };
+      const s = live.items[i]!;
+      if (s.item.kind === 'user' && s.item.text)
+        return { index: live.itemBase + i, text: s.item.text, at: s.at };
     }
     return null;
   }
 
-  /** What the items after a prompt did to the world: tool calls that are not reads, and commits. Empty means a clean withdrawal. */
-  private effectsAfter(live: Live, fromIndex: number): string[] {
+  /**
+   * What the reply to a prompt left behind, which withdrawing the text
+   * would not undo: a commit, or files in the project's repositories
+   * changed after the prompt was sent (a tree dirty from before it is
+   * the person's own work and does not count). A command that only
+   * looked leaves nothing and is fine. For an agent on another machine,
+   * whose files the hub cannot see, the tool calls stand in: anything
+   * but a read counts. Empty means a clean withdrawal.
+   */
+  private async effectsAfter(
+    agent: Agent,
+    live: Live,
+    fromIndex: number,
+    sentAt: number,
+  ): Promise<string[]> {
     const out: string[] = [];
     for (let i = fromIndex - live.itemBase + 1; i < live.items.length; i++) {
       const it = live.items[i]!.item;
-      if (it.kind === 'tool_use' && !READ_ONLY_TOOLS.has(it.name))
-        out.push(it.name);
-      else if (it.kind === 'system' && it.text.startsWith('committed'))
+      if (it.kind === 'system' && it.text.startsWith('committed'))
         out.push('a commit');
+      else if (
+        agent.host &&
+        it.kind === 'tool_use' &&
+        !READ_ONLY_TOOLS.has(it.name)
+      )
+        out.push(it.name);
+    }
+    if (!agent.host) {
+      let repos: { name: string; path: string }[] = [];
+      try {
+        repos = this.projects.get(agent.projectId).repos;
+      } catch {
+        /* deleted meanwhile */
+      }
+      for (const repo of repos) {
+        const status = await git(repo.path, [
+          'status',
+          '--porcelain',
+          '--untracked-files=all',
+        ]);
+        if (!status) continue;
+        for (const line of status.split('\n')) {
+          if (!line.trim()) continue;
+          const rel = line.slice(3).replace(/^"|"$/g, '');
+          try {
+            const st = await fs.stat(path.join(repo.path, rel));
+            if (st.mtimeMs >= sentAt - 1000) out.push(`${repo.name}/${rel}`);
+          } catch {
+            /* deleted: a deletion after the prompt is a change too, but its time is unknown; let it pass */
+          }
+        }
+      }
     }
     return [...new Set(out)];
   }

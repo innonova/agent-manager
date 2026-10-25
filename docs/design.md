@@ -621,11 +621,16 @@ record boundary, matched by the prompt's text), and resumes: the agent
 comes back with no memory of the message or its reply. Only while idle
 (interrupt first), only the last message, only for Claude (Codex and
 Copilot keep their conversations where the manager does not reach), and
-only when the reply did nothing but read: the transcript knows the
-turn's tool calls, and one that ran a command, edited a file or
-committed is refused with what it did (`turn-had-effects`), since no
-cut of the text undoes that. The usual wrong-session reply, "this does
-not look like something for me", is clean. The withdrawn items stay in
+only when the reply left nothing behind that a cut of the text would
+not undo: a commit (the transcript's "committed" line), or files in
+the project's repositories changed after the message was sent (`git
+status`, each dirty file's mtime against the message's time, so a tree
+dirty from before it, the person's own work, does not count). A
+command that only looked is fine. The refusal (`turn-had-effects`)
+lists what was left. For an agent on another machine, whose files the
+hub cannot see, the tool calls stand in and anything but a read
+counts. The usual wrong-session reply, "this does not look like
+something for me", is clean either way. The withdrawn items stay in
 the transcript, since the daemon's log is append-only and they are the
 record of what the agent did, under a `system` marker with
 `withdrawnFrom`: a client folds the items from there to the marker as
