@@ -1467,10 +1467,17 @@ swept once a minute.
   read (`am method`, `am framing`) but not write, and the learnings log it may read
   and append to (`am learn`), because what is learned about working
   here belongs to the install and a helper mid-work is the usual
-  author. Not users, the harness template,
-  other projects, or the project's own settings and bulk restart. A
-  guardrail against a helper wandering, not a security boundary (the
-  process runs as the manager's own user). Replaced at each session
+  author. Other projects it may ask, not touch: list their agents,
+  read one's record and transcript, send it a turn (`am turn
+<project>/<agent> …`), so the projects' agents can ask each other
+  things, the infrastructure's agent whether it supports some concept,
+  say; their files, features, notes, and starting, stopping or
+  forgetting their agents stay their own agents', since the run log,
+  the features and the commit attribution all assume a project's work
+  is done by its agents. Not users, the harness template, or the
+  project's own settings and bulk restart. A guardrail against a
+  helper wandering, not a security boundary (the process runs as the
+  manager's own user). Replaced at each session
   start, revoked by archive and forget.
 - No roles: every user is a trusted admin and sees every project. There
   is no other kind of account, because every user can drive agents that

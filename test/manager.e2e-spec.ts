@@ -1340,10 +1340,37 @@ describe('agents', () => {
     expect(
       (await own.post(`/api/projects/${p.id}/agents/restart`)).status,
     ).toBe(403);
+    // another project: its agents can be asked and read, not run
     const other = await createProject();
     expect((await own.get(`/api/projects/${other.id}/agents`)).status).toBe(
+      200,
+    );
+    expect((await own.get(`/api/projects/${other.id}/features`)).status).toBe(
       403,
     );
+    const { agent: theirs } = await createAgent(other.id, 'theirs');
+    await events.waitFor(
+      (f) =>
+        f.type === 'agent.state' &&
+        f.agentId === theirs.id &&
+        f.status.state === 'idle',
+      10000,
+    );
+    expect((await own.get(`/api/agents/${theirs.id}`)).status).toBe(200);
+    expect((await own.get(`/api/agents/${theirs.id}/items`)).status).toBe(200);
+    expect(
+      (
+        await own.post(`/api/agents/${theirs.id}/turn`, {
+          text: 'does your infra do X?',
+        })
+      ).status,
+    ).toBe(202);
+    expect((await own.post(`/api/agents/${theirs.id}/stop`)).status).toBe(403);
+    expect((await own.delete(`/api/agents/${theirs.id}`)).status).toBe(403);
+    expect(
+      (await own.post(`/api/projects/${other.id}/agents`, { name: 'nope' }))
+        .status,
+    ).toBe(403);
     // a helper, started and driven by the agent, is attributed to it
     const helper = (
       await own.post(`/api/projects/${p.id}/agents`, { name: 'helper' })
@@ -1367,7 +1394,10 @@ describe('agents', () => {
     expect(user.item.item.by).toBe('agent-boss');
     expect((await own.get(`/api/agents/${helper.id}`)).status).toBe(200);
     const foreign = (await createAgent(other.id, 'far')).agent;
-    expect((await own.get(`/api/agents/${foreign.id}`)).status).toBe(403);
+    expect((await own.get(`/api/agents/${foreign.id}`)).status).toBe(200); // another project's agent: readable, askable
+    expect((await own.post(`/api/agents/${foreign.id}/archive`)).status).toBe(
+      403,
+    ); // not run
     // archiving the agent revokes its token
     await api.post(`/api/agents/${agent.id}/archive`);
     expect((await own.get(`/api/projects/${p.id}/agents`)).status).toBe(401);

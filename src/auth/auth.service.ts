@@ -389,6 +389,12 @@ export class AuthService
       if (rest === '/agents/restart') return false;
       return true; // agents, features, files, profiles, uploads of its own project
     }
+    // Other projects: ask, do not touch. An agent may list another
+    // project's agents, read one's transcript and send it a turn, so the
+    // projects' agents can ask each other things (does the infrastructure
+    // support this?); that project's files, features and notes, and
+    // starting, stopping or forgetting its agents, stay its own agents'.
+    if (/^\/api\/projects\/[^/]+\/agents$/.test(p)) return method === 'GET';
     // What was learned working here, and how work is run here: neither is
     // a property of a project, and an agent mid-work is the usual author
     // of a learning. The method and its framing it may read, not rewrite.
@@ -415,12 +421,17 @@ export class AuthService
       // delegating agent is the usual reviewer
       return method === 'GET' || (method === 'PUT' && run[2] === '/review');
     }
-    const m = /^\/api\/agents\/([^/]+)(\/|$)/.exec(p);
+    const m = /^\/api\/agents\/([^/]+)(\/(.*))?$/.exec(p);
     if (m) {
       const row = this.db
         .prepare('SELECT project_id FROM agents WHERE id = ?')
         .get(decodeURIComponent(m[1]!)) as { project_id: string } | undefined;
-      return row?.project_id === scope.projectId;
+      if (row?.project_id === scope.projectId) return true;
+      // another project's agent: its record and transcript to read, a turn to send
+      const sub = m[3] ?? '';
+      if (method === 'GET' && (sub === '' || sub === 'items')) return true;
+      if (method === 'POST' && sub === 'turn') return true;
+      return false;
     }
     return false;
   }
