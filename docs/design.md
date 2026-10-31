@@ -600,7 +600,17 @@ session then removed. The reply carries the exit code, both streams
 and the duration; a command still running at `timeoutMs` (ten minutes
 by default, an hour at most) is killed and the reply says so. `am exec
 <host> -- <command>` is the terminal form, and every agent's note names
-it beside `am new --host`. What this gives over ssh is the session: the
+it beside `am new --host`. The command crosses two shells, the caller's
+and the host's, which is where quoting goes wrong: `am` therefore takes
+one word after `--` as it is, re-quotes several (the caller's shell has
+eaten their quotes, so a word with whitespace or a shell character in
+it is wrapped in single quotes, which bash and PowerShell both read
+literally), and with no `--` reads the command from stdin, so a quoted
+heredoc (`am exec <host> <<'EOF'`) carries any quoting and any number
+of lines to the host untouched. The host side is faithful: the daemon
+hands the string to the shell as one argument, and PowerShell's
+`-Command` was checked to receive quotes, backslashes, `$` and
+non-ASCII as written. What this gives over ssh is the session: the
 daemon runs where the user is logged on, so on Windows the command
 sees the desktop, the clipboard and the running apps, which an ssh
 login (session 0) does not. For an agent it is one call with the output
