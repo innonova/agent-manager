@@ -352,3 +352,34 @@ end the turn.
 - `scripts/smoke-agents.mjs:115` has had a lint warning (a body on a
   GET) since September.
 
+## Report (2026-11-15)
+
+A second round the same day, on what was said after an hour of use:
+the chat felt enforced, and talking to an idle agent felt disconnected,
+written under the chat on the right and answered in the flow on the
+left. UI only (agent-manager-ui 2f6dc24), gated alone, deployed.
+
+- **One composer under both panes.** It belongs to the agent, not to
+  the chat: outside a turn what is written is a turn in the flow, in a
+  turn it is an aside in the chat, and the placeholder says which.
+- **The chat can be put away.** "hide flow" in the header became a
+  switch, flow / both / chat, remembered. "flow" is the view there was
+  before the chat. What the chat holds meanwhile is counted on the
+  switch: open questions, what the agent said since the chat was last
+  in sight, asides it has not read. The header's open-question chip
+  brings the chat back. On a phone the flow's tab is in front for
+  someone who put the chat away.
+- The "is typing" line moved above the composer, which removes the
+  limit noted above (out of sight with the flow's tab in front).
+
+Verified: a new Playwright test for the composer's extent, the flow
+alone, its memory and the three counts; the suite at 34, unit 22,
+type-check, lint, build; both layouts looked at in screenshots.
+
+Open, as a matter of taste: side by side, the composer is centred
+under the whole view, so it lines up with neither pane. The other
+shape is the composer under the flow only, with the chat a side panel
+of full height; I chose the one that does not move what is written
+further from either pane. A turn sent while idle is still listed in
+the chat ("sent as a turn") as well as in the flow.
+
