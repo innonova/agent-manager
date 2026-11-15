@@ -35,6 +35,11 @@ export class ClaudeAdapter implements AgentAdapter {
     text: string;
   } | null = null;
   private turnOpen = false;
+  /** The model name the agent is set to, as the manager passes it at start. */
+  private configuredModel: string | null = null;
+  configured(opts: { model: string | null }): void {
+    this.configuredModel = opts.model;
+  }
   /** An interrupt was sent into the turn under way: its end is the stop that was asked for, not a failure. */
   private interruptAsked = false;
   /** The activity last reported, so a `message_delta`'s token count can be attached to it without a kind of its own. */
@@ -254,10 +259,14 @@ export class ClaudeAdapter implements AgentAdapter {
         if (model && model !== this.usage.model) {
           // Another model, another window: `[1m]` on the name is the 1M
           // one, anything else is not known until a turn's end says it.
+          // Claude Code 2.1.325 reports the name without the suffix it
+          // was started with, so the name the agent is set to counts too.
           this.usage.model = model;
-          this.usage.contextSize = model.endsWith('[1m]')
-            ? 1_000_000
-            : undefined;
+          const asked = this.configuredModel;
+          this.usage.contextSize =
+            model.endsWith('[1m]') || asked === `${model}[1m]`
+              ? 1_000_000
+              : undefined;
         }
         if (this.turnOpen)
           return { conversationId: line.session_id, state: 'working', model };

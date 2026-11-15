@@ -1217,6 +1217,69 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  it('takes the 1M window from the name the agent is set to when Claude reports the name without its suffix', () => {
+    const adapter = new ClaudeAdapter();
+    adapter.configured({ model: 'claude-fable-5-2[1m]' });
+    adapter.ingest(
+      rec(
+        'out',
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's',
+          model: 'claude-fable-5-2',
+        },
+        1,
+      ),
+    );
+    const said = adapter.ingest(
+      rec(
+        'out',
+        {
+          type: 'assistant',
+          parent_tool_use_id: null,
+          message: {
+            content: [{ type: 'text', text: 'hi' }],
+            usage: { input_tokens: 2, cache_read_input_tokens: 99_998 },
+          },
+        },
+        2,
+      ),
+    );
+    expect(said.usage?.context).toEqual({ used: 100_000, size: 1_000_000 });
+    // set to another model than the one reported: nothing is read off it
+    const other = new ClaudeAdapter();
+    other.configured({ model: 'claude-opus-5-5[1m]' });
+    other.ingest(
+      rec(
+        'out',
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's',
+          model: 'claude-fable-5-2',
+        },
+        1,
+      ),
+    );
+    expect(
+      other.ingest(
+        rec(
+          'out',
+          {
+            type: 'assistant',
+            parent_tool_use_id: null,
+            message: {
+              content: [{ type: 'text', text: 'hi' }],
+              usage: { input_tokens: 2, cache_read_input_tokens: 99_998 },
+            },
+          },
+          2,
+        ),
+      ).usage,
+    ).toBeUndefined();
+  });
+
   it('says a compaction in the flow, and that one is under way', () => {
     const adapter = new ClaudeAdapter();
     const status = (s: string | null) => ({

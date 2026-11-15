@@ -1593,6 +1593,7 @@ export class AgentsService
   ): SessionLive {
     let sl = live.sessions.get(sessionId);
     if (!sl) {
+      adapter.configured?.({ model: agent.model });
       sl = {
         id: sessionId,
         adapter,

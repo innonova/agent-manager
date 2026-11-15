@@ -238,6 +238,8 @@ export interface TurnImage {
 export interface AgentAdapter {
   /** State right after the process starts, before it has said anything. Default 'starting'. */
   readonly initialState?: AgentState;
+  /** What the agent is set to run with, for an adapter that reads something off it the vendor's stream does not repeat (Claude: the context window asked for in the model name). */
+  configured?(opts: { model: string | null }): void;
   /** Extra daemon args for a new session; `resume` is the vendor conversation id. */
   startArgs(opts: {
     resume?: string | null;

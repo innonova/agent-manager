@@ -180,7 +180,8 @@ given for the session's latest message (`input_tokens` plus cache reads
 and writes on an `assistant` record with no `parent_tool_use_id`; a
 sub-agent's message has a context of its own), or a compaction's
 `post_tokens`; `size` is 1,000,000 when the model name `init` reports
-ends in `[1m]`, and otherwise whatever the turn's `result` states for
+ends in `[1m]` (or the agent is set to that name with the suffix:
+Claude Code 2.1.325 reports it without), and otherwise whatever the turn's `result` states for
 that model (`modelUsage[model].contextWindow`), so a session on a model
 without the suffix has no `context` until its first turn has ended. The
 size is the model's, not a setting of its own: which window a Claude
