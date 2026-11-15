@@ -39,7 +39,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private interruptAsked = false;
   /** The activity last reported, so a `message_delta`'s token count can be attached to it without a kind of its own. */
   private currentActivity: {
-    kind: 'requesting' | 'thinking' | 'writing' | 'tool';
+    kind: 'requesting' | 'thinking' | 'writing' | 'tool' | 'compacting';
     detail?: string;
     id?: string;
     tool?: string;
@@ -211,7 +211,7 @@ export class ClaudeAdapter implements AgentAdapter {
       case 'rate_limit_event':
         return this.ingestRateLimit(line, record.t);
       case 'system':
-        return this.ingestSystem(line);
+        return this.ingestSystem(line, record.t);
       case 'control_request':
         return this.ingestControlRequest(line);
       case 'stream_event':
@@ -219,7 +219,7 @@ export class ClaudeAdapter implements AgentAdapter {
       case 'tool_progress':
         return this.ingestToolProgress(line);
       case 'assistant':
-        return this.ingestAssistant(line.message);
+        return this.ingestAssistant(line, record.t);
       case 'user':
         return this.ingestToolResults(line);
       case 'result':
@@ -247,10 +247,18 @@ export class ClaudeAdapter implements AgentAdapter {
    * announced as a full list on every change, and their start and end
    * become transcript items so the user can see what is pending.
    */
-  private ingestSystem(line: any): Ingest {
+  private ingestSystem(line: any, at: number): Ingest {
     switch (line.subtype) {
       case 'init': {
         const model = typeof line.model === 'string' ? line.model : undefined;
+        if (model && model !== this.usage.model) {
+          // Another model, another window: `[1m]` on the name is the 1M
+          // one, anything else is not known until a turn's end says it.
+          this.usage.model = model;
+          this.usage.contextSize = model.endsWith('[1m]')
+            ? 1_000_000
+            : undefined;
+        }
         if (this.turnOpen)
           return { conversationId: line.session_id, state: 'working', model };
         this.turnOpen = true;
@@ -263,12 +271,42 @@ export class ClaudeAdapter implements AgentAdapter {
         };
       }
       case 'status':
+        // Claude Code is summarising the conversation to make room: a
+        // minute or two in which nothing else comes, said every few seconds.
+        if (line.status === 'compacting')
+          return this.currentActivity?.kind === 'compacting'
+            ? {}
+            : { activity: this.activityHint('compacting') };
         // The request to the model is out and nothing has come back yet;
-        // a turn's every message starts with one. Claude's other statuses
-        // (compacting, a compact result) say nothing about the stream.
+        // a turn's every message starts with one. A compaction's result
+        // (status null) says nothing about the stream.
         if (line.status !== 'requesting') return {};
         this.thinkingTokens = 0; // the stretch, if there was one, is over
         return { activity: this.activityHint('requesting') };
+      case 'compact_boundary': {
+        // The context was replaced by a summary of itself: said in the
+        // flow, since what the agent knows of the conversation changed here.
+        const m = line.compact_metadata ?? {};
+        const pre = Number(m.pre_tokens);
+        const post = Number(m.post_tokens);
+        if (Number.isFinite(post) && post > 0) this.usage.contextUsed = post;
+        const how = m.trigger === 'manual' ? 'on request' : 'automatically';
+        const took = Number.isFinite(Number(m.duration_ms))
+          ? `, ${Math.round(Number(m.duration_ms) / 1000)} s`
+          : '';
+        return {
+          ops: [
+            append({
+              kind: 'system',
+              text:
+                Number.isFinite(pre) && Number.isFinite(post)
+                  ? `context compacted ${how}: ${kTokens(pre)} → ${kTokens(post)} tokens${took}`
+                  : `context compacted ${how}`,
+            }),
+          ],
+          ...(this.usage.contextSize ? { usage: this.usageNow(at) } : {}),
+        };
+      }
       case 'thinking_tokens': {
         // Claude's live estimate of the thinking stretch under way,
         // cumulative within it, arriving every few hundred ms.
@@ -358,10 +396,14 @@ export class ClaudeAdapter implements AgentAdapter {
 
   /** The usage as of a record: `at` is the record's time, so a replayed report keeps its date. */
   private usageNow(at: number): AccountUsage {
-    const { windows, status, spend, provider } = this.usage;
+    const { windows, status, spend, provider, contextUsed, contextSize } =
+      this.usage;
     return {
       windows: windows.map((w) => ({ ...w })),
       ...(status ? { status } : {}),
+      ...(contextUsed && contextSize
+        ? { context: { used: contextUsed, size: contextSize } }
+        : {}),
       ...(spend.turns ? { spend: { ...spend } } : {}),
       ...(provider ? { provider } : {}),
       at,
@@ -640,7 +682,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   /** Builds an activity hint and remembers it, so a later token count (`message_delta`) can be attached without knowing the kind again. */
   private activityHint(
-    kind: 'requesting' | 'thinking' | 'writing' | 'tool',
+    kind: 'requesting' | 'thinking' | 'writing' | 'tool' | 'compacting',
     detail?: string,
     id?: string,
     tool?: string,
@@ -679,8 +721,24 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   /** The complete block: authoritative. Replaces the streamed item under its key, or is appended. */
-  private ingestAssistant(message: any): Ingest {
+  private ingestAssistant(line: any, at: number): Ingest {
+    const message = line.message;
     const ops: ItemOp[] = [];
+    // What the model was given for this message is what the context holds
+    // now. A sub-agent's message has a context of its own, not this one.
+    const u = message?.usage;
+    let context = false;
+    if (u && line.parent_tool_use_id == null) {
+      const used =
+        Number(u.input_tokens ?? 0) +
+        Number(u.cache_creation_input_tokens ?? 0) +
+        Number(u.cache_read_input_tokens ?? 0);
+      // a message's blocks arrive as records of their own, each with the same usage
+      if (used > 0 && used !== this.usage.contextUsed) {
+        this.usage.contextUsed = used;
+        context = this.usage.contextSize !== undefined;
+      }
+    }
     let activity: Ingest['activity'];
     const s = this.streaming;
     for (const block of message?.content ?? []) {
@@ -732,7 +790,11 @@ export class ClaudeAdapter implements AgentAdapter {
       }
     }
     this.streaming = null;
-    return { activity, ops };
+    return {
+      activity,
+      ops,
+      ...(context ? { usage: this.usageNow(at) } : {}),
+    };
   }
 
   private ingestToolResults(line: any): Ingest {
@@ -802,6 +864,17 @@ export class ClaudeAdapter implements AgentAdapter {
       (line.modelUsage ?? {}) as Record<string, { provider?: string }>,
     ).find((m) => m?.provider)?.provider;
     if (provider) this.usage.provider = String(provider);
+    // The window's size, which only a turn's end states: the entry of the
+    // session's own model (a sub-agent's model has an entry too).
+    const models = (line.modelUsage ?? {}) as Record<
+      string,
+      { contextWindow?: number }
+    >;
+    const own =
+      (this.usage.model ? models[this.usage.model] : undefined) ??
+      (Object.keys(models).length === 1 ? Object.values(models)[0] : undefined);
+    if (typeof own?.contextWindow === 'number' && own.contextWindow > 0)
+      this.usage.contextSize = own.contextWindow;
     const end: Item = {
       kind: 'turn_end',
       usage: line.usage,
@@ -865,4 +938,14 @@ interface UsageState {
   status?: AccountUsage['status'];
   spend: NonNullable<AccountUsage['spend']>;
   provider?: string;
+  /** The model `init` last named: the window's size belongs to it. */
+  model?: string;
+  /** Tokens the model was last given: what the context holds. Kept across a restart, as the conversation is. */
+  contextUsed?: number;
+  /** The window's size, once known: `[1m]` on the model's name, or what a turn's end reported. */
+  contextSize?: number;
 }
+
+/** A token count for a line of text: 966k, 13k. */
+const kTokens = (n: number): string =>
+  n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);

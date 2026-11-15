@@ -11,7 +11,7 @@ export type AgentState =
 
 /** What the last thing on the stream was doing, for the status's `activity`. */
 export type ActivityKind =
-  'requesting' | 'thinking' | 'writing' | 'tool' | 'waiting';
+  'requesting' | 'thinking' | 'writing' | 'tool' | 'waiting' | 'compacting';
 
 export interface ActivityInfo {
   kind: ActivityKind;
@@ -148,7 +148,10 @@ export interface AccountUsage {
   /** The vendor's verdict, when it gives one. */
   status?: 'ok' | 'warning' | 'rejected';
   plan?: string;
-  /** The session's context window: tokens used of the size. */
+  /**
+   * The session's context window: tokens used of the size. The session's,
+   * not the account's: the accounts' usage (`GET /api/usage`) leaves it out.
+   */
   context?: { used: number; size: number };
   /** What this session has consumed so far: tokens (input includes cache reads and writes) and, when the vendor prices it, dollars. */
   spend?: Spend;

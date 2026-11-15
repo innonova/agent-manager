@@ -137,7 +137,13 @@ session exits. An agent is created with an optional `model` and
 `effort`, vendor names passed verbatim at session start (Claude
 `--model`/`--effort`, Copilot `--model`/`--effort`, Codex `-c model=`
 and `-c model_reasoning_effort=`); the manager does not know which
-values are valid, the vendor rejects a bad one at start.
+values are valid, the vendor rejects a bad one at start. A Claude model
+name also decides the context window: `[1m]` at its end asks for the 1M
+one (`claude-fable-5-2[1m]`), and without it the window is the model's
+default, which differs by model and by Claude Code version (Fable 5.1
+got 1M without the suffix, Fable 5.2 got 200K). The manager adds nothing
+to the name; the UI offers the suffix as a choice beside the model field,
+and the status's `usage.context` shows the size the session got.
 
 What the headless stream does not carry: the thinking itself. Measured
 across the first day's sessions, every `thinking_delta` from Opus 5,
@@ -167,13 +173,39 @@ sessions' final spend (kept per session in the transcript cache) to the
 current one's, which is what the UI shows; each report carries its
 record's time, and the manager keeps the newest per profile, seeded
 from the cached status after a restart; the `provider` when Claude says
-(firstParty, bedrock, vertex); and the context window's use (Codex,
-Copilot). On Bedrock or Vertex there are no account windows, so spend
+(firstParty, bedrock, vertex); and `context`, the session's context
+window as `{ used, size }` in tokens. Codex and Copilot report both
+figures. Claude reports neither as such: `used` is what the model was
+given for the session's latest message (`input_tokens` plus cache reads
+and writes on an `assistant` record with no `parent_tool_use_id`; a
+sub-agent's message has a context of its own), or a compaction's
+`post_tokens`; `size` is 1,000,000 when the model name `init` reports
+ends in `[1m]`, and otherwise whatever the turn's `result` states for
+that model (`modelUsage[model].contextWindow`), so a session on a model
+without the suffix has no `context` until its first turn has ended. The
+size is the model's, not a setting of its own: which window a Claude
+agent gets is decided by its model name (see `model` above), and
+`context` is how a person sees which one it got. It was not visible
+before: this project's own agent was restarted on a model name without
+`[1m]`, ran on a fifth of the window it had had, and compacted nine
+times in a day before anyone noticed (learnings #232). On Bedrock or
+Vertex there are no account windows, so spend
 and provider are the usage there is. Copilot exposes no account quota
 over ACP. The manager keeps the latest report per profile, the account on
 this machine, and `GET /api/usage` lists them per host (a hub merges its
-spokes'). Nothing polls the vendors: usage is what agents report while
+spokes'), without `context`, which is one session's and not the
+account's. Nothing polls the vendors: usage is what agents report while
 they work.
+
+A compaction is said in the flow. Claude Code summarises the
+conversation when the window fills (`system` `status: 'compacting'`
+every few seconds for a minute or two, then `compact_boundary` with
+`compact_metadata`: the trigger, the tokens before and after, the
+duration): the adapter reports the `compacting` activity while it runs
+and appends a `system` item when it is done ("context compacted
+automatically: 966k → 13k tokens, 108 s"), since what the agent knows
+of the conversation changed at that line. The summary itself (a
+synthetic `user` record that follows) is not shown yet.
 
 The status also carries `queued`, the number of messages held for the
 next turn because they arrived with `steer` while the vendor could not
@@ -209,7 +241,8 @@ Copilot's result text; if Copilot sees real use here, rerun the probe
 
 The status also carries `activity`, a compact read of the last thing on
 the stream: `{ kind: 'requesting' | 'thinking' | 'writing' | 'tool' |
-'waiting'; detail?: string; tokens?: number; since: number } | null`.
+'waiting' | 'compacting'; detail?: string; tokens?: number; since:
+number } | null`.
 `requesting` is a request to the model out with nothing back yet
 (Claude's `system` subtype `status` with `status: 'requesting'`, one
 before every message of a turn), `thinking` is a reasoning delta
@@ -221,8 +254,9 @@ what runs (a shell tool's command, first line trimmed to ~80 chars; a
 read or edit's path; otherwise the tool's name) and `tool` the tool's
 own name (Bash, Read, shell, edit, a Copilot call's title), so a client
 can say what kind of thing runs without reading the transcript for it,
-and `waiting` is a
-permission request or an `ask` left open. For Claude the `tool`
+`waiting` is a
+permission request or an `ask` left open, and `compacting` is Claude
+Code summarising the conversation to make room (see `usage`). For Claude the `tool`
 activity begins when the call's `tool_use` block starts streaming,
 named by the tool alone, and is refined with the input once the block
 is complete: the adapter's hint carries the call's `id`, and the
@@ -480,7 +514,7 @@ interface AgentAdapter {
     model?: string;
     background?: number;
     activity?: {
-      kind: 'requesting' | 'thinking' | 'writing' | 'tool';
+      kind: 'requesting' | 'thinking' | 'writing' | 'tool' | 'compacting';
       detail?: string;
       tokens?: number;
     } | null;

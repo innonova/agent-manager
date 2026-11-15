@@ -735,9 +735,13 @@ export class AgentsService
 
   /** The vendor accounts' usage on this machine, one entry per profile that has reported. */
   usage(): { profile: string; agentId: string; usage: AccountUsage }[] {
-    return [...this.latestUsage.values()].sort((a, b) =>
-      a.profile.localeCompare(b.profile),
-    );
+    return [...this.latestUsage.values()]
+      .map((u) => {
+        // the context window is the reporting session's, not the account's
+        const { context: _context, ...usage } = u.usage;
+        return { ...u, usage };
+      })
+      .sort((a, b) => a.profile.localeCompare(b.profile));
   }
 
   counts(projectId: string): AgentCounts {

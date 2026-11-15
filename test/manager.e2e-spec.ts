@@ -588,6 +588,8 @@ describe('agents', () => {
         { name: '7d', usedPercent: 43 },
       ],
       status: 'warning',
+      // the session's context window, on the agent's own status
+      context: { used: 85_000, size: 200_000 },
     });
     const u = (await api.get('/api/usage')).body;
     const fake = u.hosts
@@ -597,6 +599,8 @@ describe('agents', () => {
       agentId: agent.id,
       usage: { status: 'warning' },
     });
+    // and not on the account's: it is one session's, whichever reported last
+    expect(fake.usage.context).toBeUndefined();
   }, 30000);
 
   it('an agent is told about the harness at session start, from the operator template when there is one', async () => {

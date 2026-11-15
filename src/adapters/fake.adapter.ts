@@ -255,6 +255,8 @@ export class FakeAdapter implements AgentAdapter {
                 : Number(line.fiveHour ?? 0) >= 80
                   ? 'warning'
                   : 'ok',
+            // the session's context window, as a vendor that reports one would: N thousand tokens of 200K
+            context: { used: n * 1000, size: 200_000 },
             spend: { ...this.spend },
             at: record.t,
           },

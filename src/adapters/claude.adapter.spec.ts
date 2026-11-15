@@ -500,14 +500,10 @@ describe('ClaudeAdapter', () => {
         ),
       ),
     ).toEqual({ activity: { kind: 'requesting', tokens: 0 } });
-    // other statuses say nothing about the stream
+    // a status that is not the request going out says nothing about the stream
     expect(
       a.ingest(
-        rec(
-          'out',
-          { type: 'system', subtype: 'status', status: 'compacting' },
-          2,
-        ),
+        rec('out', { type: 'system', subtype: 'status', status: null }, 2),
       ),
     ).toEqual({});
     a.ingest(rec('out', ev({ type: 'message_start' }), 3));
@@ -1154,5 +1150,128 @@ describe('ClaudeAdapter', () => {
     expect(new ClaudeAdapter().ingest(init).model).toBe(
       'claude-haiku-4-5-20251001',
     );
+  });
+
+  it('reports the context window: what the model was last given, of the size the model name or a turn end states', () => {
+    const adapter = new ClaudeAdapter();
+    const init = (model: string) => ({
+      type: 'system',
+      subtype: 'init',
+      session_id: 's',
+      model,
+    });
+    const said = (input: number, extra: object = {}) => ({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: {
+        content: [{ type: 'text', text: 'hi' }],
+        usage: {
+          input_tokens: 2,
+          cache_creation_input_tokens: 1000,
+          cache_read_input_tokens: input - 1002,
+          output_tokens: 5,
+        },
+      },
+      ...extra,
+    });
+    const result = (models: object) => ({
+      type: 'result',
+      subtype: 'success',
+      session_id: 's',
+      usage: {},
+      modelUsage: models,
+    });
+    // a model without the suffix: the size is not known until a turn ends
+    adapter.ingest(rec('out', init('claude-fable-5-2'), 1));
+    expect(adapter.ingest(rec('out', said(90_000), 2)).usage).toBeUndefined();
+    const end = adapter.ingest(
+      rec(
+        'out',
+        result({
+          'claude-haiku-5-5': { contextWindow: 150_000 }, // a sub-agent's model
+          'claude-fable-5-2': { contextWindow: 200_000 },
+        }),
+        3,
+      ),
+    );
+    expect(end.usage?.context).toEqual({ used: 90_000, size: 200_000 });
+    // from then on every message of the session itself moves it; a sub-agent's does not
+    adapter.ingest(rec('out', init('claude-fable-5-2'), 4));
+    expect(adapter.ingest(rec('out', said(120_000), 5)).usage?.context).toEqual(
+      { used: 120_000, size: 200_000 },
+    );
+    // the same message's next block: nothing new to say
+    expect(adapter.ingest(rec('out', said(120_000), 6)).usage).toBeUndefined();
+    expect(
+      adapter.ingest(
+        rec('out', said(7_000, { parent_tool_use_id: 'toolu_1' }), 7),
+      ).usage,
+    ).toBeUndefined();
+    // restarted on the 1M variant: the name says the size before any turn has ended
+    const again = new ClaudeAdapter();
+    again.restore(adapter.snapshot());
+    again.ingest(rec('out', init('claude-fable-5-2[1m]'), 8));
+    expect(again.ingest(rec('out', said(125_000), 9)).usage?.context).toEqual({
+      used: 125_000,
+      size: 1_000_000,
+    });
+  });
+
+  it('says a compaction in the flow, and that one is under way', () => {
+    const adapter = new ClaudeAdapter();
+    const status = (s: string | null) => ({
+      type: 'system',
+      subtype: 'status',
+      status: s,
+    });
+    adapter.ingest(
+      rec(
+        'out',
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's',
+          model: 'claude-fable-5-2[1m]',
+        },
+        1,
+      ),
+    );
+    expect(
+      adapter.ingest(rec('out', status('compacting'), 2)).activity,
+    ).toMatchObject({ kind: 'compacting' });
+    // said again every few seconds: one activity, not one per record
+    expect(
+      adapter.ingest(rec('out', status('compacting'), 3)).activity,
+    ).toBeUndefined();
+    expect(adapter.ingest(rec('out', status(null), 4))).toEqual({});
+    const done = adapter.ingest(
+      rec(
+        'out',
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+          compact_metadata: {
+            trigger: 'auto',
+            pre_tokens: 966_140,
+            post_tokens: 12_699,
+            duration_ms: 108_427,
+          },
+        },
+        5,
+      ),
+    );
+    expect(done.ops).toEqual([
+      {
+        op: 'append',
+        item: {
+          kind: 'system',
+          text: 'context compacted automatically: 966k → 13k tokens, 108 s',
+        },
+      },
+    ]);
+    expect(done.usage?.context).toEqual({ used: 12_699, size: 1_000_000 });
+    expect(
+      adapter.ingest(rec('out', status('requesting'), 6)).activity,
+    ).toMatchObject({ kind: 'requesting' });
   });
 });
