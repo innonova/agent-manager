@@ -300,6 +300,8 @@ export class ClaudeAdapter implements AgentAdapter {
         const pre = Number(m.pre_tokens);
         const post = Number(m.post_tokens);
         if (Number.isFinite(post) && post > 0) this.usage.contextUsed = post;
+        if (this.usage.contextSize === undefined && pre > 200_000)
+          this.usage.contextSize = 1_000_000;
         const how = m.trigger === 'manual' ? 'on request' : 'automatically';
         const took = Number.isFinite(Number(m.duration_ms))
           ? `, ${Math.round(Number(m.duration_ms) / 1000)} s`
@@ -746,6 +748,10 @@ export class ClaudeAdapter implements AgentAdapter {
       // a message's blocks arrive as records of their own, each with the same usage
       if (used > 0 && used !== this.usage.contextUsed) {
         this.usage.contextUsed = used;
+        // Claude's windows are 200K and 1M: a context holding more than
+        // the one is the other, known now and not at the turn's end.
+        if (this.usage.contextSize === undefined && used > 200_000)
+          this.usage.contextSize = 1_000_000;
         context = this.usage.contextSize !== undefined;
       }
     }

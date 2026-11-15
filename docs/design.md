@@ -181,7 +181,9 @@ and writes on an `assistant` record with no `parent_tool_use_id`; a
 sub-agent's message has a context of its own), or a compaction's
 `post_tokens`; `size` is 1,000,000 when the model name `init` reports
 ends in `[1m]` (or the agent is set to that name with the suffix:
-Claude Code 2.1.325 reports it without), and otherwise whatever the turn's `result` states for
+Claude Code 2.1.325 reports it without), 1,000,000 as soon as the
+context holds more than 200,000 tokens (Claude's windows are those
+two), and otherwise whatever the turn's `result` states for
 that model (`modelUsage[model].contextWindow`), so a session on a model
 without the suffix has no `context` until its first turn has ended. The
 size is the model's, not a setting of its own: which window a Claude
@@ -935,8 +937,12 @@ output. The selection, within a budget of
 `dialog_windows`: a Claude session on a model name without `[1m]`
 states its window only when a turn ends, and the first two real
 hand-backs, right after restarts, fell back to 200K and handed an
-agent with a 1M window a fifth of what it should have had; 200K only
-when no size was ever reported): the most recent exchanges up
+agent with a 1M window a fifth of what it should have had; for an
+agent that never reported one, which is every agent that has not
+finished a turn since the manager learned to look, 1M for Claude and
+200K otherwise, since taking a 1M window for 200K loses four fifths of
+the dialog silently and the opposite mistake shows in the header and
+is corrected at the first turn's end): the most recent exchanges up
 to half the budget, the last two whatever they cost; then older ones
 in force, not reversed and given any weight, the heaviest first, among
 equals rules and purposes before decisions before open tasks and then

@@ -493,3 +493,24 @@ in xcom's flow): Claude's `total_cost_usd` of a resumed session starts
 from what the conversation cost before, and the adapter takes the step
 from zero. The agent's total spend may count earlier sessions twice
 for the same reason. Not looked into.
+
+## Report (2026-11-15)
+
+A sixth round, on the person's point that most agents do not have a
+window on record: the manager learns one only when a turn ends under
+the code that looks for it. Gated alone.
+
+- **An agent that never reported a window is taken to have its
+  vendor's usual one**: 1M for Claude, 200K otherwise. Taking a 1M
+  window for 200K hands the agent a fifth of its dialog and nothing
+  shows it; the opposite mistake fills half of a small window once,
+  shows in the header, and is corrected when the first turn ends.
+- **The Claude adapter knows a 1M window as soon as the context holds
+  more than 200K tokens**, in the middle of a turn, from a message's
+  usage or a compaction's `pre_tokens`.
+
+Verified: a unit test of each; manager 152 unit and 152 end-to-end.
+
+Left open: a Claude agent whose window really is 200K (an older
+model, or a model name Claude Code does not know and caps) and that
+has never reported it gets one hand-back sized for 1M.

@@ -545,7 +545,9 @@ export class DialogService implements OnModuleInit {
    * restart the status has none; the first two real hand-backs fell
    * back to 200K there and handed an agent with a 1M window a fifth of
    * its dialog. Hence the size is kept, per agent, across sessions and
-   * restarts of the manager.
+   * restarts of the manager, and an agent that never reported one (it
+   * has not finished a turn since the manager learned to look) is taken
+   * to have its vendor's usual window.
    */
   private window(agentId: string): number {
     const now = this.agents.status(agentId).usage?.context?.size;
@@ -557,7 +559,15 @@ export class DialogService implements OnModuleInit {
           .prepare('SELECT size FROM dialog_windows WHERE agent_id = ?')
           .get(agentId) as { size: number } | undefined
       )?.size;
-    return kept ?? 200_000;
+    // Never reported: Claude's current models have 1M windows, and the
+    // two mistakes are not alike. Taking a 1M window for 200K hands the
+    // agent a fifth of its dialog and nothing shows it; taking a 200K
+    // window for 1M fills half of it once, shows in the header, and is
+    // corrected when the first turn ends.
+    return (
+      kept ??
+      (this.agents.get(agentId).profile === 'claude' ? 1_000_000 : 200_000)
+    );
   }
   /** The window each agent last reported, as kept in `dialog_windows`. */
   private readonly windows = new Map<string, number>();

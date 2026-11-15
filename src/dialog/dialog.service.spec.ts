@@ -52,14 +52,15 @@ describe('DialogService: the window the budget is a share of', () => {
   it('is what the agent last reported, across a session that has not said yet and a restart of the manager', async () => {
     const t = service();
     const first = t.make();
-    // nothing known: the careful default
-    expect((await first.preview('a')).budget).toBe(20_000);
-    t.say({ usage: { context: { used: 570_000, size: 1_000_000 } } });
+    // never reported, a Claude agent: its vendor's usual window, 1M
     expect((await first.preview('a')).budget).toBe(100_000);
+    // this one turns out to have the small one
+    t.say({ usage: { context: { used: 90_000, size: 200_000 } } });
+    expect((await first.preview('a')).budget).toBe(20_000);
     // the agent was restarted: its new session has not reported a window
     t.forget();
-    expect((await first.preview('a')).budget).toBe(100_000);
+    expect((await first.preview('a')).budget).toBe(20_000);
     // and so was the manager
-    expect((await t.make().preview('a')).budget).toBe(100_000);
+    expect((await t.make().preview('a')).budget).toBe(20_000);
   });
 });

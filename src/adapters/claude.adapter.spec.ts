@@ -1207,6 +1207,14 @@ describe('ClaudeAdapter', () => {
         rec('out', said(7_000, { parent_tool_use_id: 'toolu_1' }), 7),
       ).usage,
     ).toBeUndefined();
+    // more in the context than the smaller window holds: it is the larger one, known before any turn has ended
+    const big = new ClaudeAdapter();
+    big.ingest(rec('out', init('claude-opus-5-5'), 1));
+    expect(big.ingest(rec('out', said(180_000), 2)).usage).toBeUndefined();
+    expect(big.ingest(rec('out', said(570_000), 3)).usage?.context).toEqual({
+      used: 570_000,
+      size: 1_000_000,
+    });
     // restarted on the 1M variant: the name says the size before any turn has ended
     const again = new ClaudeAdapter();
     again.restore(adapter.snapshot());
