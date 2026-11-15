@@ -3,6 +3,7 @@ import { AdaptersModule } from './adapters/adapters.module.js';
 import { AgentsModule } from './agents/agents.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { ChangesModule } from './changes/changes.module.js';
+import { ChatModule } from './chat/chat.module.js';
 import { ConfigModule } from './config/config.module.js';
 import { ManagerConfig } from './config/config.js';
 import { DaemonModule } from './daemon/daemon.module.js';
@@ -38,6 +39,7 @@ export class AppModule {
         FeaturesModule,
         NotesModule,
         PushModule,
+        ChatModule,
         ChangesModule,
         RunsModule,
         LearningsModule,

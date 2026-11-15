@@ -674,6 +674,100 @@ agent on another machine (the file and the script are this disk's)
 and not for Codex or Copilot, which have no such hook; the daemon
 knows nothing of it. Verified in headless stream-json mode before it
 was built: the context reaches the model there as it does interactively.
+The same hook process carries the chat's notice (see Chat), so the
+settings file is written with the clock off too (`--every 0`).
+
+## Chat: a conversation neither side stops for
+
+A person reaches a working agent by a steer, which reads as an order,
+or by a turn, for which the agent has stopped; and the agent reaches
+the person only by stopping. The chat is the third way: a record per
+agent, kept by the manager (`chat_messages`, gone with the agent),
+beside the transcript and not a view of it. The transcript shows the
+agent reading and writing the chat, as tool calls; the chat holds the
+messages. Kept outside the agent's context, a person's words survive a
+compaction verbatim and can be read again.
+
+**To the agent.** `POST /api/agents/:id/chat` from anyone but the agent
+itself is someone talking to it, and how it travels depends on what the
+agent is doing; the reply's `mode` says which:
+
+- In a turn (`working`, `starting`, `waiting-permission`) it is an
+  **aside**: stored unread, and the agent is told that it exists, never
+  what it says. A notification that carried the text would be a user
+  message, and a user message mid-turn reads as an order to re-plan,
+  which is what a steer is for. The agent fetches its unread messages
+  when it chooses (`POST …/chat/read`, what `am chat` does), and that
+  fetch is the reading: `readAt` is when the agent got the text, not
+  when a line scrolled past it. Only the agent's own token may read.
+- With `steer: true` it goes into the running turn as a steer where the
+  vendor takes one, recorded as `steer` and read; where it cannot (the
+  session is starting, or blocked on a permission) it stays an aside
+  rather than being queued in memory, since the chat already keeps it.
+- Outside a turn it **starts one**, carrying the text and anything
+  older still unread, and is read at once: a round trip to an idle agent
+  buys nothing.
+
+What is still unread when a turn ends is handed over as the next turn
+(the `state` event with `idle`), so nothing sits unread beside an idle
+agent; a sweep every `AGENT_MANAGER_CHAT_SWEEP_MS` does the same for
+what an event did not (a manager restart with a message unread, a
+refusal at the turn's end). One message goes as it was written, by its
+author; a reply to a question under "Answer to your question #N
+("…"):"; several under "N chat messages, written while you worked:"
+with author and time each. A delivery marks read only the rows it
+carried, after the daemon took the turn, and one delivery runs per
+agent at a time: a message is delivered once, and one that arrives
+during a delivery waits for the next.
+
+**The notice.** Two ways, by what the agent's CLI offers:
+
+- A local Claude session has the PostToolUse hook (see The clock). After
+  each tool call of the main agent (not of a subagent: the hook stays
+  silent when the event has an `agent_id`) it asks `POST
+  /api/chat/notice` with the session's token, bounded to 700 ms and
+  silent on any failure, and prints what comes back beside the tool
+  result. The manager decides when there is something to say: at once
+  for a message the agent has not been told of, again every
+  `AGENT_MANAGER_CHAT_REPEAT_MS` while something stays unread ("Chat: 2
+  unread messages from anders, the oldest written 12 min ago. `am chat`
+  prints them …"). The first such call records the session as one with
+  a hook (`agents.hook_session`).
+- A session that has never asked (Codex, Copilot, a Claude on another
+  machine, one started before the hook) is told by a one-line steer of
+  the manager's own (`by: manager`), on the same cadence, from the post
+  and from the sweep. Where no steer can go, the end of the turn
+  delivers.
+
+What was told is kept in memory; a restart tells an agent once more.
+
+**From the agent.** The same `POST` with the agent's own session token
+is the agent speaking: `kind` is `message` (a milestone, a finding),
+`decision` (a choice made on the people's behalf) or `question`, with
+`important` for what matters a lot. A question and anything important
+go out by web push (tag `chat-<agent>-<id>`, so each stands on the
+phone on its own); the rest is there when someone looks. A question is
+open until a person replies to it (`replyTo`, which closes it as
+`answer`), a person dismisses it or the agent closes it (`POST
+…/chat/:messageId/close`). The agent's final message of a turn is not
+copied into the chat: it is the last thing in the transcript beside
+it, and copying would show it twice.
+
+Everything said to the agent is in the chat, whichever way it
+travelled: a turn or steer through `POST /api/agents/:id/turn` (`am
+turn`, another agent's brief) is recorded as said and already read.
+The manager's own messages (the background poke, the notice) are not
+conversation and are not recorded. `chat.changed` carries the changed
+messages and the agent's summary (`unread`, `questions`, `last`) to
+every open client; `GET /api/projects/:id/chat` gives the summaries per
+agent for a list. How agents are told to use it is the harness note's
+(two behaviours: keep going with a question open, and say every
+decision), and that wording is expected to be tuned.
+
+Not there yet: an image in an aside (it is refused; a turn or a steer
+carries one), the hook for a Claude on another machine, what `undo`
+means for a withdrawn message's chat record, and a chat between agents
+or across a project (the store does not rule it out).
 
 ## Notes: the small actionable items
 
@@ -1317,7 +1411,7 @@ spokes).
 ```
 POST   /api/auth/login              { name, password }         -> { user }
 POST   /api/auth/logout
-GET    /api/auth/me
+GET    /api/auth/me                                            -> { user, agent? }; `agent: { id, projectId }` when the caller is an agent's own session token
 GET    /api/users                                               -> { users: [{ id, name, createdAt, lastLoginAt }] }
 POST   /api/users            { name }                           -> 201 { user, password }; the password is shown once
 PATCH  /api/users/me         { name }                           -> { user }; only your own name
@@ -1384,6 +1478,13 @@ POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?,
 GET    /api/projects/:id/features/:slug
 PATCH  /api/projects/:id/features/:slug  { status?, title?, body?, priority?, dependsOn? } -> the human's edits; status may be planned, review, blocked or done (in-progress is the agent's)
 POST   /api/projects/:id/features/:slug/respond { text, status? } -> appends a dated "## Response" section; status defaults to planned
+GET    /api/agents/:id/chat?before=<id>&limit=<n>              -> { messages: [{ id, from, author, kind, important, text, re, via, images, at, readAt, closedAt, closedBy }], summary: { unread, questions, last } }; oldest first, the last `limit` (200) or those before `before`
+POST   /api/agents/:id/chat         { text, kind?, important?, replyTo? } with the agent's own token -> 201 { message }; the agent says a message, a decision or a question
+POST   /api/agents/:id/chat         { text, replyTo?, steer?, images? } from anyone else -> 201 { message, mode: 'aside'|'turn'|'steer' }; see Chat
+POST   /api/agents/:id/chat/read                                -> { messages, summary }; the unread ones, now read; the agent's own token only (403)
+POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
+GET    /api/projects/:id/chat                                   -> { <agentId>: { unread, questions, last } } for the agents that have a chat
+POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
 PATCH  /api/projects/:id/notes/:noteId { done?, text? }         -> the list; 404 for an unknown note
@@ -1445,6 +1546,7 @@ agent.archived   { agentId, projectId }            // archived: off the active l
 agent.removed    { agentId, projectId }            // forgotten for good; drop it
 feature.changed  { projectId, feature }            // a feature file changed (status, report, response, edit)
 notes.changed    { projectId, notes }              // the project's notes changed: added, ticked, edited, removed, by anyone
+chat.changed     { agentId, projectId, messages, summary } // messages of an agent's chat were added or changed (read, closed); merge by id
 ```
 
 Clients subscribe to nothing; they receive everything for the projects
@@ -1525,6 +1627,8 @@ swept once a minute.
 | `AGENT_MANAGER_SSH_HOST`                  | `AGENT_MANAGER_HOST_NAME`            | how a person's own machine reaches this one over SSH (`host` or `user@host`), reported as `project.sshHost` for the links that open a project in VS Code                                                                         |
 | `AGENT_MANAGER_AGENT_URL`                 | unset                                | the address an agent on another machine reaches this manager at, as its `AGENT_MANAGER_URL` (the listening address otherwise, which only local agents can use)                                                                   |
 | `AGENT_MANAGER_CLOCK_MS`                  | `600000` (10 min)                    | how often, at most, a Claude agent started here is told the time beside a tool result (see Agents: the clock); 0 never                                                                                                           |
+| `AGENT_MANAGER_CHAT_REPEAT_MS`            | `300000` (5 min)                     | how long after telling a working agent of unread chat messages it is told again, while they stay unread (see Chat)                                                                                                               |
+| `AGENT_MANAGER_CHAT_SWEEP_MS`             | `15000`                              | how often unread chat messages are looked over: delivered to an agent that is idle, said again to a working one without a hook; 0 leaves it to the events                                                                        |
 | `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
 | `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
 | `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |

@@ -2,7 +2,14 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Api, TestDaemon, TestManager, sleep, startDaemon, startManager } from './helpers.js';
+import {
+  Api,
+  TestDaemon,
+  TestManager,
+  sleep,
+  startDaemon,
+  startManager,
+} from './helpers.js';
 
 let daemon: TestDaemon;
 let m: TestManager;
@@ -12,9 +19,13 @@ let projectId: string;
 let agentId: string;
 
 const git = (...args: string[]) =>
-  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.t', ...args], {
-    cwd: repo,
-  })
+  execFileSync(
+    'git',
+    ['-c', 'user.name=t', '-c', 'user.email=t@t.t', ...args],
+    {
+      cwd: repo,
+    },
+  )
     .toString()
     .trim();
 
@@ -46,7 +57,9 @@ beforeAll(async () => {
     defaultProfile: 'fake',
   });
   projectId = p.body.project.id;
-  const a = await api.post(`/api/projects/${projectId}/agents`, { name: 'maker' });
+  const a = await api.post(`/api/projects/${projectId}/agents`, {
+    name: 'maker',
+  });
   agentId = a.body.agent.id;
 }, 30000);
 

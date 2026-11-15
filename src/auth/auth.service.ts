@@ -379,6 +379,8 @@ export class AuthService
     if (p === '/api/auth/me' || p === '/api/health' || p === '/api/profiles')
       return true;
     if (p === '/api/events') return true;
+    // its own chat's notice: what its hook asks after a tool call
+    if (p === '/api/chat/notice') return method === 'POST';
     if (p === '/api/projects' && method === 'GET') return true;
     const inProject = new RegExp(
       `^/api/projects/${escapeRe(scope.projectId)}(/|$)`,

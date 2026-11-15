@@ -152,6 +152,29 @@ CREATE TABLE IF NOT EXISTS runs (
   reviewed_by TEXT,
   reviewed_at INTEGER
 );
+-- The chat between people and one agent: its own record, not a view of
+-- the transcript. What a person said (an aside to a working agent, a
+-- turn, a steer) and what the agent said with its tool (a message, a
+-- decision, a question). read_at is when the agent got a person's
+-- message; a question is open until closed_at.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  from_agent INTEGER NOT NULL,
+  author_id TEXT,
+  author_name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'message',
+  important INTEGER NOT NULL DEFAULT 0,
+  text TEXT NOT NULL,
+  reply_to INTEGER,
+  via TEXT,
+  images INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  read_at INTEGER,
+  closed_at INTEGER,
+  closed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS chat_agent ON chat_messages (agent_id, id);
 CREATE INDEX IF NOT EXISTS runs_project ON runs (project_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS runs_open ON runs (agent_id) WHERE ended_at IS NULL;
 `;
@@ -190,6 +213,10 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec('ALTER TABLE agents ADD COLUMN hold_until INTEGER');
     if (!agentCols.includes('host'))
       this.db.exec('ALTER TABLE agents ADD COLUMN host TEXT');
+    // The session in which the agent's hook last asked about its chat: an
+    // agent with a hook is told of unread messages there, one without by a steer.
+    if (!agentCols.includes('hook_session'))
+      this.db.exec('ALTER TABLE agents ADD COLUMN hook_session TEXT');
     // The review of a run, added after the runs table shipped.
     const runCols = (
       this.db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]

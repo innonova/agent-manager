@@ -14,6 +14,7 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { COOKIE_NAME, Public } from './auth.guard.js';
 import { AuthService, User } from './auth.service.js';
+import type { AgentScope } from './auth.service.js';
 
 @Controller('api/auth')
 export class AuthController {
@@ -71,8 +72,16 @@ export class AuthController {
     return { ok: true };
   }
 
+  /** Who is calling; `agent` when it is an agent's own session token, so its `am` knows which agent it speaks for. */
   @Get('me')
-  me(@Req() req: Request & { user?: User }): { user: User } {
-    return { user: req.user! };
+  me(@Req() req: Request & { user?: User; agentScope?: AgentScope }): {
+    user: User;
+    agent?: { id: string; projectId: string };
+  } {
+    const s = req.agentScope;
+    return {
+      user: req.user!,
+      ...(s ? { agent: { id: s.agentId, projectId: s.projectId } } : {}),
+    };
   }
 }

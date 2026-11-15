@@ -305,7 +305,11 @@ export class ChangesService {
       since?: string;
       limit?: number;
     } = {},
-  ): Promise<{ commits: CommitRow[]; working: WorkingRow[]; sinceCount: number }> {
+  ): Promise<{
+    commits: CommitRow[];
+    working: WorkingRow[];
+    sinceCount: number;
+  }> {
     const project = this.projects.get(projectId);
     if (filter.since !== undefined && typeof filter.since !== 'string')
       throw new BadRequestException('"since" must be a commit');
@@ -349,7 +353,12 @@ export class ChangesService {
         if (ok) since = ok;
       }
       const commits = (await log(repo.path, { limit, since })) ?? [];
-      const attribution = await this.attribute(repo.path, repo.name, commits, runs);
+      const attribution = await this.attribute(
+        repo.path,
+        repo.name,
+        commits,
+        runs,
+      );
       const turns = this.turnRecords(projectId, repo.name);
       for (const c of commits) {
         const isUnread = unread ? unread.has(c.hash) : true;
@@ -404,7 +413,11 @@ export class ChangesService {
     for (const r of mine) {
       const set = await commitsIn(cwd, r.baseCommit!, r.endCommit ?? 'HEAD');
       if (!set) continue; // a base that no longer resolves contributes no window
-      windows.push({ run: r, set, basePos: pos.get(r.baseCommit!) ?? Infinity });
+      windows.push({
+        run: r,
+        set,
+        basePos: pos.get(r.baseCommit!) ?? Infinity,
+      });
     }
     const result = new Map<
       string,
@@ -435,7 +448,10 @@ export class ChangesService {
   private turnRecords(
     projectId: string,
     repoName: string,
-  ): Map<string, { agentId: string; agentName: string; sessionId: string; item: number }> {
+  ): Map<
+    string,
+    { agentId: string; agentName: string; sessionId: string; item: number }
+  > {
     const rows = this.db
       .prepare(
         'SELECT hash, agent_id, agent_name, session_id, item_index FROM commit_attributions WHERE project_id = ? AND repo = ?',
@@ -495,7 +511,14 @@ export class ChangesService {
     hash: string,
     rel?: unknown,
   ): Promise<
-    | { repo: string; hash: string; subject: string; author: string; at: number; files: ChangedFile[] }
+    | {
+        repo: string;
+        hash: string;
+        subject: string;
+        author: string;
+        at: number;
+        files: ChangedFile[];
+      }
     | FileDiff
   > {
     const project = this.projects.get(projectId);
@@ -529,12 +552,21 @@ export class ChangesService {
     const parent = `${full}^`;
     const beforePath = entry?.oldPath ?? rel;
     const beforeSize =
-      entry?.status === 'added' ? null : await sizeAt(repo.path, parent, beforePath);
+      entry?.status === 'added'
+        ? null
+        : await sizeAt(repo.path, parent, beforePath);
     const afterSize =
       entry?.status === 'deleted' ? null : await sizeAt(repo.path, full, rel);
     const size = Math.max(beforeSize ?? 0, afterSize ?? 0);
     if (size > MAX_FILE_BYTES)
-      return { path: rel, base: parent, before: null, after: null, binary: false, truncated: true };
+      return {
+        path: rel,
+        base: parent,
+        before: null,
+        after: null,
+        binary: false,
+        truncated: true,
+      };
     const beforeBuf =
       beforeSize === null ? null : await showAt(repo.path, parent, beforePath);
     const afterBuf =
@@ -543,7 +575,14 @@ export class ChangesService {
       buf?.subarray(0, 8192).includes(0),
     );
     if (binary)
-      return { path: rel, base: parent, before: null, after: null, binary: true, truncated: false };
+      return {
+        path: rel,
+        base: parent,
+        before: null,
+        after: null,
+        binary: true,
+        truncated: false,
+      };
     return {
       path: rel,
       base: parent,

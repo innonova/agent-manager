@@ -890,8 +890,14 @@ export class AgentsService
     id: string,
     text: unknown,
     userId?: string,
-    opts: { steer?: boolean; forSession?: string; images?: unknown } = {},
-  ): Promise<'sent' | 'steered' | 'queued' | 'dropped'> {
+    opts: {
+      steer?: boolean;
+      forSession?: string;
+      images?: unknown;
+      /** `false`: a steer the vendor cannot take now is not held in memory; the answer is `unsteerable` and the caller keeps the message (the chat does, durably). */
+      hold?: boolean;
+    } = {},
+  ): Promise<'sent' | 'steered' | 'queued' | 'dropped' | 'unsteerable'> {
     if (typeof text !== 'string' || text.length === 0)
       throw new BadRequestException('"text" is required');
     const images = parseImages(opts.images);
@@ -943,6 +949,7 @@ export class AgentsService
           throw busy();
         const lines = sl.adapter.steer?.(text, images) ?? [];
         if (lines.length === 0) {
+          if (opts.hold === false) return 'unsteerable';
           const heldBytes = live.queued.reduce(
             (n, q) => n + q.images.reduce((m, i) => m + i.data.length, 0),
             0,
@@ -2282,17 +2289,18 @@ export class AgentsService
   }
 
   /**
-   * A settings file for Claude sessions started here, with the clock hook
-   * on: `<dataDir>/claude-settings.json`, written on first use and
-   * whenever the interval or the paths changed. Null when the clock is
-   * off. Claude merges it over the person's own settings on the machine,
-   * so their hooks stay. The hook's command quotes both paths: node and
-   * the script can sit under a path with spaces, as on Windows.
+   * A settings file for Claude sessions started here, with the manager's
+   * hook on: `<dataDir>/claude-settings.json`, written on first use and
+   * whenever the interval or the paths changed. The hook tells the agent
+   * the time (never, with the clock off) and that chat messages are
+   * unread. Claude merges the file over the person's own settings on
+   * the machine, so their hooks stay. The hook's command quotes both
+   * paths: node and the script can sit under a path with spaces, as on
+   * Windows.
    */
   private async claudeSettingsFile(): Promise<string | null> {
-    if (!this.config.clockMs) return null;
     const file = path.join(this.config.dataDir, 'claude-settings.json');
-    const command = `"${process.execPath}" "${this.config.clockHook}" --every ${this.config.clockMs}`;
+    const command = `"${process.execPath}" "${this.config.clockHook}" --every ${this.config.clockMs || 0}`;
     const text = `${JSON.stringify(
       {
         hooks: {

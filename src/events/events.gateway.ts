@@ -11,6 +11,7 @@ import path from 'node:path';
 import type { WebSocket } from 'ws';
 import { AgentsService } from '../agents/agents.service.js';
 import { AuthService } from '../auth/auth.service.js';
+import { ChatService } from '../chat/chat.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DaemonClients } from '../daemon/daemon-clients.js';
@@ -61,6 +62,7 @@ export class EventsGateway
     private readonly daemons: DaemonClients,
     private readonly features: FeaturesService,
     private readonly notes: NotesService,
+    private readonly chat: ChatService,
     private readonly runs: RunsService,
     private readonly hub: HubService,
   ) {}
@@ -95,6 +97,15 @@ export class EventsGateway
     );
     this.notes.on('changed', (projectId, notes) =>
       this.broadcast({ type: 'notes.changed', projectId, notes }),
+    );
+    this.chat.on('changed', (agentId, projectId, messages, summary) =>
+      this.broadcast({
+        type: 'chat.changed',
+        agentId,
+        projectId,
+        messages,
+        summary,
+      }),
     );
     // one frame for a run appearing, ending and being judged: what the
     // reader wants is the run as it now stands, whichever happened

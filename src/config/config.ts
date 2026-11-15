@@ -39,6 +39,10 @@ export interface ManagerConfig {
   clockMs: number;
   /** The hook script that does it, shipped beside the fake agent. */
   clockHook: string;
+  /** While a working agent has unread chat messages it is told so again this often (ms). */
+  chatRepeatMs: number;
+  /** How often the chat looks for messages a state change did not deliver (ms). */
+  chatSweepMs: number;
   /** Accepted as a bearer token by another manager acting as a hub; null means no hub may. */
   hubToken: string | null;
   /** The spokes this manager fronts for, `[{ name, url, token }]`; absent means not a hub. */
@@ -150,6 +154,8 @@ export function loadConfig(
       'fixtures',
       'clock-hook.mjs',
     ),
+    chatRepeatMs: Number(env.AGENT_MANAGER_CHAT_REPEAT_MS ?? 5 * 60_000),
+    chatSweepMs: Number(env.AGENT_MANAGER_CHAT_SWEEP_MS ?? 15_000),
     hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,
     spokesFile:
       env.AGENT_MANAGER_SPOKES_FILE ??

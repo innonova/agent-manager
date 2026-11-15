@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
+import { ChatService } from '../chat/chat.service.js';
 import { HubService } from '../hub/hub.service.js';
 import type { Request } from 'express';
 import type { User } from '../auth/auth.service.js';
@@ -31,6 +32,7 @@ export class AgentsController {
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly agents: AgentsService,
     private readonly hub: HubService,
+    private readonly chat: ChatService,
   ) {}
 
   /** `?archived=1` lists the archived ones instead, newest first. */
@@ -130,8 +132,20 @@ export class AgentsController {
       steer: body?.steer === true,
       images: body?.images,
     });
-    // 'dropped' only happens for a message the manager itself sends from its queue
-    return { ok: true, mode: mode === 'dropped' ? 'queued' : mode };
+    // what was said to the agent is in its chat whichever way it travelled
+    if (req.user && typeof body?.text === 'string')
+      this.chat.record(
+        id,
+        req.user,
+        body.text,
+        mode === 'sent' ? 'turn' : 'steer',
+        Array.isArray(body?.images) ? body.images.length : 0,
+      );
+    // 'dropped' and 'unsteerable' only happen for messages the manager itself sends
+    return {
+      ok: true,
+      mode: mode === 'dropped' || mode === 'unsteerable' ? 'queued' : mode,
+    };
   }
 
   @Post('agents/:id/permission')

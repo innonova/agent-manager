@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
-import { AuthService, User } from './auth.service.js';
+import { AgentScope, AuthService, User } from './auth.service.js';
 
 export { COOKIE_NAME, sessionIdFromCookieHeader } from './cookie.js';
 export const IS_PUBLIC = 'isPublic';
@@ -32,12 +32,15 @@ export class AuthGuard implements CanActivate {
       return true;
     const req = ctx
       .switchToHttp()
-      .getRequest<Request & { user?: User; sessionId?: string }>();
+      .getRequest<
+        Request & { user?: User; sessionId?: string; agentScope?: AgentScope }
+      >();
     const { user, sessionId, scope } = this.auth.userForHeaders(req.headers);
     if (!user) throw new UnauthorizedException();
     if (scope && !this.auth.scopeAllows(scope, req.method, req.originalUrl))
       throw new ForbiddenException("outside this agent token's project");
     req.user = user;
+    req.agentScope = scope; // set when the caller is an agent's own session token
     req.sessionId = sessionId ?? undefined;
     return true;
   }
