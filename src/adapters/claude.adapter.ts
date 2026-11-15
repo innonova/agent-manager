@@ -35,6 +35,8 @@ export class ClaudeAdapter implements AgentAdapter {
     text: string;
   } | null = null;
   private turnOpen = false;
+  /** An interrupt was sent into the turn under way: its end is the stop that was asked for, not a failure. */
+  private interruptAsked = false;
   /** The activity last reported, so a `message_delta`'s token count can be attached to it without a kind of its own. */
   private currentActivity: {
     kind: 'requesting' | 'thinking' | 'writing' | 'tool';
@@ -461,6 +463,7 @@ export class ClaudeAdapter implements AgentAdapter {
       line?.type === 'control_request' &&
       line.request?.subtype === 'interrupt'
     ) {
+      this.interruptAsked = this.turnOpen;
       return { ops: [append({ kind: 'system', text: 'interrupt requested' })] };
     }
     return {};
@@ -763,6 +766,8 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private ingestResult(line: any, at: number): Ingest {
     this.turnOpen = false;
+    const interruptAsked = this.interruptAsked;
+    this.interruptAsked = false;
     this.resetTurnActivity();
     this.permissions.clear(); // a request from an ended turn cannot be answered
     // What the turn cost, added to the session's tally; on Bedrock or Vertex
@@ -803,7 +808,15 @@ export class ClaudeAdapter implements AgentAdapter {
       costUsd: turnCost,
       durationMs: line.duration_ms,
     };
-    if (line.is_error) {
+    // A turn stopped on request ends as an error result too
+    // (`error_during_execution`, `terminal_reason: aborted_tools` or
+    // `aborted_streaming`, a diagnostic for a message). It did what was
+    // asked: the agent is idle, and nothing is reported as having failed.
+    const stopped =
+      interruptAsked &&
+      (typeof line.terminal_reason !== 'string' ||
+        line.terminal_reason.startsWith('aborted'));
+    if (line.is_error && !stopped) {
       // The documented error shape carries `errors: string[]`; `result` and the subtype are fallbacks.
       const message =
         Array.isArray(line.errors) && line.errors.length

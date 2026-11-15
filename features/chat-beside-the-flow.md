@@ -426,3 +426,79 @@ last used would be the other way. Side by side in a narrow window the
 flow's input wraps its button under the field and the chat's input
 row is as tall, since the two share a row. Not looked at by a person
 yet.
+
+## Report (2026-11-15)
+
+A fourth round, off the feature's own subject but out of the same
+conversation: "withdraw doesn't actually appear to do anything when you
+click it", and the use it is for, "whoops i wrote some nonsense: stop,
+edit, go", not "those last two hours were a mistake, rewind". Gated
+alone; manager, UI and `am` deployed.
+
+What was wrong. On a clean, idle Claude agent withdraw did work (tried
+against a real one, on an instance of its own). But it was a faint link
+under the message that was disabled while the agent worked, which is
+exactly when a slip is noticed, with the reason only in a hover; it
+refused whenever any file in the project's repositories had changed
+since the message, which counted every other agent's work in the same
+tree and so refused nearly always here, in a toast at the far corner;
+it could never find a message that had been steered into a turn (Claude
+records those in another shape); and when it did work, the message
+simply folded away and nothing came back to edit.
+
+- **Take back = stop, and the text back in the input.** The last
+  message carries an "edit" button in its header line. One click: the
+  manager stops the turn if one runs, the text returns to the flow's
+  input (ahead of a draft that was there, images attached again, caret
+  at the end), and the agent is idle for the corrected message. While
+  the agent works, and on every profile.
+- **Work is not undone, and nothing is refused for it.** The line left
+  in the flow says what the reply did that stays ("Bash ×3, a commit").
+  The `git status` check is gone.
+- **Claude forgets; the others are only stopped.** For Claude the
+  conversation is cut before the message, as before, now also for a
+  steer (cut where Claude read it, so the turn before it is kept, or
+  nothing to cut when it had not been read). Codex and Copilot keep
+  their conversation out of reach: the turn stops, the text comes back,
+  and the line says the agent still has the message.
+- **Asked first only when it costs something.** A message sent in the
+  last two minutes is taken back at once. An older one asks, and says
+  how old it is, since by then the reply may be worth keeping.
+- **One line in the flow per take-back.** The stop and the session's
+  end and resume fold under the "withdrawn: …" marker with the rest.
+- **Names.** The button on the input that ends the turn and keeps the
+  agent was "interrupt" and is "stop"; the one in the header that ends
+  the agent's process was "stop" and is "end session". Labels only: the
+  API and `am interrupt` / `am stop` keep their names, and `am help`
+  now says what each does.
+- **A stopped turn is not an error.** Found on the way: Claude ends an
+  interrupted turn with an error result, so pressing the button put the
+  agent in the error state under a red toast reading "[ede_diagnostic]
+  result_type=user…". The adapter now reads the end of a turn it asked
+  to stop as the turn's end, idle.
+- `am undo <agent>` does the same from a terminal and prints the text.
+
+Verified against a real Claude (Claude Code 2.1.299, Haiku, a daemon
+and manager of their own), asking the agent afterwards what it had been
+told: a message answered; a message whose command was running (the
+command killed, 0.1 s); the first message of a conversation; a steer
+taken back before it was read, and one after; and the whole of it
+through the built UI, with screenshots (idle 0.8 s, working 0.5 s from
+click to text in the input). Manager build, unit 133, e2e 150, lint; UI
+type-check, unit 22, Playwright 35 (a new case with the fake agent:
+linger, edit, text back, send again), lint, build; `am` unit 21, e2e 10.
+
+Decided for the person, each cheap to turn back: no confirm for a
+message under two minutes old; "edit" available while the agent works;
+the two renames; unread chat asides are delivered once the stopped
+agent is idle (they were going to be at the turn's end anyway).
+
+Open: a steer taken back before Claude read it takes about 1.5 s,
+since Claude starts on it the moment the turn stops and has to be
+ended; in the flow the fold for a taken-back steer starts at the steer,
+though the agent keeps the part of the turn before it; a message the
+manager still holds for a Copilot turn is not in the transcript, so
+"edit" there takes the one before it; what a take-back means for the
+chat record of a turn started from the chat is as open as before.
+Codex and Copilot were not tried for real, only the fake agent stands
+in for "stopped, still has the message".

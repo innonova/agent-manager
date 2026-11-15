@@ -179,10 +179,21 @@ export class AgentsController {
     return { ok: true, holdUntil: this.agents.hold(id, until).holdUntil };
   }
 
-  /** Withdraws the last message sent to the agent (Claude, idle, a reply that only read); 409 with `code` otherwise. */
+  /** Takes back the last message sent to the agent, stopping its turn first; `index` names the message meant (409 when another was sent since). */
   @Post('agents/:id/undo')
-  undo(@Param('id') id: string): Promise<{ withdrawn: number }> {
-    return this.agents.undo(id);
+  undo(
+    @Param('id') id: string,
+    @Body() body: { index?: unknown } | undefined,
+  ): Promise<{
+    withdrawn: number;
+    text: string;
+    forgotten: boolean;
+    left: string[];
+  }> {
+    const index = body?.index;
+    if (index !== undefined && !Number.isInteger(index))
+      throw new BadRequestException('index must be an integer');
+    return this.agents.undo(id, index as number | undefined);
   }
 
   @Post('agents/:id/archive')

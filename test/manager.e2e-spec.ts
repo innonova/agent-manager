@@ -300,19 +300,69 @@ describe('projects', () => {
     await api.delete(`/api/agents/${agent.id}`);
   });
 
-  it('withdrawing the last message is refused for a profile whose conversation the manager cannot reach', async () => {
+  it('taking back the last message stops the turn it started and returns its text; a vendor whose conversation the manager cannot reach still has it', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'undoable');
-    await events.waitFor(
-      (f) =>
-        f.type === 'agent.state' &&
-        f.agentId === agent.id &&
-        f.status.state === 'idle',
-      10000,
+    const state = async () =>
+      (await api.get(`/api/agents/${agent.id}`)).body.status.state as string;
+    const becomes = async (want: string) => {
+      const until = Date.now() + 10000;
+      while ((await state()) !== want) {
+        if (Date.now() > until) throw new Error(`never ${want}`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+    await becomes('idle');
+    // nothing sent yet
+    expect((await api.post(`/api/agents/${agent.id}/undo`, {})).status).toBe(
+      409,
     );
-    const r = await api.post(`/api/agents/${agent.id}/undo`, {});
-    expect(r.status).toBe(409);
-    expect(r.body.code).toBe('undo-unsupported');
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'linger a while' });
+    await becomes('working');
+    const prompt = (
+      (await api.get(`/api/agents/${agent.id}/items`)).body.items as {
+        index: number;
+        item: { kind: string; text?: string };
+      }[]
+    ).find((i) => i.item.kind === 'user')!;
+    // not the message meant: nothing is taken, and the turn goes on
+    const other = await api.post(`/api/agents/${agent.id}/undo`, {
+      index: prompt.index + 1,
+    });
+    expect(other.status).toBe(409);
+    expect(await state()).toBe('working');
+    expect(
+      (await api.post(`/api/agents/${agent.id}/undo`, { index: 1.5 })).status,
+    ).toBe(400);
+    // the one meant, mid-turn: stopped, and its text handed back
+    const r = await api.post(`/api/agents/${agent.id}/undo`, {
+      index: prompt.index,
+    });
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({
+      withdrawn: 0,
+      text: 'linger a while',
+      forgotten: false,
+      left: [],
+    });
+    expect(await state()).toBe('idle');
+    const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+      .items as {
+      item: { kind: string; text?: string; withdrawnFrom?: number };
+    }[];
+    const marker = items.at(-1)!.item;
+    expect(marker.kind).toBe('system');
+    expect(marker.text).toMatch(
+      /^taken back to edit; fake keeps its conversation/,
+    );
+    expect(marker.withdrawnFrom).toBeUndefined(); // still in the agent's context: nothing to fold
+    // and the agent takes the corrected message
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'the right thing' });
+    await becomes('working');
+    await becomes('idle');
+    expect(
+      JSON.stringify((await api.get(`/api/agents/${agent.id}/items`)).body),
+    ).toContain('You said: the right thing');
     await api.delete(`/api/agents/${agent.id}`);
   });
 

@@ -50,7 +50,7 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import { ProjectsService } from '../projects/projects.service.js';
-import { git, head } from '../changes/git.js';
+import { head } from '../changes/git.js';
 import { spendOnlyUsage } from './usage.js';
 
 export interface Agent {
@@ -213,6 +213,8 @@ interface Live {
   }[];
   /** A queued message is being sent; no second flush until it is done. */
   flushing: boolean;
+  /** A message is being taken back: nothing new is sent until that is done, so the one meant stays the last. */
+  takingBack: boolean;
   /** When the watchdog last asked about background jobs. */
   lastPokeAt: number;
   /** When an `activity`-only change was last announced, for its own throttle. */
@@ -260,6 +262,8 @@ export const MANAGER_AUTHOR = 'manager';
 const SYNC_WAIT_MS = 10_000;
 const STARTING_GRACE_MS = 5000;
 const LOCK_PATIENCE_MS = 2000;
+/** How long a turn gets to end at the vendor's interrupt before a message is taken back anyway. */
+const UNDO_STOP_MS = 6000;
 
 /** A model or effort as the vendor names it: passed through at session start, so only its shape is checked here. */
 function vendorSetting(v: unknown, what: string): string | null {
@@ -908,6 +912,10 @@ export class AgentsService
       if (agent.archivedAt) throw new ConflictException('agent is archived');
       if (this.deleting.has(agent.projectId))
         throw new ConflictException('project is being deleted');
+      if (live.takingBack)
+        throw new ConflictException(
+          'a message is being taken back; send again in a moment',
+        );
       // A held message belongs to the session it was held for: it never
       // resumes an agent, and never reaches a session started since.
       if (opts.forSession && agent.currentSessionId !== opts.forSession)
@@ -1316,7 +1324,11 @@ export class AgentsService
    * to SIGTERM and SIGKILL if the process lingers, so the caller can rely on
    * it being gone. Losing the daemon meanwhile is an error, not an exit.
    */
-  private async stopLocked(agent: Agent, wait = false): Promise<void> {
+  private async stopLocked(
+    agent: Agent,
+    wait = false,
+    graceMs = 3000,
+  ): Promise<void> {
     const liveAgent = this.ensureLive(agent);
     if (!agent.currentSessionId && liveAgent.adoptionNeeded) {
       // The resync has not reached this agent yet; an empty pointer proves
@@ -1346,7 +1358,7 @@ export class AgentsService
     }
     if (!wait) return;
     for (const [signal, ms] of [
-      [null, 3000],
+      [null, graceMs],
       ['SIGTERM', 2000],
       ['SIGKILL', 2000],
     ] as const) {
@@ -2322,73 +2334,153 @@ export class AgentsService
   private claudeSettingsWritten: string | null = null;
 
   /**
-   * Withdraws the last message sent to the agent: the agent comes back
-   * with no memory of it or of its reply, as if it had never been sent.
-   * Only while idle, only for Claude (its conversation is a file the
-   * manager can cut back; see `claude-conversation.ts`), and only when
-   * the reply did nothing but read: a turn that ran a command, edited a
-   * file or committed is refused with what it did, since no cut of the
-   * text undoes that. The withdrawn items stay in the transcript under a
-   * marker that says they are no longer in the agent's context.
+   * Takes back the last message sent to the agent, for the person to
+   * edit and send again: "that was nonsense: stop, edit, go". A turn
+   * still running is stopped first. For Claude the agent then comes back
+   * with no memory of the message or of its reply, as if it had never
+   * been sent (its conversation is a file the manager can cut back; see
+   * `claude-conversation.ts`); any other profile keeps its conversation
+   * where the manager does not reach, so there the turn is stopped and
+   * the text returned, and the agent still has what was said. What the
+   * reply did on disk is nobody's to undo here: it stays, and the answer
+   * and the transcript's marker say what it was. `index` is the message
+   * the caller means: when another one was sent since, nothing is taken.
    */
-  async undo(id: string): Promise<{ withdrawn: number }> {
+  async undo(
+    id: string,
+    index?: number,
+  ): Promise<{
+    withdrawn: number;
+    text: string;
+    forgotten: boolean;
+    left: string[];
+  }> {
     const live = this.ensureLive(this.get(id));
     await this.awaitSynced(live);
-    return this.withLock(live, async () => {
-      const agent = this.get(id);
-      if (agent.profile !== 'claude')
-        throw new ConflictException({
-          statusCode: 409,
-          code: 'undo-unsupported',
-          message: `withdrawing is for Claude agents; ${agent.profile} keeps its conversation where the manager cannot reach`,
+    if (live.status.state === 'starting')
+      throw new ConflictException('agent is starting; try again in a moment');
+    const meant = this.lastPrompt(live);
+    if (!meant) throw new ConflictException('nothing to take back');
+    if (index !== undefined && meant.index !== index)
+      throw new ConflictException(
+        'another message was sent since; that is the one that can be taken back now',
+      );
+    live.takingBack = true;
+    try {
+      // The vendor's own interrupt first, so a running tool ends its way;
+      // outside the lock, like any interrupt. What it does not stop, the
+      // session's end below does (Claude), or the refusal says (the rest).
+      // The turn's end is what is waited for, not a quiet agent: a Claude
+      // holding a message for its next step starts on it the moment the
+      // interrupted turn ends, and that is the turn being taken back.
+      const inTurn = () =>
+        live.status.state === 'working' ||
+        live.status.state === 'waiting-permission' ||
+        live.status.state === 'waiting-input';
+      if (inTurn())
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            this.off('state', onState);
+            resolve();
+          };
+          const onState = (agentId: string) => {
+            if (agentId === id && !inTurn()) done();
+          };
+          const timer = setTimeout(done, UNDO_STOP_MS);
+          this.on('state', onState);
+          this.interrupt(id).catch(() => undefined);
         });
-      if (!agent.vendorConversationId)
-        throw new ConflictException('nothing to withdraw: no conversation yet');
-      if (live.status.state !== 'idle' && live.status.state !== 'exited')
-        throw new ConflictException(
-          `agent is ${live.status.state}; interrupt it first`,
+      return await this.withLock(live, async () => {
+        const agent = this.get(id);
+        const last = this.lastPrompt(live);
+        if (!last || last.index !== meant.index)
+          throw new ConflictException(
+            'another message was sent since; that is the one that can be taken back now',
+          );
+        const left = this.leftBy(live, last.index);
+        const done = (forgotten: boolean, withdrawn: number, text: string) => {
+          // an exited agent of another vendor has no session now: the line belongs to its last
+          const session =
+            this.get(id).currentSessionId ??
+            live.items[live.items.length - 1]!.sessionId;
+          this.appendItem(agent.id, live, session, 0, {
+            kind: 'system',
+            text:
+              text +
+              (left.length
+                ? `; what the reply did stays (${left.join(', ')})`
+                : ''),
+            ...(forgotten ? { withdrawnFrom: last.index } : {}),
+          });
+          return { withdrawn, text: last.text, forgotten, left };
+        };
+        if (agent.profile !== 'claude') {
+          if (inTurn())
+            throw new ConflictException(
+              `the agent did not stop (${live.status.state}); nothing taken back`,
+            );
+          return done(
+            false,
+            0,
+            `taken back to edit; ${agent.profile} keeps its conversation where the manager does not reach, so the agent still has the message`,
+          );
+        }
+        // on a message it had held by now, or deaf to the first one: asked once more, so the stop below finds it done
+        if (inTurn()) await this.interrupt(id).catch(() => undefined);
+        // A second of grace, not three: an idle Claude exits at once when
+        // its input ends, and one that began a turn of its own in the
+        // meantime (a steer it had held) is writing what is cut next.
+        if (agent.currentSessionId) await this.stopLocked(agent, true, 1000);
+        let removed = 0;
+        let promptsLeft = -1;
+        let held = false;
+        if (agent.vendorConversationId) {
+          const file = conversationFile(agent.cwd, agent.vendorConversationId);
+          try {
+            ({ removed, promptsLeft, held } = withdrawLastPrompt(
+              file,
+              last.text,
+            ));
+          } catch (err) {
+            this.logger.warn(`undo for ${id}: ${(err as Error).message}`);
+          }
+        }
+        // No conversation yet (stopped before Claude had named one), or its
+        // first message taken back: nothing is left to resume, and the state
+        // before the message is no conversation at all.
+        const fresh =
+          !agent.vendorConversationId || (removed > 0 && promptsLeft === 0);
+        if (fresh && agent.vendorConversationId)
+          this.db
+            .prepare(
+              'UPDATE agents SET vendor_conversation_id = NULL WHERE id = ?',
+            )
+            .run(id);
+        await this.startSession(this.get(id), live);
+        if (held)
+          return done(
+            true,
+            0,
+            'withdrawn: a message the agent had not read yet; the turn it was sent into was stopped',
+          );
+        if (!removed && !fresh)
+          return done(
+            false,
+            0,
+            "taken back to edit; the message was not found in Claude's conversation, so the agent still has it (the session was restarted)",
+          );
+        return done(
+          true,
+          removed,
+          "withdrawn: a message and the reply to it, no longer in the agent's context",
         );
-      const last = this.lastPrompt(live);
-      if (!last) throw new ConflictException('nothing to withdraw');
-      const effects = await this.effectsAfter(agent, live, last.index, last.at);
-      if (effects.length)
-        throw new ConflictException({
-          statusCode: 409,
-          code: 'turn-had-effects',
-          message: `the reply did more than read: ${effects.join(', ')}; withdrawing the text would not undo that`,
-          effects,
-        });
-      if (agent.currentSessionId) await this.stopLocked(agent, true);
-      const file = conversationFile(agent.cwd, agent.vendorConversationId);
-      let removed = 0;
-      let promptsLeft = -1;
-      try {
-        ({ removed, promptsLeft } = withdrawLastPrompt(file, last.text));
-      } catch (err) {
-        this.logger.warn(`undo for ${id}: ${(err as Error).message}`);
-      }
-      if (removed && promptsLeft === 0) {
-        // the first message of the conversation: nothing is left to resume,
-        // and the state before it is no conversation at all
-        this.db
-          .prepare(
-            'UPDATE agents SET vendor_conversation_id = NULL WHERE id = ?',
-          )
-          .run(id);
-      }
-      const fresh = this.get(id);
-      await this.startSession(fresh, live);
-      if (!removed)
-        throw new ConflictException(
-          "the message was not found in the agent's conversation; nothing withdrawn (the session was restarted)",
-        );
-      this.appendItem(agent.id, live, fresh.currentSessionId!, 0, {
-        kind: 'system',
-        text: "withdrawn: a message and the reply to it, no longer in the agent's context",
-        withdrawnFrom: last.index,
       });
-      return { withdrawn: removed };
-    });
+    } finally {
+      live.takingBack = false;
+      // what was held for the turn (a vendor that takes nothing mid-turn) goes out now
+      if (live.queued.length) setImmediate(() => void this.flushQueued(id));
+    }
   }
 
   /** The last prompt in memory: a user item with text, by anyone, its index in the transcript and when it was sent. */
@@ -2407,59 +2499,22 @@ export class AgentsService
   }
 
   /**
-   * What the reply to a prompt left behind, which withdrawing the text
-   * would not undo: a commit, or files in the project's repositories
-   * changed after the prompt was sent (a tree dirty from before it is
-   * the person's own work and does not count). A command that only
-   * looked leaves nothing and is fine. For an agent on another machine,
-   * whose files the hub cannot see, the tool calls stand in: anything
-   * but a read counts. Empty means a clean withdrawal.
+   * What the reply to a prompt did that taking the text back does not
+   * undo, from the transcript: its commits, and the tools it ran that do
+   * more than read, by name and count. Empty when it only looked.
    */
-  private async effectsAfter(
-    agent: Agent,
-    live: Live,
-    fromIndex: number,
-    sentAt: number,
-  ): Promise<string[]> {
-    const out: string[] = [];
+  private leftBy(live: Live, fromIndex: number): string[] {
+    const counts = new Map<string, number>();
+    const count = (what: string) =>
+      counts.set(what, (counts.get(what) ?? 0) + 1);
     for (let i = fromIndex - live.itemBase + 1; i < live.items.length; i++) {
       const it = live.items[i]!.item;
       if (it.kind === 'system' && it.text.startsWith('committed'))
-        out.push('a commit');
-      else if (
-        agent.host &&
-        it.kind === 'tool_use' &&
-        !READ_ONLY_TOOLS.has(it.name)
-      )
-        out.push(it.name);
+        count('a commit');
+      else if (it.kind === 'tool_use' && !READ_ONLY_TOOLS.has(it.name))
+        count(it.name);
     }
-    if (!agent.host) {
-      let repos: { name: string; path: string }[] = [];
-      try {
-        repos = this.projects.get(agent.projectId).repos;
-      } catch {
-        /* deleted meanwhile */
-      }
-      for (const repo of repos) {
-        const status = await git(repo.path, [
-          'status',
-          '--porcelain',
-          '--untracked-files=all',
-        ]);
-        if (!status) continue;
-        for (const line of status.split('\n')) {
-          if (!line.trim()) continue;
-          const rel = line.slice(3).replace(/^"|"$/g, '');
-          try {
-            const st = await fs.stat(path.join(repo.path, rel));
-            if (st.mtimeMs >= sentAt - 1000) out.push(`${repo.name}/${rel}`);
-          } catch {
-            /* deleted: a deletion after the prompt is a change too, but its time is unknown; let it pass */
-          }
-        }
-      }
-    }
-    return [...new Set(out)];
+    return [...counts].map(([what, n]) => (n > 1 ? `${what} ×${n}` : what));
   }
 
   /** Who sent the agent's latest turn (a user's name, `agent-<name>`, or the manager), from the items in memory; null when unknown. */
@@ -2720,6 +2775,7 @@ export class AgentsService
         pendingAuthors: [],
         queued: [],
         flushing: false,
+        takingBack: false,
         lastPokeAt: 0,
         lastActivityEmitAt: 0,
         activityFlush: null,

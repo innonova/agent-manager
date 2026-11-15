@@ -505,7 +505,13 @@ confuses which item grows. One adapter instance exists per daemon session.
   become text / thinking / tool_use items, `user` events with
   `tool_result` become tool results, `stream_event` deltas update the
   current text item, `result` ends the turn. Errors surface as `result`
-  with `is_error`, or as `error`-typed lines. Beside the content it
+  with `is_error`, or as `error`-typed lines. A turn stopped by our
+  interrupt ends as an error result too (`error_during_execution`,
+  `terminal_reason: aborted_tools` or `aborted_streaming`, a diagnostic
+  line for a message); the adapter remembers that it asked and reads
+  that one as the turn's end, idle: a stop that was asked for is not a
+  failure, and a red toast for it taught people not to press the
+  button. Beside the content it
   reads the stream's own progress records: `system` subtypes `status`
   (a request in flight), `thinking_tokens` (the live estimate of the
   thinking under way) and `vcs_state_changed` (a commit), and
@@ -621,37 +627,69 @@ hosts are the person's.
 
 ## Withdrawing a message
 
-A message sent to the wrong agent, caught too late to interrupt: `POST
-/api/agents/:id/undo` takes it back. Claude Code keeps each conversation
+"That was nonsense: stop, edit, go." `POST /api/agents/:id/undo` takes
+the last message sent to an agent back, so that it can be edited and
+sent again: it stops the turn the message started if that still runs
+(the vendor's interrupt, then up to six seconds for the turn to end),
+and returns the message's text. It is not a rewind of work. What the
+reply did on disk stays, and the answer says what that was (`left`:
+commits, and the tool calls that were not reads, from the transcript);
+an earlier version refused instead whenever the reply had left anything
+behind, measured by `git status` over the project's repositories, which
+counted every other agent's work in the same tree and made the refusal
+the usual outcome. Only the last message, and a client names it by its
+transcript index so that a second message sent meanwhile is not taken
+by mistake. While a message is being taken back the agent takes no new
+turn (409), since the turn would land in a session about to be stopped.
+
+For Claude the agent also forgets. Claude Code keeps each conversation
 as a file of one record per line (`~/.claude/projects/<cwd with every
 separator as "-">/<conversation id>.jsonl`) and `--resume` continues
 from wherever it ends, so the manager stops the session, cuts the file
 back to the record before the message (`claude-conversation.ts`, at a
 record boundary, matched by the prompt's text), and resumes: the agent
-comes back with no memory of the message or its reply. Only while idle
-(interrupt first), only the last message, only for Claude (Codex and
-Copilot keep their conversations where the manager does not reach), and
-only when the reply left nothing behind that a cut of the text would
-not undo: a commit (the transcript's "committed" line), or files in
-the project's repositories changed after the message was sent (`git
-status`, each dirty file's mtime against the message's time, so a tree
-dirty from before it, the person's own work, does not count). A
-command that only looked is fine. The refusal (`turn-had-effects`)
-lists what was left. For an agent on another machine, whose files the
-hub cannot see, the tool calls stand in and anything but a read
-counts. The usual wrong-session reply, "this does not look like
-something for me", is clean either way. The withdrawn items stay in
-the transcript, since the daemon's log is append-only and they are the
-record of what the agent did, under a `system` marker with
-`withdrawnFrom`: a client folds the items from there to the marker as
-no longer in the agent's context. The format of the file is Anthropic's,
-not ours, so a Claude Code release could move or reshape it; the cut
-reads as little of it as it can and refuses when the message is not
-found rather than guess. Withdrawing the conversation's first message
-leaves nothing to resume (Claude reports no conversation at all), so
-the manager forgets the conversation id and the agent starts afresh,
-which is the state before that message. Verified against a real Claude session: two
-messages, one withdrawn, the agent asked what it was told.
+comes back with no memory of the message or its reply (`forgotten`).
+Three shapes of record are a message. A turn's prompt is a `user`
+record. A message steered into a running turn is a `queue-operation`
+`enqueue` when it is sent, and an `attachment` of type `queued_command`
+at the point where Claude read it, after the tool that was running: the
+cut is there, so the turn before the steer stays in the agent's memory
+up to that point (and is stopped). A steer whose turn ended before it
+was read is only the `enqueue`, and Claude dequeues it as a turn of its
+own once the interrupted turn has ended. The stop finds it one of two
+ways: still held, where nothing is cut, since a resumed session does
+not replay an `enqueue` that was never dequeued; or begun, a `user`
+record by now, and cut there. The message is forgotten either way. When
+the message is not found the agent is told nothing false: the answer says
+`forgotten: false`, and the line in the transcript says the agent still
+has it. Withdrawing the conversation's first message leaves nothing to
+resume (Claude reports no conversation at all), so the manager forgets
+the conversation id and the agent starts afresh, which is the state
+before that message. The format of the file is Anthropic's, not ours,
+so a Claude Code release could move or reshape it; the cut reads as
+little of it as it can.
+
+Codex and Copilot keep their conversations where the manager does not
+reach: there the turn is stopped and the text returned, the agent still
+has the message, and the transcript's line says so (`forgotten: false`).
+That is still most of what the slip needs: the agent stops acting on
+the wrong text, and the right one follows it.
+
+The withdrawn items stay in the transcript, since the daemon's log is
+append-only and they are the record of what the agent did. The manager
+appends a `system` line saying what happened and what the reply left
+behind; where the agent forgot, it carries `withdrawnFrom`, and a client
+folds the items from there to the marker as no longer in the agent's
+context. Verified against a real Claude session (Claude Code 2.1.299),
+asking the agent afterwards what it had been told: a message answered,
+a message whose tool call was running, the first message of a
+conversation, a steer taken back before the agent read it, and one
+taken back after.
+
+Not handled: a message the manager still holds for a Copilot turn (it
+is not in the transcript yet, so the one before it is what is taken
+back), and an aside left in the chat while the stopped turn ran, which
+is delivered as the next turn once the agent is idle again.
 
 ## The clock: agents told the time
 
@@ -1441,7 +1479,7 @@ POST   /api/agents/:id/interrupt
 POST   /api/agents/:id/stop         (end input; agent becomes exited, resumable)
 POST   /api/agents/:id/restart      -> { ok }; stops and resumes this agent with the current settings (repositories, harness note), conversation intact; an exited one is started; 409 while working, waiting on a permission or with background jobs
 POST   /api/agents/:id/hold         { until: unix ms | null }     -> { ok, holdUntil }; holds the background watchdog's poke until then (400 if past or more than a week ahead); null clears
-POST   /api/agents/:id/undo         -> { withdrawn }; withdraws the last message sent to the agent (see Withdrawing a message); 409 `undo-unsupported` (not Claude), `turn-had-effects` (the reply ran a command, edited or committed; `effects` lists them), or busy
+POST   /api/agents/:id/undo         { index? } -> { withdrawn, text, forgotten, left }; takes back the last message sent to the agent, stopping its turn first (see Withdrawing a message): `text` to edit and send again, `forgotten` whether the agent lost it (Claude), `left` what the reply did that stays; 409 with nothing to take back, when `index` is not the last message, or when the turn would not stop
 POST   /api/agents/:id/archive
 DELETE /api/agents/:id             -> { ok }; forgets the agent for good: process stopped, the daemon's logs of its sessions removed, transcript cache and rows gone (the vendor's own conversation store stays); for helpers whose work is in git and the feature's report
 GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first

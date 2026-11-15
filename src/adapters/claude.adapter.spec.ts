@@ -965,6 +965,50 @@ describe('ClaudeAdapter', () => {
     expect(e).toMatchObject({ state: 'error', error: 'boom' });
   });
 
+  it('a turn stopped on request ends idle, not in error; an abort nobody asked for is still an error', () => {
+    // the result as Claude Code 2.1.299 writes it after an interrupt
+    const aborted = (reason: string) => ({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      terminal_reason: reason,
+      errors: [
+        '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use',
+      ],
+      session_id: 's1',
+    });
+    const a = new ClaudeAdapter();
+    const user = { type: 'user', message: { role: 'user', content: 'hi' } };
+    a.ingest(rec('in', user, 1));
+    const [interrupt] = a.interrupt();
+    expect(a.ingest(rec('in', interrupt, 2)).ops?.[0].item).toMatchObject({
+      kind: 'system',
+      text: 'interrupt requested',
+    });
+    const r = a.ingest(rec('out', aborted('aborted_tools'), 3));
+    expect(r.state).toBe('idle');
+    expect(r.error).toBeUndefined();
+    expect(r.ops?.map((o) => o.item.kind)).toEqual(['turn_end']);
+    // the request was for that turn: the next one's abort is its own
+    a.ingest(rec('in', user, 4));
+    const next = a.ingest(rec('out', aborted('aborted_streaming'), 5));
+    expect(next.state).toBe('error');
+    expect(next.ops?.map((o) => o.item.kind)).toEqual(['error', 'turn_end']);
+    // and a turn that failed for a reason of its own after a stop was asked is an error
+    a.ingest(rec('in', user, 6));
+    a.ingest(rec('in', interrupt, 7));
+    const failed = a.ingest(
+      rec('out', { ...aborted('max_turns'), errors: ['out of turns'] }, 8),
+    );
+    expect(failed).toMatchObject({ state: 'error', error: 'out of turns' });
+    // an interrupt outside a turn asks nothing of the next one
+    a.ingest(rec('in', interrupt, 9));
+    a.ingest(rec('in', user, 10));
+    expect(a.ingest(rec('out', aborted('aborted_tools'), 11)).state).toBe(
+      'error',
+    );
+  });
+
   it('builds start, turn and interrupt lines and is ready as soon as it runs', () => {
     const a = new ClaudeAdapter();
     expect(a.initialState).toBe('idle');
