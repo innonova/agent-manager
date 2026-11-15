@@ -797,7 +797,7 @@ during a delivery waits for the next.
 - A local Claude session has the PostToolUse hook (see The clock). After
   each tool call of the main agent (not of a subagent: the hook stays
   silent when the event has an `agent_id`) it asks `POST
-  /api/chat/notice` with the session's token, bounded to 700 ms and
+/api/chat/notice` with the session's token, bounded to 700 ms and
   silent on any failure, and prints what comes back beside the tool
   result. The manager decides when there is something to say: at once
   for a message the agent has not been told of, again every
@@ -844,6 +844,127 @@ Not there yet: an image in an aside (it is refused; a turn or a steer
 carries one), the hook for a Claude on another machine, what `undo`
 means for a withdrawn message's chat record, and a chat between agents
 or across a project (the store does not rule it out).
+
+## The dialog after a compaction
+
+An agent that runs for weeks has its context replaced by a summary of
+itself again and again (for Claude: when the window fills). What the
+person and the agent settled together does not survive that by itself.
+Measured on this project's own agent: fifteen questions about the
+intents, reasons, decisions and open offers of one stretch of work
+were answered in full with the context intact, nearly in full after
+the compaction that followed, and scored 18 of 30 one real compaction
+later and 13 two later. The person's messages came through each time,
+since Claude Code's summary quotes them; what went was the agent's
+side, its reasons, its caveats, the offers nobody had answered, and
+whether a reading of the person's words had been confirmed. That side
+counts as much: the agent's answers are read, and what is not disputed
+is agreed, every sentence of it, which no summariser can know. The
+same dialog handed back word for word (4.8K tokens) scored 28
+(learnings #233). So the manager keeps the dialog and hands it back.
+
+**The record.** `DialogService` reads it from what the manager already
+holds: an _exchange_ is what a person wrote (a `user` item of the
+transcript that is not the manager's own turn and not a command to the
+CLI such as `/compact`; a chat message that travelled as an aside)
+and what the agent wrote back until a person wrote again (its `text`
+items and what it said in the chat). Two messages in a row with
+nothing between them are one exchange. Of the agent's short texts
+(under 300 characters) only the last of a turn is kept, the rest being
+progress notes between tool calls. Exchanges are numbered in the order
+they happened, and a number means the same thing after any number of
+compactions. One whose message was taken back keeps its number and is
+never given out. Nothing is paraphrased anywhere: an exchange is used
+whole or not at all.
+
+**The weighing.** A classifier, one model call over the whole dialog,
+gives every exchange a kind (`purpose`, `rule`, `decision`, `task`,
+`chatter`), a weight from 0 to 3 (3: without it word for word the
+agent would act against something settled, or reopen an argument
+already had; 1: the outcome is in the repository), whether it is
+still in force (for a task: still open), the later exchange that
+reversed it when there is one, and a line of at most fifteen words.
+It sees all exchanges at once because what came later decides whether
+an earlier one stands; every weighing replaces the weights before it
+(`dialog_weights`). It runs as a child process of the manager with
+the instructions and the dialog on stdin: by default `claude -p
+--model fable[1m] --tools "" --no-session-persistence` and a one-line
+system prompt, on the account the machine's Claude Code is logged in
+to. Which model is a setting because it was tried: on this project's
+273 exchanges Fable 5.2 and Opus 5.5 chose nearly the same ones (96%
+of Opus's in Fable's), the exchanges that hold a reason or a rule;
+Sonnet 5.5 gave its highest weight to three times as many, most of
+them reports of finished work whose outcome is in the repository; and
+Haiku 5.5 rated essential ones 0 or 1. One weighing of that dialog
+cost about $4 on Fable, $2 on Opus, under $1 on Sonnet, and takes two
+to four minutes. A dialog too long for one call (1.6M characters) is
+sent without the oldest exchanges an earlier weighing found light. It
+is weighed ahead of the compaction, the first time the context passes
+`AGENT_MANAGER_DIALOG_CLASSIFY_AT` of its window (and when Claude
+reports `compacting`, if that was missed), unless at most three
+exchanges were added since the last time; only for agents the dialog
+is handed back to. `POST /api/agents/:id/dialog/weigh` does it on
+request, with another model in the command's `--model` if asked, which
+is how a model is tried.
+
+**The handing back.** Claude Code runs a `SessionStart` hook with
+source `compact` after a compaction, in headless sessions too, and adds
+its output to the agent's context. The manager's settings file for
+Claude sessions (`claudeSettingsFile`) carries one,
+`fixtures/handback-hook.mjs`, which asks `POST /api/dialog/handback`
+with the session's token. The manager waits for a weighing under way
+(`AGENT_MANAGER_DIALOG_WAIT_MS` at most: the agent has already lost
+two minutes, and older weights are still right about older
+exchanges), selects, and writes the dialog to
+`<dataDir>/handback/<agent>/dialog-<n>.md`, files of at most 60,000
+characters cut at exchange boundaries so one read takes each in. The
+answer, which the hook prints, is a short notice that says what the
+files are and names them. It has to be short: Claude Code caps a
+hook's text at 10,000 characters and beyond that gives the agent a
+path and a preview, so the dialog could never have been the hook's
+output. The selection, within a budget of
+`AGENT_MANAGER_DIALOG_BUDGET` of the agent's context window (its
+`usage.context.size`; 200K when unknown): the most recent exchanges up
+to half the budget, the last two whatever they cost; then older ones
+weighed 2 or 3 that are in force and not reversed, the heaviest first
+and among equals the newest, up to nine tenths; every other exchange
+as an index line (`#12 2026-09-13 decision: … (reversed by #40)`; a run
+with nothing to keep folded into one line; an exchange not weighed yet
+by its first words). Index, earlier exchanges and recent ones are each
+in the order they happened, so of two that disagree the later is read
+later, and one the classifier calls reversed is a line that says so,
+never an exchange handed back as if it stood. The flow gets a line of
+the manager's own ("dialog handed back: 43 exchanges word for word (12
+recent, 31 earlier), 230 as index lines, about 84k tokens; weighed by
+fable[1m]"), so what the manager did, and which model it spent on, is
+on the record. The agent reads the files with its own tools: in the
+checks a Haiku agent did so unasked at its next message, before
+anything else. `am recall <n>` prints any exchange
+(`GET /api/agents/:id/dialog/:n`), so what was left out is one step
+away, and `GET /api/agents/:id/dialog/handback` (`am recall
+--handback`) shows what a hand-back would hold at this moment without
+writing or sending anything, which is how a person checks the
+selection before trusting it.
+
+Why a hook and files, and not the alternatives: a message from the
+manager would read as the person's, start a turn of its own on an idle
+agent, and be quoted as theirs by the next summary; rewriting Claude's
+conversation file after the summary would mean stopping the session in
+the middle of a turn, and an edit in the middle of that file makes the
+API drop every later thinking block. Steering Claude Code's own
+summary was tried in the experiment (instructions given to `/compact`;
+a `PreCompact` hook's output is documented to do the same for an
+automatic one) and did not beat the default summary; the point here is
+that the dialog no longer depends on the summary at all.
+
+Not there yet: Codex and Copilot (no such hook; the record, the
+weights and `am recall` work for them), an agent on another machine
+(the hook and the files are on the manager's disk), a view of the
+record and its weights in the UI and a way for a person to pin an
+exchange, a second pass that checks the heaviest exchanges for
+reversals (the classifiers tried all missed some), and the decisions an
+agent takes alone in a long stretch without the person, which are
+dialog only once they are in a reply or in the chat.
 
 ## Notes: the small actionable items
 
@@ -1561,6 +1682,11 @@ POST   /api/agents/:id/chat/read                                -> { messages, s
 POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
 GET    /api/projects/:id/chat                                   -> [{ agentId, unread, questions, last }] for the agents that have a chat
 POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
+GET    /api/agents/:id/dialog                                   -> { exchanges: [{ n, at, by, tokens, line, kind, weight, inForce, supersededBy, withdrawn }], weighed: { at, model, upTo } | null, classifier }; the agent's dialog with its people, one line per exchange (see The dialog after a compaction)
+GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent
+GET    /api/agents/:id/dialog/:n                                -> { exchange: { n, at, by, person, agent, withdrawn } }; one exchange word for word; 404 for one that was taken back
+POST   /api/agents/:id/dialog/weigh { model? }                  -> { weighed, of, ms, model }; weighs the dialog now; minutes; 409 with no classifier configured
+POST   /api/dialog/handback                                     -> { text | null }; an agent's hook after a compaction: the dialog is written to files and the notice naming them returned; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
 PATCH  /api/projects/:id/notes/:noteId { done?, text? }         -> the list; 404 for an unknown note
@@ -1705,6 +1831,12 @@ swept once a minute.
 | `AGENT_MANAGER_CLOCK_MS`                  | `600000` (10 min)                    | how often, at most, a Claude agent started here is told the time beside a tool result (see Agents: the clock); 0 never                                                                                                           |
 | `AGENT_MANAGER_CHAT_REPEAT_MS`            | `300000` (5 min)                     | how long after telling a working agent of unread chat messages it is told again, while they stay unread (see Chat)                                                                                                               |
 | `AGENT_MANAGER_CHAT_SWEEP_MS`             | `15000`                              | how often unread chat messages are looked over: delivered to an agent that is idle, said again to a working one without a hook; 0 leaves it to the events                                                                        |
+| `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL`   | `fable[1m]`                          | the model that weighs an agent's dialog, in the default command (see The dialog after a compaction); `off`: nothing is weighed, and only the recent exchanges are handed back whole                                              |
+| `AGENT_MANAGER_DIALOG_CLASSIFIER`         | unset                                | the whole command instead, a JSON array of program and arguments: it gets the instructions and the dialog on stdin and answers on stdout; `off` as above                                                                         |
+| `AGENT_MANAGER_DIALOG_BUDGET`             | `0.1`                                | the share of an agent's context window the handed-back dialog may take                                                                                                                                                           |
+| `AGENT_MANAGER_DIALOG_CLASSIFY_AT`        | `0.7`                                | the share of its window at which an agent's dialog is weighed, ahead of the compaction                                                                                                                                           |
+| `AGENT_MANAGER_DIALOG_WAIT_MS`            | `150000`                             | how long the hand-back waits for a weighing under way                                                                                                                                                                            |
+| `AGENT_MANAGER_DIALOG_CLASSIFIER_MS`      | `900000` (15 min)                    | how long one weighing may take                                                                                                                                                                                                   |
 | `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
 | `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
 | `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |

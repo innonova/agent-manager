@@ -175,6 +175,18 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   closed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_agent ON chat_messages (agent_id, id);
+CREATE TABLE IF NOT EXISTS dialog_weights (
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  n INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  weight INTEGER NOT NULL,
+  in_force INTEGER NOT NULL,
+  superseded_by INTEGER,
+  line TEXT NOT NULL,
+  classified_at INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  PRIMARY KEY (agent_id, n)
+);
 CREATE INDEX IF NOT EXISTS runs_project ON runs (project_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS runs_open ON runs (agent_id) WHERE ended_at IS NULL;
 `;

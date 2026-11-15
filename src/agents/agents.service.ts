@@ -671,6 +671,20 @@ export class AgentsService
     }
   }
 
+  /**
+   * A line of the manager's own in the agent's flow: something it did
+   * beside the conversation that a reader of the flow should see where
+   * it happened. Not sent to the agent.
+   */
+  note(id: string, text: string): void {
+    const agent = this.get(id);
+    const live = this.ensureLive(agent);
+    const session =
+      agent.currentSessionId ?? live.items[live.items.length - 1]?.sessionId;
+    if (!session) return; // an agent that never ran has no flow to write in
+    this.appendItem(agent.id, live, session, 0, { kind: 'system', text });
+  }
+
   /** Brings an archived agent's transcript in (from the cache, and the daemon for what the cache lacks) once per process. */
   private async loadArchived(id: string, live: Live): Promise<void> {
     await this.withLock(live, async () => {
@@ -2306,22 +2320,37 @@ export class AgentsService
 
   /**
    * A settings file for Claude sessions started here, with the manager's
-   * hook on: `<dataDir>/claude-settings.json`, written on first use and
-   * whenever the interval or the paths changed. The hook tells the agent
-   * the time (never, with the clock off) and that chat messages are
-   * unread. Claude merges the file over the person's own settings on
-   * the machine, so their hooks stay. The hook's command quotes both
-   * paths: node and the script can sit under a path with spaces, as on
-   * Windows.
+   * hooks on: `<dataDir>/claude-settings.json`, written on first use and
+   * whenever the interval or the paths changed. After a tool call, one
+   * tells the agent the time (never, with the clock off) and that chat
+   * messages are unread. After a compaction, another hands the agent
+   * its dialog with the person back (`DialogService`); it may wait for
+   * the dialog's weighing to finish, hence its long timeout. Claude
+   * merges the file over the person's own settings on the machine, so
+   * their hooks stay. A hook's command quotes both paths: node and the
+   * script can sit under a path with spaces, as on Windows.
    */
   private async claudeSettingsFile(): Promise<string | null> {
     const file = path.join(this.config.dataDir, 'claude-settings.json');
     const command = `"${process.execPath}" "${this.config.clockHook}" --every ${this.config.clockMs || 0}`;
+    const handback = `"${process.execPath}" "${this.config.handbackHook}"`;
     const text = `${JSON.stringify(
       {
         hooks: {
           PostToolUse: [
             { matcher: '', hooks: [{ type: 'command', command, timeout: 10 }] },
+          ],
+          SessionStart: [
+            {
+              matcher: 'compact',
+              hooks: [
+                {
+                  type: 'command',
+                  command: handback,
+                  timeout: Math.ceil(this.config.dialogWaitMs / 1000) + 30,
+                },
+              ],
+            },
           ],
         },
       },

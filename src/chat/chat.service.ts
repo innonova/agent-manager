@@ -275,6 +275,16 @@ export class ChatService
     };
   }
 
+  /** Every message of the agent's chat, oldest first: the dialog's other half, for what is handed back after a compaction. */
+  all(agentId: string): ChatMessage[] {
+    const agent = this.agents.get(agentId);
+    return (
+      this.db
+        .prepare('SELECT * FROM chat_messages WHERE agent_id = ? ORDER BY id')
+        .all(agentId) as Row[]
+    ).map((r) => this.toMessage(r, agent.name));
+  }
+
   private announce(agent: Agent, ids: number[]): ChatMessage[] {
     const messages = this.rows(ids).map((r) => this.toMessage(r, agent.name));
     this.emit(

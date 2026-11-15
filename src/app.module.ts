@@ -8,6 +8,7 @@ import { ConfigModule } from './config/config.module.js';
 import { ManagerConfig } from './config/config.js';
 import { DaemonModule } from './daemon/daemon.module.js';
 import { DbModule } from './db/db.module.js';
+import { DialogModule } from './dialog/dialog.module.js';
 import { EventsModule } from './events/events.module.js';
 import { FeaturesModule } from './features/features.module.js';
 import { NotesModule } from './notes/notes.module.js';
@@ -40,6 +41,7 @@ export class AppModule {
         NotesModule,
         PushModule,
         ChatModule,
+        DialogModule,
         ChangesModule,
         RunsModule,
         LearningsModule,

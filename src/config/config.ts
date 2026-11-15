@@ -39,6 +39,26 @@ export interface ManagerConfig {
   clockMs: number;
   /** The hook script that does it, shipped beside the fake agent. */
   clockHook: string;
+  /** The hook script that hands a Claude agent its dialog back after a compaction, shipped beside the clock's. */
+  handbackHook: string;
+  /**
+   * The command that weighs an agent's dialog, as an argument list: it
+   * gets the instructions and the dialog on stdin and answers on stdout.
+   * Null means nothing is weighed and only the recent dialog is handed
+   * back whole. `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL` names the model
+   * of the default command (`off` for none);
+   * `AGENT_MANAGER_DIALOG_CLASSIFIER` replaces the command, as a JSON
+   * array.
+   */
+  dialogClassifier: string[] | null;
+  /** How long one weighing may take (ms). */
+  dialogClassifierMs: number;
+  /** The share of its context window an agent's dialog is weighed at, ahead of the compaction. */
+  dialogClassifyAt: number;
+  /** The share of the context window the handed-back dialog may take. */
+  dialogBudget: number;
+  /** How long a hand-back waits for a weighing under way (ms). */
+  dialogWaitMs: number;
   /** While a working agent has unread chat messages it is told so again this often (ms). */
   chatRepeatMs: number;
   /** How often the chat looks for messages a state change did not deliver (ms). */
@@ -87,6 +107,51 @@ export function baseDir(
     os.homedir(),
     kind === 'config' ? '.config' : '.local/state',
   );
+}
+
+/**
+ * The command that weighs a dialog. By default Claude Code, headless,
+ * with no tools and a system prompt of one line (the instructions come
+ * with the dialog, on stdin), on the strongest model: tried on this
+ * project's own dialog, Fable and Opus kept the exchanges that hold a
+ * reason or a rule, where Sonnet kept reports of finished work and
+ * Haiku too little (learnings, 2026-11-15). One weighing costs a few
+ * dollars and happens about once per context window.
+ */
+function dialogClassifier(env: NodeJS.ProcessEnv): string[] | null {
+  const whole = env.AGENT_MANAGER_DIALOG_CLASSIFIER;
+  if (whole !== undefined) {
+    if (!whole || whole === 'off') return null;
+    try {
+      const argv: unknown = JSON.parse(whole);
+      if (
+        Array.isArray(argv) &&
+        argv.length > 0 &&
+        argv.every((a) => typeof a === 'string')
+      )
+        return argv as string[];
+    } catch {
+      /* said below */
+    }
+    throw new Error(
+      'AGENT_MANAGER_DIALOG_CLASSIFIER must be a JSON array of strings (the command and its arguments), or "off"',
+    );
+  }
+  const model = env.AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL ?? 'fable[1m]';
+  if (!model || model === 'off') return null;
+  return [
+    'claude',
+    '-p',
+    '--model',
+    model,
+    '--tools',
+    '',
+    '--no-session-persistence',
+    '--output-format',
+    'text',
+    '--system-prompt',
+    'You weigh the exchanges of a dialog exactly as the instructions at the top of the input say. Output only the JSON lines they ask for.',
+  ];
 }
 
 export function loadConfig(
@@ -154,6 +219,20 @@ export function loadConfig(
       'fixtures',
       'clock-hook.mjs',
     ),
+    handbackHook: path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'fixtures',
+      'handback-hook.mjs',
+    ),
+    dialogClassifier: dialogClassifier(env),
+    dialogClassifierMs: Number(
+      env.AGENT_MANAGER_DIALOG_CLASSIFIER_MS ?? 15 * 60_000,
+    ),
+    dialogClassifyAt: Number(env.AGENT_MANAGER_DIALOG_CLASSIFY_AT ?? 0.7),
+    dialogBudget: Number(env.AGENT_MANAGER_DIALOG_BUDGET ?? 0.1),
+    dialogWaitMs: Number(env.AGENT_MANAGER_DIALOG_WAIT_MS ?? 150_000),
     chatRepeatMs: Number(env.AGENT_MANAGER_CHAT_REPEAT_MS ?? 5 * 60_000),
     chatSweepMs: Number(env.AGENT_MANAGER_CHAT_SWEEP_MS ?? 15_000),
     hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,
