@@ -950,6 +950,12 @@ away, and `GET /api/agents/:id/dialog/handback` (`am recall
 writing or sending anything, which is how a person checks the
 selection before trusting it.
 
+An agent can also ask for its hand-back in the middle of a window
+(`am recall --handback --now`, the same route with `on: 'request'`,
+the notice worded for it): one that went through compactions before
+there was a hand-back holds only summaries of its earlier dialog, and
+need not spend the rest of that window on them.
+
 Why a hook and files, and not the alternatives: a message from the
 manager would read as the person's, start a turn of its own on an idle
 agent, and be quoted as theirs by the next summary; rewriting Claude's
@@ -1690,7 +1696,7 @@ GET    /api/agents/:id/dialog                                   -> { exchanges: 
 GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent
 GET    /api/agents/:id/dialog/:n                                -> { exchange: { n, at, by, person, agent, withdrawn } }; one exchange word for word; 404 for one that was taken back
 POST   /api/agents/:id/dialog/weigh { model? }                  -> 202 { weighing: { since, model } }; starts a weighing and answers at once (it takes minutes; the list says when it is done or how it failed); 409 with no classifier configured
-POST   /api/dialog/handback                                     -> { text | null }; an agent's hook after a compaction: the dialog is written to files and the notice naming them returned; an agent token only
+POST   /api/dialog/handback         { on?: 'request' }          -> { text | null }; an agent's hook after a compaction, or the agent itself asking in the middle of a window (`on: 'request'`): the dialog is written to files and the notice naming them returned; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
 PATCH  /api/projects/:id/notes/:noteId { done?, text? }         -> the list; 404 for an unknown note

@@ -372,10 +372,17 @@ export function renderFiles(
 }
 
 /** What the hook says to the agent: short, since Claude Code caps a hook's text at 10,000 characters. */
-export function renderNotice(paths: string[], sel: Selection): string {
+export function renderNotice(
+  paths: string[],
+  sel: Selection,
+  onRequest = false,
+): string {
   const whole = sel.recent.length + sel.kept.length;
   return [
-    'Your context was just replaced by a summary of itself. The manager keeps your dialog with the person outside your context, word for word, and hands it back in the files below. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. Where the summary and these files differ, the files are what was said.',
+    // asked for in the middle of a window: nothing was just replaced, but what the context holds of earlier conversations has been through summaries
+    onRequest
+      ? 'The manager keeps your dialog with the person outside your context, word for word, and this copy of it was asked for now, without a compaction. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. What your context holds of earlier conversations has been through one or more summaries; where it and these files differ, the files are what was said.'
+      : 'Your context was just replaced by a summary of itself. The manager keeps your dialog with the person outside your context, word for word, and hands it back in the files below. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. Where the summary and these files differ, the files are what was said.',
     '',
     `Read ${paths.length === 1 ? 'this file' : 'these files'} in full, in order, before you do anything else:`,
     ...paths,

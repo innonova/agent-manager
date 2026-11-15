@@ -474,14 +474,17 @@ export class DialogService implements OnModuleInit {
   }
 
   /**
-   * The hand-back after a compaction: the files are written and the
+   * The hand-back, after a compaction or when the agent asks for it in
+   * the middle of a window (`onRequest`: an agent that has been through
+   * compactions before there was a hand-back has only summaries of its
+   * earlier dialog, and need not wait for the next one): the files are written and the
    * notice that names them is returned for the hook to print; null when
    * there is no dialog yet. A weighing under way is waited for, a
    * bounded time: the agent has already lost two minutes to the
    * compaction, and yesterday's weights are still right about last
    * month's exchanges.
    */
-  async handback(agentId: string): Promise<string | null> {
+  async handback(agentId: string, onRequest = false): Promise<string | null> {
     const going = this.running.get(agentId);
     if (going)
       await Promise.race([
@@ -503,13 +506,13 @@ export class DialogService implements OnModuleInit {
     const whole = sel.recent.length + sel.kept.length;
     this.agents.note(
       agentId,
-      `dialog handed back: ${whole} exchange${whole === 1 ? '' : 's'} word for word (${sel.recent.length} recent, ${sel.kept.length} earlier), ${sel.indexed.length} as index lines, about ${sel.tokens < 1000 ? sel.tokens : `${Math.round(sel.tokens / 1000)}k`} tokens` +
+      `dialog handed back${onRequest ? ' on request' : ''}: ${whole} exchange${whole === 1 ? '' : 's'} word for word (${sel.recent.length} recent, ${sel.kept.length} earlier), ${sel.indexed.length} as index lines, about ${sel.tokens < 1000 ? sel.tokens : `${Math.round(sel.tokens / 1000)}k`} tokens` +
         (last
           ? `; weighed by ${last.model}`
           : sel.indexed.length
             ? '; not weighed yet'
             : ''),
     );
-    return renderNotice(paths, sel);
+    return renderNotice(paths, sel, onRequest);
   }
 }

@@ -206,6 +206,11 @@ describe('the dialog handed back after a compaction', () => {
     expect(dialog).toMatch(
       /### #2 · [^\n]+\nadmin:\nthe logo is teal, never blue\n\nYou:\nYou said: the logo is teal, never blue/,
     );
+    // asked for by the agent in the middle of a window: the same files, said for what it is
+    const asked = (await own.post('/api/dialog/handback', { on: 'request' }))
+      .body.text as string;
+    expect(asked).toContain('asked for now, without a compaction');
+    expect(asked).toContain(file);
     // the reversed decision is a line that says so, and is not handed back as if it stood
     expect(dialog).not.toContain('### #3 ·');
     expect(dialog).toContain('decision: Port 1 chosen. (reversed by #4)');
@@ -213,9 +218,11 @@ describe('the dialog handed back after a compaction', () => {
     // in the order it happened: the index, the earlier one, then the recent
     expect(dialog.indexOf('### #2 ·')).toBeLessThan(dialog.indexOf('### #5 ·'));
     // and the flow says what the manager did
-    expect(
-      (await itemsOf(agent.id)).filter((i) => i.kind === 'system').pop().text,
-    ).toMatch(
+    const lines = (await itemsOf(agent.id))
+      .filter((i) => i.kind === 'system')
+      .map((i) => i.text as string);
+    expect(lines.pop()).toMatch(/^dialog handed back on request: /);
+    expect(lines.pop()).toMatch(
       /^dialog handed back: 3 exchanges word for word \(2 recent, 1 earlier\), 3 as index lines, about \d+ tokens; weighed by /,
     );
   }, 60000);

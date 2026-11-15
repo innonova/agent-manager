@@ -93,12 +93,25 @@ export class DialogController {
     };
   }
 
-  /** The hook Claude Code runs after a compaction, asking for the agent's dialog: only an agent's own token has one to ask for. */
+  /**
+   * The agent's dialog handed back to it: the hook Claude Code runs
+   * after a compaction asks with no body; the agent itself may ask in
+   * the middle of a window with `{ on: 'request' }` (`am recall
+   * --handback --now`). Only an agent's own token has a dialog to ask for.
+   */
   @Post('dialog/handback')
   @HttpCode(200)
-  async handback(@Req() req: Caller): Promise<{ text: string | null }> {
+  async handback(
+    @Req() req: Caller,
+    @Body() body?: Record<string, unknown>,
+  ): Promise<{ text: string | null }> {
     if (!req.agentScope)
       throw new ForbiddenException('for an agent session only');
-    return { text: await this.dialog.handback(req.agentScope.agentId) };
+    return {
+      text: await this.dialog.handback(
+        req.agentScope.agentId,
+        body?.on === 'request',
+      ),
+    };
   }
 }
