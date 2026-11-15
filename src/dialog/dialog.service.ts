@@ -9,6 +9,7 @@ import {
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { AdaptersService } from '../adapters/adapters.service.js';
 import { AgentsService } from '../agents/agents.service.js';
 import type { AgentStatus } from '../agents/agents.service.js';
 import { ChatService } from '../chat/chat.service.js';
@@ -106,6 +107,7 @@ export class DialogService implements OnModuleInit {
     private readonly dbs: DbService,
     private readonly agents: AgentsService,
     private readonly chat: ChatService,
+    private readonly adapters: AdaptersService,
   ) {}
 
   private get db() {
@@ -460,6 +462,73 @@ export class DialogService implements OnModuleInit {
       child.stdin.end(input);
     });
   }
+
+  /**
+   * Compacts the agent's context now, on a person's word: its dialog is
+   * weighed first when that is not fresh, so that the hand-back the
+   * compaction ends in has weights to choose by, and then the vendor's
+   * own compaction command is sent as a turn of that person's. Answers
+   * at once; the flow says what happens. For an agent whose window was
+   * filled before there was a hand-back, this is how it gets a new one
+   * that starts from a fresh summary and its dialog word for word.
+   */
+  compact(agentId: string, userId?: string): void {
+    const agent = this.agents.get(agentId);
+    const command = this.adapters.compactCommand(agent.profile);
+    if (!command)
+      throw new ConflictException(
+        `the manager has no way to ask a ${agent.profile} agent to compact`,
+      );
+    const idle = () =>
+      ['idle', 'exited'].includes(this.agents.status(agentId).state);
+    if (!idle())
+      throw new ConflictException(
+        'the agent is in a turn; compact it when the turn has ended',
+      );
+    if (this.compacting.has(agentId))
+      throw new ConflictException('a compaction was already asked for');
+    const send = async () => {
+      if (!idle()) {
+        this.agents.note(
+          agentId,
+          'not compacted: the agent was given work while its dialog was being weighed',
+        );
+        return;
+      }
+      await this.agents.turn(agentId, command, userId);
+    };
+    this.compacting.add(agentId);
+    void (async () => {
+      try {
+        // A failed weighing does not stop the compaction that was asked for.
+        if (this.config.dialogClassifier && !(await this.fresh(agentId))) {
+          this.agents.note(
+            agentId,
+            'compaction asked for: weighing the dialog first, which takes minutes',
+          );
+          await this.classify(agentId).catch(() => undefined);
+        }
+        await send();
+      } catch (err) {
+        this.logger.warn(
+          `agent ${agentId}: compaction on request failed: ${(err as Error).message}`,
+        );
+        this.agents.note(agentId, `not compacted: ${(err as Error).message}`);
+      } finally {
+        this.compacting.delete(agentId);
+      }
+    })();
+  }
+
+  /** Whether the weights cover the dialog as it stands, give or take a few exchanges. */
+  private async fresh(agentId: string): Promise<boolean> {
+    const live = (await this.exchanges(agentId)).filter((e) => !e.withdrawn);
+    const last = this.weighed(agentId);
+    if (live.length === 0) return true; // nothing to weigh
+    return !!last && (live[live.length - 1]?.n ?? 0) - last.upTo <= FRESH;
+  }
+  /** Agents a compaction on request is under way for, from the asking to the command being sent. */
+  private readonly compacting = new Set<string>();
 
   /** What a hand-back would hold now: the selection and the files' texts, nothing written. */
   async preview(

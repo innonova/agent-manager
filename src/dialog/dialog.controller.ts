@@ -25,6 +25,19 @@ type Caller = Request & { user?: User; agentScope?: AgentScope };
 export class DialogController {
   constructor(private readonly dialog: DialogService) {}
 
+  /**
+   * Compacts the agent's context now: its dialog is weighed first when
+   * that is not fresh, then the vendor's compaction is asked for as a
+   * turn of the caller's. Answers at once; 409 while the agent is in a
+   * turn and for a vendor the manager cannot ask.
+   */
+  @Post('agents/:id/compact')
+  @HttpCode(202)
+  compact(@Req() req: Caller, @Param('id') id: string): { ok: true } {
+    this.dialog.compact(id, req.user?.id);
+    return { ok: true };
+  }
+
   /** Every exchange as one line, with its weight once weighed. */
   @Get('agents/:id/dialog')
   list(@Param('id') id: string): Promise<{

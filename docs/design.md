@@ -969,6 +969,21 @@ the notice worded for it): one that went through compactions before
 there was a hand-back holds only summaries of its earlier dialog, and
 need not spend the rest of that window on them.
 
+**Compaction on request.** `POST /api/agents/:id/compact` (the UI's
+compact button, `am compact`) compacts an agent on a person's word:
+the dialog is weighed first when the weights are not fresh, then the
+vendor's own command (an adapter's `compactCommand`; Claude Code's
+`/compact`) is sent as a turn of that person's, and the compaction
+ends in the hand-back like any other. It answers at once and the flow
+says how it goes ("compaction asked for: weighing the dialog first,
+which takes minutes"; "not compacted: the agent was given work while
+its dialog was being weighed"). Refused while the agent is in a turn,
+and for a vendor the manager has no command for; `GET /api/profiles`
+says which (`compacts`). The reason for a button: a compaction used to
+be a loss to put off, and with the dialog handed back it is a way to
+trade a window that has drifted, or one filled before there was a
+hand-back, for a fresh summary and what was actually said.
+
 Why a hook and files, and not the alternatives: a message from the
 manager would read as the person's, start a turn of its own on an idle
 agent, and be quoted as theirs by the next summary; rewriting Claude's
@@ -1662,7 +1677,7 @@ POST   /api/agents/:id/archive
 DELETE /api/agents/:id             -> { ok }; forgets the agent for good: process stopped, the daemon's logs of its sessions removed, transcript cache and rows gone (the vendor's own conversation store stays); for helpers whose work is in git and the feature's report
 GET    /api/projects/:id/agents?archived=1                      -> the archived agents instead, newest first
 
-GET    /api/profiles[?host=<name>]                              -> daemon profiles (of that spoke's daemon with `host`; 404 for an unknown host), each with `supported` (an adapter exists)
+GET    /api/profiles[?host=<name>]                              -> daemon profiles (of that spoke's daemon with `host`; 404 for an unknown host), each with `supported` (an adapter exists) and `compacts` (the manager can ask its CLI to compact)
 POST   /api/hosts/:name/exec       { command, cwd?, timeoutMs? } -> { host, exitCode, signal, stdout, stderr, durationMs, timedOut }; one command on that host through its daemon's `shell` profile (see Exec); 404 for an unknown host, 400 when the host has no shell profile
 GET    /api/push/key                                            -> { publicKey }; the install's VAPID public key (login sessions only, as the rest of /api/push)
 POST   /api/push/subscriptions      { subscription }            -> { count }; keeps a browser's push subscription for the user; the same endpoint again updates it
@@ -1705,6 +1720,7 @@ POST   /api/agents/:id/chat/read                                -> { messages, s
 POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
 GET    /api/projects/:id/chat                                   -> [{ agentId, unread, questions, last }] for the agents that have a chat
 POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
+POST   /api/agents/:id/compact                                  -> 202 { ok }; compacts the agent's context now: the dialog weighed first when not fresh, then the vendor's compaction sent as a turn; 409 in a turn or for a vendor without one
 GET    /api/agents/:id/dialog                                   -> { exchanges: [{ n, at, by, tokens, line, kind, weight, inForce, supersededBy, withdrawn }], weighed: { at, model, upTo } | null, weighing: { since, model } | null, failed: { at, message } | null, classifier }; the agent's dialog with its people, one line per exchange (see The dialog after a compaction)
 GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent
 GET    /api/agents/:id/dialog/:n                                -> { exchange: { n, at, by, person, agent, withdrawn } }; one exchange word for word; 404 for one that was taken back

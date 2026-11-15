@@ -20,6 +20,8 @@ type PermissionItem = Extract<Item, { kind: 'permission' }>;
  * deliberately close to Claude's so the UI sees the same kinds of items.
  */
 export class FakeAdapter implements AgentAdapter {
+  /** As Claude's: the fake agent answers it like any message, which is enough to see it was sent. */
+  readonly compactCommand = '/compact';
   private streamingText = '';
   private textKey = '';
   private texts = 0;

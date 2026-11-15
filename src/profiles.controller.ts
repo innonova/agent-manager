@@ -26,7 +26,7 @@ export class ProfilesController {
   /** Daemon profiles, marked with whether this manager can drive them; `host` names a spoke to ask instead of this machine. */
   @Get('/api/profiles')
   async list(@Query('host') host?: string): Promise<{
-    profiles: (DaemonProfile & { supported: boolean })[];
+    profiles: (DaemonProfile & { supported: boolean; compacts: boolean })[];
   }> {
     const daemon = this.daemons.for(host || null);
     if (!daemon) throw new NotFoundException(`no host ${host}`);
@@ -35,6 +35,7 @@ export class ProfilesController {
       profiles: profiles.map((p) => ({
         ...p,
         supported: this.adapters.supports(p.name),
+        compacts: this.adapters.compactCommand(p.name) !== null,
       })),
     };
   }

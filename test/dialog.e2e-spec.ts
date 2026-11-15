@@ -99,6 +99,47 @@ afterAll(async () => {
 });
 
 describe('the dialog handed back after a compaction', () => {
+  it('compacts on request: the dialog is weighed first when it never was, and an agent in a turn is refused', async () => {
+    const agent = (
+      await api.post(`/api/projects/${project.id}/agents`, { name: 'full' })
+    ).body.agent as { id: string };
+    await turn(agent.id, 'the logo is teal');
+    await api.post(`/api/agents/${agent.id}/turn`, { text: 'linger' });
+    await until(
+      'the agent to work',
+      async () =>
+        (await api.get(`/api/agents/${agent.id}`)).body.status.state ===
+        'working',
+    );
+    const busy = await api.post(`/api/agents/${agent.id}/compact`);
+    expect([busy.status, busy.body.message]).toEqual([
+      409,
+      'the agent is in a turn; compact it when the turn has ended',
+    ]);
+    await api.post(`/api/agents/${agent.id}/interrupt`);
+    await idle(agent.id);
+    expect((await api.post(`/api/agents/${agent.id}/compact`)).status).toBe(
+      202,
+    );
+    await until('the command to be sent', async () =>
+      (await itemsOf(agent.id)).some(
+        (i) => i.kind === 'user' && i.text === '/compact',
+      ),
+    );
+    const flow = (await itemsOf(agent.id)).map((i) =>
+      i.kind === 'system' || i.kind === 'user' ? i.text : '',
+    );
+    // said in the flow, and done before the command went
+    const note = flow.indexOf(
+      'compaction asked for: weighing the dialog first, which takes minutes',
+    );
+    expect(note).toBeGreaterThan(0);
+    expect(flow.indexOf('/compact')).toBeGreaterThan(note);
+    expect(
+      (await api.get(`/api/agents/${agent.id}/dialog`)).body.weighed,
+    ).not.toBeNull();
+  }, 60000);
+
   it('is read from the transcript, weighed by the classifier, and handed to the agent as files it is told to read', async () => {
     const agent = (
       await api.post(`/api/projects/${project.id}/agents`, { name: 'keeper' })
@@ -177,6 +218,21 @@ describe('the dialog handed back after a compaction', () => {
       supersededBy: 4,
     });
     expect(list.weighed).toMatchObject({ upTo: 6 });
+
+    // compaction on request, with the weights fresh: the vendor's command goes as a turn of the person's, at once
+    expect((await api.post(`/api/agents/${agent.id}/compact`)).status).toBe(
+      202,
+    );
+    await until('the command to be sent', async () =>
+      (await itemsOf(agent.id)).some(
+        (i) => i.kind === 'user' && i.text === '/compact' && i.by === 'admin',
+      ),
+    );
+    await idle(agent.id);
+    // a command to the CLI is not dialog: still six exchanges
+    expect(
+      (await api.get(`/api/agents/${agent.id}/dialog`)).body.exchanges,
+    ).toHaveLength(6);
 
     // what a hand-back would hold now, for a person to check: nothing written yet
     const preview = (await api.get(`/api/agents/${agent.id}/dialog/handback`))

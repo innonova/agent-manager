@@ -19,6 +19,11 @@ export class AdaptersService {
     return this.factories.has(profile);
   }
 
+  /** The message that makes this profile's CLI compact its context, or null when the manager has no way to ask. */
+  compactCommand(profile: string): string | null {
+    return this.factories.get(profile)?.create().compactCommand ?? null;
+  }
+
   create(profile: string): AgentAdapter {
     const f = this.factories.get(profile);
     if (!f) throw new NotFoundException(`no adapter for profile "${profile}"`);

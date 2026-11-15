@@ -406,3 +406,39 @@ agent's last morning report did not come back at all.
 Manager 150 unit and 151 end-to-end. Three new unit tests: a steer in
 the middle of a turn, the long exchange, the fill. Not verified on the
 xcom agent again: it was not asked a second time.
+
+## Report (2026-11-15)
+
+A fourth round: compaction on request, the person's suggestion ("a
+button to do the compaction might be good, would probably upgrade the
+context over the current state"). Gated alone.
+
+### What changed
+
+- **Manager:** `POST /api/agents/:id/compact`. The dialog is weighed
+  first when the weights are not fresh, then the vendor's own command
+  (an adapter's `compactCommand`; Claude Code's `/compact`) is sent as
+  a turn of the person's, and the compaction ends in the hand-back.
+  Answers at once; the flow says how it goes. Refused while the agent
+  is in a turn and for a vendor without a command. `GET /api/profiles`
+  says which profiles compact.
+- **UI:** "compact" among the agent header's actions, after a confirm,
+  disabled while the agent is in a turn.
+- **CLI:** `am compact <agent>`.
+
+### What was verified
+
+Manager 150 unit and 152 end-to-end (compaction on request with the
+fake agent: refused in a turn, weighed first when never weighed, the
+command sent as the person's turn and not counted as dialog), UI
+Playwright 36 (the button, its confirm, disabled while working), CLI
+22 and 10. Not yet pressed on a real Claude agent from the UI: the
+parts were each seen for real earlier today (`/compact` as a turn, the
+hook, the hand-back), the button that joins them only against the
+fake agent.
+
+### Left open
+
+An agent whose session was started before the hook existed gets a
+compaction without a hand-back from this button: it has to be
+restarted first. The button does not know and does not say.

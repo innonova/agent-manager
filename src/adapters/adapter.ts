@@ -302,6 +302,8 @@ export interface AgentAdapter {
   decide?(requestId: string, optionId: string): unknown[] | null;
   /** stdin lines for a user turn. */
   turn(text: string, images?: TurnImage[]): unknown[];
+  /** The message that asks the CLI to compact its context now, sent as a turn, for a vendor that has one (Claude Code's `/compact`). */
+  readonly compactCommand?: string;
   /** stdin lines to interrupt the current turn, if supported. */
   interrupt?(): unknown[];
   /** Whether the log so far shows a turn without its result yet. */

@@ -26,6 +26,7 @@ type PermissionItem = Extract<Item, { kind: 'permission' }>;
 export class ClaudeAdapter implements AgentAdapter {
   /** A process is ready as soon as it runs; Claude says nothing until the first turn. */
   readonly initialState = 'idle' as const;
+  readonly compactCommand = '/compact';
   private message = 0;
   /** The content block in progress, built from stream deltas. */
   private streaming: {
