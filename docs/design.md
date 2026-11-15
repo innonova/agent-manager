@@ -872,7 +872,10 @@ and what the agent wrote back until a person wrote again (its `text`
 items and what it said in the chat). Two messages in a row with
 nothing between them are one exchange. Of the agent's short texts
 (under 300 characters) only the last of a turn is kept, the rest being
-progress notes between tool calls. Exchanges are numbered in the order
+progress notes between tool calls. The text before a message that
+arrives in the middle of a turn is not such a last word: the first
+version kept it, and the first agent to read its record back found
+progress lines standing where its answers should have been. Exchanges are numbered in the order
 they happened, and a number means the same thing after any number of
 compactions. One whose message was taken back keeps its number and is
 never given out. Nothing is paraphrased anywhere: an exchange is used
@@ -930,14 +933,24 @@ output. The selection, within a budget of
 `AGENT_MANAGER_DIALOG_BUDGET` of the agent's context window (its
 `usage.context.size`; 200K when unknown): the most recent exchanges up
 to half the budget, the last two whatever they cost; then older ones
-weighed 2 or 3 that are in force and not reversed, the heaviest first
-and among equals the newest, up to nine tenths; every other exchange
+in force, not reversed and given any weight, the heaviest first, among
+equals rules and purposes before decisions before open tasks and then
+the newest, up to nine tenths (the first version stopped at weight 2,
+and a strict classifier left four fifths of one agent's budget unused
+with its rules sitting in the index); every other exchange
 as an index line (`#12 2026-09-13 decision: … (reversed by #40)`; a run
 with nothing to keep folded into one line; an exchange not weighed yet
 by its first words). Index, earlier exchanges and recent ones are each
 in the order they happened, so of two that disagree the later is read
 later, and one the classifier calls reversed is a line that says so,
-never an exchange handed back as if it stood. The flow gets a line of
+never an exchange handed back as if it stood. No one exchange takes
+more than an eighth of the budget: a night of work under one message
+is one exchange with dozens of reports in it, and it goes back with
+the person's message and the agent's latest texts, whole ones, as many
+as fit, under a line that says how many earlier ones are left out and
+that `am recall <n>` prints them all. (Whole or not at all meant not
+at all there, and one such exchange stopped the recent ones before it
+from being handed back.) The flow gets a line of
 the manager's own ("dialog handed back: 43 exchanges word for word (12
 recent, 31 earlier), 230 as index lines, about 84k tokens; weighed by
 fable[1m]"), so what the manager did, and which model it spent on, is

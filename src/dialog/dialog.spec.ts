@@ -8,11 +8,13 @@ import {
   exchangeTokens,
   fitClassifier,
   parseWeights,
+  renderExchange,
   renderFiles,
   renderIndex,
   renderNotice,
   select,
   Weight,
+  within,
 } from './dialog.js';
 
 const items = (list: Item[], t0 = 1_000): DialogItem[] =>
@@ -73,9 +75,10 @@ describe('exchangesOf', () => {
       items([
         user('first'),
         text('ok one'),
+        { kind: 'turn_end' },
         user('nonsense, sent too early'),
         text('answering the nonsense'),
-        { kind: 'system', text: 'withdrawn', withdrawnFrom: 2 },
+        { kind: 'system', text: 'withdrawn', withdrawnFrom: 3 },
         user('what I meant'),
         text('ok three'),
       ]),
@@ -84,6 +87,26 @@ describe('exchangesOf', () => {
       [1, false, 'ok one'],
       [2, true, ''],
       [3, false, 'ok three'],
+    ]);
+  });
+
+  it('does not take a progress line for an answer when a message arrives in the middle of a turn', () => {
+    const ex = exchangesOf(
+      items([
+        user('convert the maps'),
+        text('Converting the first map.'),
+        user('i am off to sleep, keep going until 7'), // a steer: the turn goes on
+        text('The import is a quarter done.'),
+        user('it was not a quarter, the bar is indeterminate'),
+        text('Right, waiting for it to finish.'),
+        text(long('Morning report: all maps converted')),
+        { kind: 'turn_end' },
+      ]),
+    );
+    expect(ex.map((e) => e.agent.slice(0, 14))).toEqual([
+      '',
+      '',
+      'Morning report',
     ]);
   });
 
@@ -144,6 +167,7 @@ const exchange = (n: number, chars: number, withdrawn = false): Exchange => ({
   by: 'aek',
   person: `message ${n}`,
   agent: 'x'.repeat(chars),
+  parts: ['x'.repeat(chars)],
   withdrawn,
 });
 const weight = (n: number, w: number, over: Partial<Weight> = {}): Weight => ({
@@ -176,6 +200,49 @@ describe('select', () => {
     // room for three more under nine tenths: the 3 first, then the 2s, newest first
     expect(sel.kept.map((e) => e.n)).toEqual([1, 4, 6]);
     expect(sel.indexed.map((e) => e.n)).toEqual([2, 3, 5]);
+  });
+
+  it('fills what is left of the budget with lighter exchanges still in force: rules before decisions before open tasks', () => {
+    const weights = new Map(
+      [
+        weight(1, 1, { kind: 'task' }),
+        weight(2, 1, { kind: 'decision' }),
+        weight(3, 1, { kind: 'rule' }),
+        weight(4, 1, { kind: 'chatter' }),
+        weight(5, 0),
+        weight(6, 1, { kind: 'rule', inForce: false }),
+      ].map((w) => [w.n, w]),
+    );
+    // four recent, then room for two more under nine tenths of eight
+    const sel = select(all, weights, cost * 7);
+    expect(sel.recent.map((e) => e.n)).toEqual([8, 9, 10]);
+    expect(sel.kept.map((e) => e.n)).toEqual([1, 2, 3]);
+    expect(select(all, weights, cost * 6).kept.map((e) => e.n)).toEqual([2, 3]);
+  });
+
+  it('hands a very long exchange back with its latest texts, whole ones, and says what it leaves out', () => {
+    const night: Exchange = {
+      ...exchange(3, 0),
+      parts: [
+        'first report '.repeat(300),
+        'second '.repeat(300),
+        'morning report '.repeat(40),
+      ],
+    };
+    night.agent = night.parts.join('\n\n');
+    const list = [exchange(1, 100), exchange(2, 100), night, exchange(4, 100)];
+    // an eighth of the budget is less than the night's reports: the last two fit, the first does not
+    const sel = select(list, new Map(), 12_000);
+    expect(sel.recent.map((e) => e.n)).toEqual([1, 2, 3, 4]);
+    const back = sel.recent[2]!;
+    expect(back.parts).toEqual([night.parts[1], night.parts[2]]);
+    expect(back.left).toEqual({ texts: 1, tokens: 1365 });
+    expect(renderExchange(back)).toContain(
+      'You:\n[1 earlier text of yours in this exchange is not shown here, about 1,365 tokens; `am recall 3` prints all of it]\n\nsecond ',
+    );
+    // the last text always comes, however long
+    expect(within(night, 10).parts).toEqual([night.parts[2]]);
+    expect(within(exchange(9, 50_000), 10).left).toBeUndefined(); // one text: nothing to leave out
   });
 
   it('hands back the last two whatever they cost, and never one that was taken back', () => {
@@ -241,7 +308,7 @@ describe('what the agent reads back', () => {
     for (const f of files) expect(f.length).toBeLessThan(70_000);
     const notice = renderNotice(['/d/dialog-1.md', '/d/dialog-2.md'], sel);
     expect(notice).toContain('/d/dialog-1.md\n/d/dialog-2.md');
-    expect(notice).toContain('3 exchanges are there whole');
+    expect(notice).toContain('3 exchanges are there word for word');
     expect(notice).toContain('`am recall <number>`');
     expect(notice.length).toBeLessThan(10_000); // Claude Code's cap on a hook's text
   });

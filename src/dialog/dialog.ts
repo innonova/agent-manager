@@ -40,8 +40,12 @@ export interface Exchange {
   person: string;
   /** What the agent wrote back, its short progress lines left out. */
   agent: string;
+  /** The same as the texts it was written in, in order: a long exchange is handed back by whole texts, never by a cut inside one. */
+  parts: string[];
   /** Taken back since: out of the agent's memory by the person's choice, so never handed back. */
   withdrawn: boolean;
+  /** Set on a copy that holds only the latest texts of a long exchange: how many earlier ones are not in it, and their tokens. */
+  left?: { texts: number; tokens: number };
 }
 
 export type WeightKind = 'purpose' | 'rule' | 'decision' | 'task' | 'chatter';
@@ -111,8 +115,12 @@ export function exchangesOf(
   let lastText: Extract<Said, { who: 'agent' }> | null = null;
   for (const s of items) {
     const it = s.item;
-    // a turn's end, or the person writing: what the agent said last before it is what they were left with
-    if ((it.kind === 'turn_end' || it.kind === 'user') && lastText) {
+    // A turn's end: what the agent said last in it is what the person was
+    // left with. Not so the text before a message that arrives in the
+    // middle of a turn: that is a progress line like the ones before it
+    // (handing those back as the agent's answer misled the first agent
+    // that read its record).
+    if (it.kind === 'turn_end' && lastText) {
       lastText.final = true;
       lastText = null;
     }
@@ -172,10 +180,10 @@ export function exchangesOf(
   const close = () => {
     const e = out[out.length - 1];
     if (!e) return;
-    e.agent = agentParts
+    e.parts = agentParts
       .filter((p) => p.final || p.text.length >= PROGRESS_LINE)
-      .map((p) => p.text)
-      .join('\n\n');
+      .map((p) => p.text);
+    e.agent = e.parts.join('\n\n');
   };
   for (const s of said) {
     if (s.who === 'agent') {
@@ -195,6 +203,7 @@ export function exchangesOf(
       by: s.by,
       person: s.text,
       agent: '',
+      parts: [],
       withdrawn: s.gone,
     });
   }
@@ -213,11 +222,54 @@ export interface Selection {
 }
 
 /**
- * Which exchanges go back whole within a budget of tokens: the most
- * recent up to half of it (the last two whatever they cost), then
- * older ones the classifier weighed 2 or 3 and still in force, the
- * heaviest first and among equals the newest, as far as nine tenths of
- * the budget goes. The rest are index lines.
+ * An exchange within a cap of tokens: itself when it fits, and
+ * otherwise a copy with the person's message and the agent's latest
+ * texts, as many whole ones as fit (the last one always), which says
+ * what it leaves out. A night of work under one message is one
+ * exchange with dozens of reports in it; whole or not at all would
+ * mean not at all, and the last report is the one that matters most.
+ */
+export function within(e: Exchange, cap: number): Exchange {
+  if (exchangeTokens(e) <= cap || e.parts.length <= 1) return e;
+  let used = tokensOf(e.person) + 20;
+  const parts: string[] = [];
+  for (let i = e.parts.length - 1; i >= 0; i--) {
+    const cost = tokensOf(e.parts[i]!);
+    if (parts.length >= 1 && used + cost > cap) break;
+    parts.unshift(e.parts[i]!);
+    used += cost;
+  }
+  const out = e.parts.slice(0, e.parts.length - parts.length);
+  if (out.length === 0) return e;
+  return {
+    ...e,
+    parts,
+    agent: parts.join('\n\n'),
+    left: {
+      texts: out.length,
+      tokens: out.reduce((n, t) => n + tokensOf(t), 0),
+    },
+  };
+}
+
+/** Which kind is handed back first among exchanges of the same weight: what governs how to work, then what was decided, then work still open. */
+const KIND_RANK: Record<WeightKind, number> = {
+  rule: 0,
+  purpose: 0,
+  decision: 1,
+  task: 2,
+  chatter: 3,
+};
+
+/**
+ * Which exchanges go back word for word within a budget of tokens: the
+ * most recent up to half of it (the last two whatever they cost), then
+ * older ones still in force that the classifier gave any weight, the
+ * heaviest first, among equals rules before decisions before open
+ * tasks and then the newest, as far as nine tenths of the budget goes.
+ * The rest are index lines. No one exchange takes more than an eighth
+ * of the budget: a longer one goes back with its latest texts (see
+ * `within`).
  */
 export function select(
   exchanges: Exchange[],
@@ -225,12 +277,14 @@ export function select(
   budget: number,
 ): Selection {
   const live = exchanges.filter((e) => !e.withdrawn);
+  const cap = budget / 8;
   const recent: Exchange[] = [];
   let used = 0;
   for (let i = live.length - 1; i >= 0; i--) {
-    const cost = exchangeTokens(live[i]!);
+    const e = within(live[i]!, cap);
+    const cost = exchangeTokens(e);
     if (recent.length >= 2 && used + cost > budget * 0.5) break;
-    recent.unshift(live[i]!);
+    recent.unshift(e);
     used += cost;
   }
   const older = live.slice(0, live.length - recent.length);
@@ -238,21 +292,31 @@ export function select(
     .map((e) => ({ e, w: weights.get(e.n) }))
     .filter(
       (x): x is { e: Exchange; w: Weight } =>
-        !!x.w && x.w.weight >= 2 && x.w.inForce && x.w.supersededBy === null,
+        !!x.w &&
+        x.w.weight >= 1 &&
+        x.w.kind !== 'chatter' &&
+        x.w.inForce &&
+        x.w.supersededBy === null,
     )
-    .sort((a, b) => b.w.weight - a.w.weight || b.e.n - a.e.n);
-  const keep = new Set<number>();
+    .sort(
+      (a, b) =>
+        b.w.weight - a.w.weight ||
+        KIND_RANK[a.w.kind] - KIND_RANK[b.w.kind] ||
+        b.e.n - a.e.n,
+    );
+  const keep = new Map<number, Exchange>();
   for (const { e } of wanted) {
-    const cost = exchangeTokens(e);
+    const fitted = within(e, cap);
+    const cost = exchangeTokens(fitted);
     if (used + cost > budget * 0.9) continue; // a smaller one further down may still fit
-    keep.add(e.n);
+    keep.set(e.n, fitted);
     used += cost;
   }
   return {
     recent,
-    kept: older.filter((e) => keep.has(e.n)),
+    kept: older.filter((e) => keep.has(e.n)).map((e) => keep.get(e.n)!),
     indexed: older.filter((e) => !keep.has(e.n)),
-    tokens: used,
+    tokens: Math.round(used),
   };
 }
 
@@ -271,7 +335,14 @@ export function renderExchange(e: Exchange): string {
     e.person,
     '',
     'You:',
-    e.agent || '(you wrote nothing back before the next message)',
+    ...(e.left
+      ? [
+          `[${e.left.texts} earlier text${e.left.texts === 1 ? '' : 's'} of yours in this exchange ${e.left.texts === 1 ? 'is' : 'are'} not shown here, about ${e.left.tokens.toLocaleString('en-US')} tokens; \`am recall ${e.n}\` prints all of it]`,
+          '',
+        ]
+      : []),
+    e.agent ||
+      '(you wrote nothing to them before their next message, beyond progress lines while working)',
   ].join('\n');
 }
 
@@ -387,7 +458,7 @@ export function renderNotice(
     `Read ${paths.length === 1 ? 'this file' : 'these files'} in full, in order, before you do anything else:`,
     ...paths,
     '',
-    `${whole} exchange${whole === 1 ? '' : 's'} are there whole: the most recent ones, and earlier ones that still govern the work. ${sel.indexed.length ? `The other ${sel.indexed.length} are listed one line each; \`am recall <number>\` prints any of them in full, and \`am recall\` the whole list.` : ''} They are in the order they happened: where two disagree, the later one stands.`,
+    `${whole} exchange${whole === 1 ? '' : 's'} are there word for word: the most recent ones, and earlier ones that still govern the work. A very long one comes with your latest texts only and says so. ${sel.indexed.length ? `The other ${sel.indexed.length} are listed one line each; \`am recall <number>\` prints any of them in full, and \`am recall\` the whole list.` : ''} They are in the order they happened: where two disagree, the later one stands.`,
   ].join('\n');
 }
 

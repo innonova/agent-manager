@@ -356,3 +356,53 @@ report. Gated alone.
   description or path, the size of the result; the commits made), any
   one item in full by its number, and a search over both. All from the
   transcript the manager holds, no model call.
+
+## Report (2026-11-15)
+
+A third round, from what the xcom agent's first hand-back showed.
+Gated alone.
+
+### What the xcom agent found
+
+Asked at the person's request, it weighed its dialog (238 exchanges,
+Fable, 202 s) and handed it back to itself with `am recall --handback
+--now`. Its answer: three questions of its own that the person had
+never answered and that it had lost (whether a staging site should
+redirect or go; two details of converted maps awaiting a look), and a
+stance it had held as the person's ruling that the record shows to be
+its own proposal, never answered. It also reported that for a few
+exchanges the record showed progress lines where its answer should
+have been. Its turn cost $7.46.
+
+### Three defects, found by reading what it was handed
+
+- **A progress line stood in for an answer.** A message that arrives
+  in the middle of a turn made the text before it count as the agent's
+  last word. Now only a turn's end does.
+- **One long exchange blocked the recent ones.** A night of work under
+  one message is one exchange with dozens of reports. It did not fit
+  half the budget, the walk back through the recent exchanges stopped
+  there, and the agent got six recent exchanges and 22K tokens of a
+  100K budget. Now no exchange takes more than an eighth of the
+  budget: a longer one goes back with the person's message and the
+  agent's latest texts, whole ones, under a line saying how many
+  earlier ones are left out and how to get them.
+- **The budget stayed four fifths empty** while rules and decisions in
+  force sat in the index, because Fable gave them weight 1 and only 2
+  and 3 were handed back. Now anything in force with a weight is a
+  candidate: heaviest first, among equals rules and purposes before
+  decisions before open tasks.
+
+### Decided for the person
+
+The spec said an exchange is handed back whole or not at all. A long
+one now comes back with only its latest texts. No text is cut or
+reworded, and the exchange says what it leaves out; but it is a
+departure from the wording, made because the alternative was that the
+agent's last morning report did not come back at all.
+
+### What was verified
+
+Manager 150 unit and 151 end-to-end. Three new unit tests: a steer in
+the middle of a turn, the long exchange, the fill. Not verified on the
+xcom agent again: it was not asked a second time.
