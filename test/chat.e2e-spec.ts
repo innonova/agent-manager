@@ -141,10 +141,9 @@ describe('chat', () => {
       5000,
       mark,
     );
-    // the turn the test sent to get the token went through the turn route: it is in the chat too
+    // the chat holds what was said in it: the turn the test sent to get the token is in the flow alone
     const chat = await chatOf(a.id);
     expect(chat.messages.map((x) => [x.text, x.via])).toEqual([
-      ['token please', 'turn'],
       ['the header is misaligned on the files page', 'turn'],
     ]);
     expect(chat.summary).toMatchObject({ unread: 0, questions: 0 });
@@ -454,7 +453,7 @@ describe('chat', () => {
     const older = (
       await api.get(`/api/agents/${a.id}/chat?limit=2&before=${last2[0].id}`)
     ).body.messages as any[];
-    expect(older.map((x) => x.text)).toEqual(['token please', 'm1']);
+    expect(older.map((x) => x.text)).toEqual(['m1']);
     expect((await api.get(`/api/agents/${a.id}/chat?limit=0`)).status).toBe(
       400,
     );

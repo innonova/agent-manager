@@ -474,44 +474,6 @@ export class ChatService
     return { message, mode };
   }
 
-  /**
-   * A turn that went through the turn route (`am turn`, a feature
-   * handed over, another agent's brief) is part of the conversation
-   * too: recorded as said, already delivered.
-   */
-  record(
-    agentId: string,
-    user: { id: string; name: string },
-    text: string,
-    via: 'turn' | 'steer',
-    images: number,
-  ): void {
-    let agent: Agent;
-    try {
-      agent = this.agents.get(agentId);
-    } catch {
-      return; // forgotten meanwhile
-    }
-    const now = Date.now();
-    const id = Number(
-      this.db
-        .prepare(
-          'INSERT INTO chat_messages (agent_id, from_agent, author_id, author_name, text, via, images, created_at, read_at) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)',
-        )
-        .run(
-          agentId,
-          user.id,
-          user.name,
-          text.slice(0, MAX_TEXT),
-          via,
-          images,
-          now,
-          now,
-        ).lastInsertRowid,
-    );
-    this.announce(agent, [id]);
-  }
-
   /** What the agent is handed: one message as it was written, several under a line that says so. */
   private compose(rows: Row[]): string {
     const about = (r: Row): string | null => {

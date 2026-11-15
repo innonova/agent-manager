@@ -383,3 +383,46 @@ of full height; I chose the one that does not move what is written
 further from either pane. A turn sent while idle is still listed in
 the chat ("sent as a turn") as well as in the flow.
 
+
+## Report (2026-11-15)
+
+A third round, on the answer to the second: one composer under both
+panes was no better, and there was no reason for there to be only one.
+It was an assumption carried over from the single-pane view (and from
+the idea that everything said to the agent goes through the chat, the
+manager deciding how it travels), not a constraint. Gated alone;
+manager and UI (agent-manager-ui 9187353) deployed.
+
+- **An input under each pane**, and what is written goes to the pane
+  above it. Under the flow it is the direct conversation as it was
+  before the chat: a turn, and a steer while the agent works (the
+  button reads "steer"). Under the chat it is said beside the work: an
+  aside while the agent is in a turn, and what wakes it when it is
+  not. The chat's input takes the answer to a pinned question; there is
+  no steer on it. A draft each. Interrupt is on the flow's input, and
+  on the chat's where the flow's is out of sight.
+- **The chat holds what was said in it.** The turn route no longer
+  copies a turn or a steer into the chat (`ChatService.record` is
+  gone): with an input of its own, the direct conversation listed in
+  the chat as well was the clutter the chat was split off to avoid.
+  This is the one choice in this round made for the person rather than
+  by them; putting the copy back is ten lines. What was copied before
+  today stays in the chats that have it. The harness note's sentence
+  about reading the chat back after a compaction now says "what is
+  said there", since a turn's text is no longer in it.
+- A defect found by the tests once chats started empty: what the agent
+  said while the chat was put away was not counted if the chat had
+  nothing in it before.
+
+Verified: manager build, unit, e2e, lint; UI type-check, unit 22,
+Playwright 34 (the chat spec rewritten for two inputs, three older
+tests back to what they asserted before the chat), lint, build;
+screenshots of both side by side, at the narrowest two-pane width and
+of the chat alone.
+
+Open: on a phone the chat's tab is still in front unless the chat was
+put away on a desk, which is a kind of enforcing; remembering the tab
+last used would be the other way. Side by side in a narrow window the
+flow's input wraps its button under the field and the chat's input
+row is as tall, since the two share a row. Not looked at by a person
+yet.

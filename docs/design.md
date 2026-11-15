@@ -754,11 +754,14 @@ open, as the agent's own. The agent's final message of a turn is not
 copied into the chat: it is the last thing in the transcript beside
 it, and copying would show it twice.
 
-Everything said to the agent is in the chat, whichever way it
-travelled: a turn or steer through `POST /api/agents/:id/turn` (`am
-turn`, another agent's brief) is recorded as said and already read.
-The manager's own messages (the background poke, the notice) are not
-conversation and are not recorded. `chat.changed` carries the changed
+The chat holds what was said in it and nothing else. A turn or a
+steer through `POST /api/agents/:id/turn` (the input under the flow,
+`am turn`, another agent's brief) is the direct conversation: it is in
+the transcript, where its answer follows it, and is not copied here,
+so the chat stays the short record it is for. A message said in the
+chat to an agent that is not working starts a turn with it, and is in
+both. The manager's own messages (the background poke, the notice) are
+not conversation and are not recorded. `chat.changed` carries the changed
 messages and the agent's summary (`unread`, `questions`, `last`) to
 every open client; `GET /api/projects/:id/chat` gives the summaries per
 agent for a list. How agents are told to use it is the harness note's
