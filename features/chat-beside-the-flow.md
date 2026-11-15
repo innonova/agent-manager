@@ -1,6 +1,6 @@
 ---
 title: a chat with the agent, beside its work
-status: in-progress
+status: review
 priority: 5
 dependsOn: []
 ---
@@ -212,3 +212,143 @@ About two days across the manager, the CLI and the UI. The first slice
 is the store, the notification, `am chat` and `am say`, and the note;
 the split screen follows on the same data. Past three days, stop and
 say what is in the way.
+
+## Report (2026-11-15)
+
+Built in all three parts, gated alone, deployed (manager, UI, CLI), and
+tried with a real model, which changed the harness note once.
+
+### What changed
+
+**agent-manager** (913b5a6, 900df14, and this commit for the note).
+A chat table per agent and `src/chat/`: `GET/POST /api/agents/:id/chat`,
+`POST …/chat/read` (the agent's own token), `POST …/chat/:id/close`,
+`GET /api/projects/:id/chat` (a list of `{agentId, unread, questions,
+last}`), and the event `chat.changed`, which carries the changed
+messages. A person's message to an idle agent starts a turn; to an
+agent in a turn it waits unread and the agent is told only that it
+exists: a Claude agent on this machine by a line beside its next tool
+result (the clock hook), any other by one line the manager steers in.
+What is unread when the turn ends is handed over as the next turn, one
+message as written, several under one heading. A turn sent the old way
+(`/turn`, `am turn`) is recorded in the chat too, so the chat is the
+whole of what people said. The agent's last message of a turn is not
+copied. A question, and anything marked important, goes to the phones
+(web push). Archiving an agent closes its open questions. The design
+doc has a section "Chat: a conversation neither side stops for".
+
+**agent-manager-cli** (4079a7d). `am chat` (the agent reading: prints
+what is unread and marks it read; `--last N` reads back), `am say`
+(`--decision`, `--question`, `--important`, `--re ID`, text from stdin),
+`am chat close <id>`; with `--to <agent>` or an agent named they are a
+person's side of another agent's chat.
+
+**agent-manager-ui** (b7e37b5). The agent view is two panes, the flow
+left and the chat with the composer right; the divider drags and is
+remembered; "hide flow" folds the flow to one line of activity; under
+48rem of room the panes are tabs, the chat first. Open questions are
+pinned at the top of the chat with "answer" and "dismiss", counted on
+the agent in the sidebar ("1 ?", beside its state badge), on a folded
+project, in the header, on the chat's tab and in the attention badge,
+and notified on an open page that is not looked at. A person's message
+says "sent as a turn", "steered", "not read yet" or "read 14:02"; its
+time links to its place in the flow. While an agent works, "send"
+leaves an aside and "steer" is its own button. Its design doc has "The
+chat beside the flow".
+
+**The harness note** now has three paragraphs on the chat: what an
+aside is, the three kinds of `am say`, and that a question does not
+end the turn.
+
+### What was verified
+
+- Gates: manager unit 130, e2e 150 (9 on the chat), lint; CLI unit and
+  e2e; UI type-check, unit 22 (9 on the chat store), Playwright 33 (5
+  on the chat, 3 older ones rewritten for the new composer), lint,
+  build.
+- The races at a turn's end, with the fake agent: an aside with no
+  further tool call is handed over when the turn ends, as one turn;
+  several as one; a message the state change missed is delivered by
+  the sweep. Not done: an actual restart of the manager with a message
+  unread. The sweep is what would deliver it, and that is tested; the
+  restart itself is not.
+- The split at awkward sizes: a 14-column table, a long address and a
+  long line of code in a chat message, at 1600, 1280, 1120, 1000, 900
+  and 640 px wide, the flow folded, and a phone: no page overflow, the
+  table scrolls inside itself. I looked at the screenshots, which found
+  two things the assertions had not: a table's cells folding a letter
+  wide, and a permission request invisible with the flow folded. Both
+  fixed and now asserted.
+- **A real model** (Opus 4.8, two scratch agents, archived as
+  `chat-probe` and `chat-probe-2` with their chats, $2.30 together):
+  - A choice left open in the brief became a `--decision` in the chat
+    a minute in, before any code, and the work went on.
+  - An aside written mid-turn: the hook told it, it read the message
+    at its next natural point together with running its tests, the
+    chat showed "read", and it took it as an observation ("already how
+    I built it"), not as an order.
+  - A fact it needed and could not choose: **with the first note it
+    did not ask in the chat.** It carried on with the rest, and put
+    the question in its last message with a placeholder in the file.
+    So the question came when the work was over, in the flow, pinned
+    nowhere. I added one paragraph start to the note: ask at the
+    moment you find you need something, not in the last message. A
+    fresh agent on the same task then asked within a minute ("I'll do
+    all the rest meanwhile and slot it in"), was answered eight
+    seconds later, noticed the answer through the hook, read it and
+    wrote it into the file, in one turn of 113 s.
+  - A session started before the chat existed (mine) got the notice
+    beside a tool result once the manager was deployed.
+
+  This is one model, three turns. It is the part to keep watching.
+
+### Left open
+
+- **Tuning, as expected.** What a model puts in the chat and when
+  rests on the note's wording, tried on one model. Not tried: Fable,
+  Opus 5, Codex and Copilot (which get the manager's steer in place of
+  the hook, so an aside may read more like an order there); a long
+  turn with many asides; whether decisions are over- or under-reported
+  in real work; whether `--important` is used with restraint.
+- **A turn that ends on a question** in its last message is still only
+  in the flow. With the tuned note it should be rarer; if it stays
+  common, the manager could not fix it without reading the agent's
+  prose, so it is the note's job.
+- **Agents running now have the old note** until their next restart;
+  the notice reaches them anyway, and tells them `am chat`.
+- The list under "Not in the first round" stands: images in an aside,
+  the hook on another machine (spokes on an older manager also answer
+  404 to the sidebar's question count, which the UI takes as none),
+  `undo` and the chat record, permission requests in the chat pane.
+- Known limits in the UI: an open question older than the newest 200
+  messages of its chat is counted but pinned only once earlier
+  messages are loaded; the two-pane layout starts at 48rem of view
+  with the flow at least 18rem, both guesses to tune by use; showing a
+  message's place unfolds the flow and leaves it unfolded; a page with
+  web push and desktop notifications both on may show a question
+  twice, as it already does for a finished turn.
+
+### Noticed and left alone
+
+- 913b5a6 also carries prettier's reformatting of four files that had
+  nothing to do with the chat (`src/changes/*`, two commit specs): I
+  staged everything after `npm run format`. Formatting only, already
+  pushed; not rewritten.
+- `am turn` does not read its text from stdin, `am say` does. A brief
+  piped to `am turn` fails with "a text is required", and behind a
+  pipe the failure is easy to miss; it cost me one false start.
+- `am say --to claude` from an agent of this project was refused as
+  ambiguous ("names an agent in several projects"), although the
+  token is scoped to one project. `agent-system/claude` works. The
+  resolver is the one every command uses, so the same holds for
+  `am turn`.
+- `eslint --fix` (the Playwright plugin's web-first-assertion rule)
+  rewrote a correct `const two = await pane.isVisible()` into code
+  that asserted something else and still type-checked. Caught because
+  the lint left two warnings behind; `npm run lint` here always fixes.
+- The Playwright run prints Monaco "model disposed" errors from the
+  dev server during the files-view test, which passes. Older than
+  this feature.
+- `scripts/smoke-agents.mjs:115` has had a lint warning (a body on a
+  GET) since September.
+
