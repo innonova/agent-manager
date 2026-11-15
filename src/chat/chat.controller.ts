@@ -101,11 +101,11 @@ export class ChatController {
     };
   }
 
-  /** Per agent of the project: unread messages, open questions, the newest message. */
+  /** Per agent of the project that has a chat: unread messages, open questions, the newest message. A list with `agentId` in each, so a hub can prefix a spoke's ids. */
   @Get('projects/:projectId/chat')
   projectSummary(
     @Param('projectId') projectId: string,
-  ): Record<string, ChatSummary> {
+  ): (ChatSummary & { agentId: string })[] {
     return this.chat.projectSummary(projectId);
   }
 

@@ -154,6 +154,7 @@ export class ChatService
         setImmediate(() => void this.deliver(agentId).catch(() => undefined));
     });
     this.agents.on('removed', (agentId) => this.noticed.delete(agentId));
+    this.agents.on('archived', (agentId) => this.closeAll(agentId));
     if (this.config.chatSweepMs > 0) {
       this.timer = setInterval(
         () =>
@@ -235,8 +236,8 @@ export class ChatService
   }
 
   /** Every agent of the project that has a chat, for the agent list. */
-  projectSummary(projectId: string): Record<string, ChatSummary> {
-    const rows = this.db
+  projectSummary(projectId: string): (ChatSummary & { agentId: string })[] {
+    return this.db
       .prepare(
         `SELECT c.agent_id AS agentId,
            COALESCE(SUM(c.from_agent = 0 AND c.read_at IS NULL), 0) AS unread,
@@ -246,14 +247,6 @@ export class ChatService
          WHERE a.project_id = ? GROUP BY c.agent_id`,
       )
       .all(projectId) as (ChatSummary & { agentId: string })[];
-    const out: Record<string, ChatSummary> = {};
-    for (const r of rows)
-      out[r.agentId] = {
-        unread: r.unread,
-        questions: r.questions,
-        last: r.last,
-      };
-    return out;
   }
 
   /** The chat, oldest first: the last `limit` messages, or those before `before`. */
@@ -714,6 +707,29 @@ export class ChatService
         )
         .run(Date.now(), by, messageId);
     return this.announce(agent, [messageId])[0]!;
+  }
+
+  /** An archived agent waits for no answer: its open questions close as its own, so nothing stays pinned for a session that ended. */
+  private closeAll(agentId: string): void {
+    const open = this.db
+      .prepare(
+        "SELECT id FROM chat_messages WHERE agent_id = ? AND from_agent = 1 AND kind = 'question' AND closed_at IS NULL",
+      )
+      .all(agentId) as { id: number }[];
+    if (open.length === 0) return;
+    this.db
+      .prepare(
+        "UPDATE chat_messages SET closed_at = ?, closed_by = 'agent' WHERE agent_id = ? AND from_agent = 1 AND kind = 'question' AND closed_at IS NULL",
+      )
+      .run(Date.now(), agentId);
+    try {
+      this.announce(
+        this.agents.get(agentId),
+        open.map((r) => r.id),
+      );
+    } catch {
+      /* forgotten meanwhile */
+    }
   }
 
   /**

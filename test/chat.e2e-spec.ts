@@ -332,8 +332,8 @@ describe('chat', () => {
       mark,
     );
     expect(
-      (await api.get(`/api/projects/${project.id}/chat`)).body[a.id],
-    ).toMatchObject({ unread: 0, questions: 1, last: q.id });
+      (await api.get(`/api/projects/${project.id}/chat`)).body,
+    ).toContainEqual({ agentId: a.id, unread: 0, questions: 1, last: q.id });
     // the agent is not stopped by its question, and nothing became a turn
     expect(await userTexts(a.id)).toEqual(['token please']);
     // bad input
@@ -458,7 +458,18 @@ describe('chat', () => {
     expect((await api.get(`/api/agents/${a.id}/chat?limit=0`)).status).toBe(
       400,
     );
+    // a question still open when the agent is archived closes with it
+    await a.own.post(`/api/agents/${a.id}/chat`, {
+      text: 'still there?',
+      kind: 'question',
+    });
+    expect((await chatOf(a.id)).summary.questions).toBe(1);
     await api.post(`/api/agents/${a.id}/archive`);
+    expect((await chatOf(a.id)).summary.questions).toBe(0);
+    expect((await chatOf(a.id)).messages.at(-1)).toMatchObject({
+      text: 'still there?',
+      closedBy: 'agent',
+    });
     expect(
       (await api.post(`/api/agents/${a.id}/chat`, { text: 'hello?' })).status,
     ).toBe(409);

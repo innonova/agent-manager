@@ -749,7 +749,8 @@ go out by web push (tag `chat-<agent>-<id>`, so each stands on the
 phone on its own); the rest is there when someone looks. A question is
 open until a person replies to it (`replyTo`, which closes it as
 `answer`), a person dismisses it or the agent closes it (`POST
-…/chat/:messageId/close`). The agent's final message of a turn is not
+…/chat/:messageId/close`); archiving the agent closes what it had
+open, as the agent's own. The agent's final message of a turn is not
 copied into the chat: it is the last thing in the transcript beside
 it, and copying would show it twice.
 
@@ -1483,7 +1484,7 @@ POST   /api/agents/:id/chat         { text, kind?, important?, replyTo? } with t
 POST   /api/agents/:id/chat         { text, replyTo?, steer?, images? } from anyone else -> 201 { message, mode: 'aside'|'turn'|'steer' }; see Chat
 POST   /api/agents/:id/chat/read                                -> { messages, summary }; the unread ones, now read; the agent's own token only (403)
 POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
-GET    /api/projects/:id/chat                                   -> { <agentId>: { unread, questions, last } } for the agents that have a chat
+GET    /api/projects/:id/chat                                   -> [{ agentId, unread, questions, last }] for the agents that have a chat
 POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
