@@ -931,7 +931,12 @@ hook's text at 10,000 characters and beyond that gives the agent a
 path and a preview, so the dialog could never have been the hook's
 output. The selection, within a budget of
 `AGENT_MANAGER_DIALOG_BUDGET` of the agent's context window (its
-`usage.context.size`; 200K when unknown): the most recent exchanges up
+`usage.context.size`, or the size it last reported, kept in
+`dialog_windows`: a Claude session on a model name without `[1m]`
+states its window only when a turn ends, and the first two real
+hand-backs, right after restarts, fell back to 200K and handed an
+agent with a 1M window a fifth of what it should have had; 200K only
+when no size was ever reported): the most recent exchanges up
 to half the budget, the last two whatever they cost; then older ones
 in force, not reversed and given any weight, the heaviest first, among
 equals rules and purposes before decisions before open tasks and then

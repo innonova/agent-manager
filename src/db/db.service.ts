@@ -175,6 +175,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   closed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_agent ON chat_messages (agent_id, id);
+CREATE TABLE IF NOT EXISTS dialog_windows (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  size INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dialog_weights (
   agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   n INTEGER NOT NULL,

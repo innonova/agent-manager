@@ -139,8 +139,16 @@ export class DialogService implements OnModuleInit {
    * that was missed (a window that filled within one tool call).
    */
   private onState(agentId: string, status: AgentStatus): void {
-    if (!this.config.dialogClassifier) return;
     const ctx = status.usage?.context;
+    if (ctx?.size && this.windows.get(agentId) !== ctx.size) {
+      this.windows.set(agentId, ctx.size);
+      this.db
+        .prepare(
+          'INSERT INTO dialog_windows (agent_id, size) VALUES (?, ?) ON CONFLICT(agent_id) DO UPDATE SET size = excluded.size',
+        )
+        .run(agentId, ctx.size);
+    }
+    if (!this.config.dialogClassifier) return;
     const full = ctx ? ctx.used / Math.max(1, ctx.size) : 0;
     const compacting = status.activity?.kind === 'compacting';
     if (!compacting && full < this.config.dialogClassifyAt) {
@@ -530,14 +538,37 @@ export class DialogService implements OnModuleInit {
   /** Agents a compaction on request is under way for, from the asking to the command being sent. */
   private readonly compacting = new Set<string>();
 
+  /**
+   * The agent's context window, for the budget: what its status says,
+   * else what it last said. A Claude session whose model name carries
+   * no `[1m]` states its window only when a turn ends, so right after a
+   * restart the status has none; the first two real hand-backs fell
+   * back to 200K there and handed an agent with a 1M window a fifth of
+   * its dialog. Hence the size is kept, per agent, across sessions and
+   * restarts of the manager.
+   */
+  private window(agentId: string): number {
+    const now = this.agents.status(agentId).usage?.context?.size;
+    if (now) return now;
+    const kept =
+      this.windows.get(agentId) ??
+      (
+        this.db
+          .prepare('SELECT size FROM dialog_windows WHERE agent_id = ?')
+          .get(agentId) as { size: number } | undefined
+      )?.size;
+    return kept ?? 200_000;
+  }
+  /** The window each agent last reported, as kept in `dialog_windows`. */
+  private readonly windows = new Map<string, number>();
+
   /** What a hand-back would hold now: the selection and the files' texts, nothing written. */
   async preview(
     agentId: string,
   ): Promise<{ sel: Selection; files: string[]; budget: number }> {
     const exchanges = await this.exchanges(agentId);
     const weights = this.weights(agentId);
-    const size = this.agents.status(agentId).usage?.context?.size ?? 200_000;
-    const budget = Math.round(size * this.config.dialogBudget);
+    const budget = Math.round(this.window(agentId) * this.config.dialogBudget);
     const sel = select(exchanges, weights, budget);
     return { sel, files: renderFiles(sel, weights), budget };
   }

@@ -442,3 +442,54 @@ fake agent.
 An agent whose session was started before the hook existed gets a
 compaction without a hand-back from this button: it has to be
 restarted first. The button does not know and does not say.
+
+## Report (2026-11-15)
+
+A fifth round: the first real use of the compact button, and a wrong
+diagnosis of mine corrected. Gated alone.
+
+### The first real compaction with a hand-back
+
+The person restarted the xcom agent and pressed compact. In its flow:
+"/compact" as the person's turn, 110 s later "dialog handed back: 20
+exchanges word for word (10 recent, 10 earlier), 218 as index lines,
+about 18k tokens; weighed by fable[1m]" and "context compacted on
+request: 570k → 13k tokens, 110 s". The weights were fresh, so nothing
+was weighed again. The chain works for real.
+
+### The hand-back was a fifth of what it should have been, twice
+
+Both of that agent's hand-backs held about 18K tokens against a
+budget that should have been 100K. The budget is a share of the
+context window, and the window was not in the agent's status either
+time: a Claude session on a model name without `[1m]` states its
+window only when a turn ends, and both hand-backs came before the
+first turn's end after a restart (of the manager the first time, of
+the agent the second). The fallback was 200K, so the budget was 20K.
+
+**In the third report I blamed this on one long exchange blocking the
+recent ones. That was a guess I did not check, and it was wrong**: the
+walk through the recent exchanges stopped at six because half of a 20K
+budget was full. The changes made on that guess (a long exchange comes
+back with its latest texts; the budget is filled with lighter rules
+and decisions) still stand on their own, but they were not what that
+agent's hand-back lacked.
+
+Fixed: the window an agent last reported is kept per agent
+(`dialog_windows`) and used when the status has none.
+
+### What was verified
+
+A unit test of the kept window across a session that has not reported
+and a restart of the manager; manager suites as below. On the xcom
+agent the fuller hand-back was asked for again after this fix; see the
+conversation.
+
+### Noticed and left alone
+
+The first turn after an agent's restart shows the session's whole
+running cost as that turn's cost ("resumed on its own … 0s $1723.30"
+in xcom's flow): Claude's `total_cost_usd` of a resumed session starts
+from what the conversation cost before, and the adapter takes the step
+from zero. The agent's total spend may count earlier sessions twice
+for the same reason. Not looked into.
