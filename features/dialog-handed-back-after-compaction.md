@@ -1,6 +1,6 @@
 ---
 title: the dialog handed back after a compaction
-status: in-progress
+status: review
 priority: 5
 dependsOn: []
 ---
@@ -159,3 +159,151 @@ details will be tuned.
 
 A day or two. The alternative is what happens today: the person
 re-explains, or does not notice that they need to.
+
+## Report (2026-11-15)
+
+Built and deployed, gated alone. A Claude agent on the manager's own
+machine now gets its dialog handed back after a compaction; every
+agent has the record and `am recall`.
+
+### What changed
+
+- **agent-manager** (`eb862fc` and the commit carrying this report).
+  A new module, `src/dialog/`:
+  - `dialog.ts`, pure: what an exchange is (from transcript items and
+    chat messages), the selection within a budget, the files and the
+    notice as text, the classifier's instructions and the reading of
+    its answer.
+  - `dialog.service.ts`: reads the record, runs the classifier as a
+    child process, keeps the weights (`dialog_weights`), triggers a
+    weighing when an agent's context passes 70% of its window or Claude
+    reports `compacting`, and answers the hook.
+  - Routes: `GET /api/agents/:id/dialog` (the list), `.../dialog/:n`
+    (one exchange), `.../dialog/handback` (what would be handed back
+    now, nothing written), `POST .../dialog/weigh` (start a weighing),
+    `POST /api/dialog/handback` (the hook; agent token only).
+  - `fixtures/handback-hook.mjs`, wired into the settings file Claude
+    sessions are started with, as a `SessionStart` hook for `compact`.
+  - `AgentsService.note` (a line of the manager's own in a flow),
+    `ChatService.all`, six `AGENT_MANAGER_DIALOG_*` settings, a line in
+    the shipped harness note, the design's "The dialog after a
+    compaction".
+- **agent-manager-cli** (`96d27d6` and one more): `am recall`: the
+  list, exchanges by number or range, `--handback [--full]`, `--weigh
+  [--model M]`.
+- **agent-manager-ui** (`172e7bd`): its test backend weighs nothing.
+
+### Which model weighs: tried on this agent's 273 exchanges
+
+| Model | Top weight | Weight 2 or 3 | One weighing |
+| --- | --- | --- | --- |
+| Haiku 5.5 | 4 exchanges | 54 | $0.08 |
+| Sonnet 5.5 | 48 | 130 | under $1 |
+| Opus 5.5 | 10 | 56 | $1.90 |
+| Fable 5.2 | 15 | 69 | $3.97 |
+
+Opus and Fable agree on the weight of 216 of 273 exchanges and are
+within one level on 272; of what Opus would hand back, 96% is in what
+Fable would. Sonnet's extra top-weight exchanges are mostly reports of
+finished work ("clock hook built", "8 GB swapfile added"), whose
+outcome is in the repository. Fable's extras over Sonnet are rules and
+reasons ("review UI work by looking at the screen, not the green
+suite", "prescriptive briefs cap results"). Opus marked a few standing
+decisions as no longer in force that Fable kept (the harness note
+"informs, not instructs"). Both Opus and Fable saw that today's
+take-back change reversed October's rule; Sonnet named the reversal
+and still called the old rule in force (the manager's reading treats a
+named reversal as not in force). Hence the default, `fable[1m]`.
+
+### What was verified
+
+- Unit: 12 tests for the module (exchanges, selection, the files and
+  notice, the classifier's input and answer, the hook script against a
+  small HTTP server). Manager suite 147 unit, 151 end-to-end, lint.
+  One new end-to-end test with the fake agent and a script for a
+  classifier: record, weighing, preview, hand-back, the flow line,
+  that a person's cookie cannot ask for a hand-back.
+- CLI: 22 unit, 10 end-to-end (`am recall` in the chat test). UI:
+  Playwright 35 against the new manager.
+- **A real Claude agent in a separate instance** (Haiku 5.5, the
+  weakest reader, with Haiku as classifier to keep it cheap): five
+  exchanges, then `/compact`. The manager saw `compacting`, weighed (6
+  s), answered the hook, wrote one file, and the flow got "dialog
+  handed back: …" and "context compacted on request: 28k → 7k". At the
+  next message, a neutral "ok, go on: what do you propose we do
+  first?", the agent's first action was to read the file; then `am
+  recall 1` from inside its session printed the exchange. The default
+  model name `fable[1m]` was accepted there on request.
+- **On the installed manager**, this agent's own dialog: 275
+  exchanges, the same ones the experiment's script found in Claude's
+  own file. Weighed by Fable in 329 s. A hand-back now would hold 75
+  recent exchanges and 39 earlier ones whole and 161 as lines, about
+  90K tokens of a budget of 100K, in five files. The top-weight list
+  reads right to me: the standing rules (commit and deploy without
+  asking, briefs to the person first, review rounds), how the person
+  wants helpers treated, features as files, agents have a host, the
+  chat decisions.
+
+### Decided for the person
+
+- The default classifier is `fable[1m]`, per the comparison above and
+  your remark that even Fable is cheaper than the failures.
+  `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL` changes it; `off` stops all
+  weighing.
+- The budget is a tenth of the window, half for recent exchanges;
+  weighing starts at 70% of the window.
+- No rule keeps "the start" by position; the classifier's `purpose`
+  kind covers it.
+- A short text of the agent's counts as dialog only if it ended a turn
+  or came just before the person wrote; other texts under 300
+  characters are progress notes.
+- CLI commands typed as messages (`/compact`, `/clear`, a few more)
+  are not dialog.
+- `POST .../weigh` answers at once and the list says how it went. The
+  first version held the request; Fable's first real run outlasted the
+  client's five minutes.
+- A preview route and `am recall --handback`, which the spec did not
+  ask for: it is how the selection can be checked before a compaction
+  depends on it.
+
+### Left open
+
+- **Sessions already running do not have the hook.** It is in the
+  settings file a session is started with, so each agent gets it at
+  its next restart. That includes this agent.
+- **Not seen for real: an automatic compaction in the middle of a
+  turn.** The hook was verified with a manual `/compact` in a
+  daemon-held session and in `claude -p`. Nothing suggests the
+  automatic one differs, but it has not been watched.
+- **A weighing can outlast the wait.** Fable took 5.5 minutes; the
+  hand-back waits 150 s. Weighing at 70% of the window normally leaves
+  days. If a compaction arrives first, the hand-back uses the weights
+  it has and newer exchanges go by recency.
+- **Cost is visible only as a flow line.** A weighing is a model call
+  of the manager's own, on the machine's Claude login: about $4 for
+  this agent, more for a longer dialog (iac's is nearly four times as
+  long), roughly once per context window per agent. It is not in any
+  agent's spend or in the run log.
+- **The classifier also reads the machine's global `CLAUDE.md`**,
+  since it is Claude Code and bare mode needs an API key.
+- **Reversals are sometimes missed** by every model tried.
+- Codex and Copilot, agents on another machine, a UI for the record
+  and for pinning an exchange: as listed under "Not in the first
+  round".
+- **No second reader yet.** The module has not had a review pass.
+
+### Noticed and left alone
+
+- `am` writes its colour codes even when its output is not a
+  terminal, so an agent reading `am recall` (or any `am` command) gets
+  escape sequences in the text.
+- The manager's own flow lines (session boundaries, the take-back
+  marker, now "dialog handed back") exist only in the transcript
+  cache. A rebuild of the cache from the daemon's logs would lose
+  them, and with the take-back marker gone a taken-back exchange would
+  be dialog again.
+- `systemctl --user cat agent-manager` shows the unit's drop-ins,
+  one of which holds the admin password in plain text. I ran it to see
+  the service's `PATH`, so the password is now in this session's log.
+- The lint warning in `scripts/smoke-agents.mjs` (a body on a GET) is
+  older than this work.

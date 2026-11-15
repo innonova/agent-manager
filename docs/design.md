@@ -897,15 +897,18 @@ Sonnet 5.5 gave its highest weight to three times as many, most of
 them reports of finished work whose outcome is in the repository; and
 Haiku 5.5 rated essential ones 0 or 1. One weighing of that dialog
 cost about $4 on Fable, $2 on Opus, under $1 on Sonnet, and takes two
-to four minutes. A dialog too long for one call (1.6M characters) is
+to six minutes (Fable: 329 s on the installed manager). A dialog too long for one call (1.6M characters) is
 sent without the oldest exchanges an earlier weighing found light. It
 is weighed ahead of the compaction, the first time the context passes
 `AGENT_MANAGER_DIALOG_CLASSIFY_AT` of its window (and when Claude
 reports `compacting`, if that was missed), unless at most three
 exchanges were added since the last time; only for agents the dialog
-is handed back to. `POST /api/agents/:id/dialog/weigh` does it on
+is handed back to. `POST /api/agents/:id/dialog/weigh` starts one on
 request, with another model in the command's `--model` if asked, which
-is how a model is tried.
+is how a model is tried; it answers at once, and the list says when
+the weighing is done or how it failed (the first version held the
+request open, and a client's five-minute limit on a response ended it
+before Fable had finished the first real dialog).
 
 **The handing back.** Claude Code runs a `SessionStart` hook with
 source `compact` after a compaction, in headless sessions too, and adds
@@ -1682,10 +1685,10 @@ POST   /api/agents/:id/chat/read                                -> { messages, s
 POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
 GET    /api/projects/:id/chat                                   -> [{ agentId, unread, questions, last }] for the agents that have a chat
 POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
-GET    /api/agents/:id/dialog                                   -> { exchanges: [{ n, at, by, tokens, line, kind, weight, inForce, supersededBy, withdrawn }], weighed: { at, model, upTo } | null, classifier }; the agent's dialog with its people, one line per exchange (see The dialog after a compaction)
+GET    /api/agents/:id/dialog                                   -> { exchanges: [{ n, at, by, tokens, line, kind, weight, inForce, supersededBy, withdrawn }], weighed: { at, model, upTo } | null, weighing: { since, model } | null, failed: { at, message } | null, classifier }; the agent's dialog with its people, one line per exchange (see The dialog after a compaction)
 GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent
 GET    /api/agents/:id/dialog/:n                                -> { exchange: { n, at, by, person, agent, withdrawn } }; one exchange word for word; 404 for one that was taken back
-POST   /api/agents/:id/dialog/weigh { model? }                  -> { weighed, of, ms, model }; weighs the dialog now; minutes; 409 with no classifier configured
+POST   /api/agents/:id/dialog/weigh { model? }                  -> 202 { weighing: { since, model } }; starts a weighing and answers at once (it takes minutes; the list says when it is done or how it failed); 409 with no classifier configured
 POST   /api/dialog/handback                                     -> { text | null }; an agent's hook after a compaction: the dialog is written to files and the notice naming them returned; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body

@@ -87,7 +87,12 @@ const FRESH = 3;
 export class DialogService implements OnModuleInit {
   private readonly logger = new Logger(DialogService.name);
   /** A weighing under way, per agent: one at a time, and a hand-back can wait for it. */
-  private readonly running = new Map<string, Promise<Classified>>();
+  private readonly running = new Map<
+    string,
+    { done: Promise<Classified>; since: number; model: string }
+  >();
+  /** How the last weighing failed, per agent, until one succeeds. */
+  private readonly failed = new Map<string, { at: number; message: string }>();
   /** Agents weighed since their context last passed the threshold; cleared when it falls back under (a compaction). */
   private readonly armed = new Set<string>();
   /** The dialog as last read, per agent, for as long as nothing was added. */
@@ -149,11 +154,7 @@ export class DialogService implements OnModuleInit {
       return; // the agent is gone
     }
     if (!wanted) return;
-    void this.classify(agentId, { onlyIfStale: true }).catch((err: Error) =>
-      this.logger.warn(
-        `agent ${agentId}: weighing the dialog failed: ${err.message}`,
-      ),
-    );
+    this.start(agentId, { onlyIfStale: true });
   }
 
   private dir(agentId: string): string {
@@ -243,6 +244,8 @@ export class DialogService implements OnModuleInit {
   async list(agentId: string): Promise<{
     exchanges: ExchangeLine[];
     weighed: { at: number; model: string; upTo: number } | null;
+    weighing: { since: number; model: string } | null;
+    failed: { at: number; message: string } | null;
     classifier: string | null;
   }> {
     const exchanges = await this.exchanges(agentId);
@@ -269,6 +272,8 @@ export class DialogService implements OnModuleInit {
         };
       }),
       weighed: this.weighed(agentId),
+      weighing: this.weighing(agentId),
+      failed: this.failed.get(agentId) ?? null,
       classifier: this.config.dialogClassifier
         ? this.classifierName(this.config.dialogClassifier)
         : null,
@@ -290,44 +295,81 @@ export class DialogService implements OnModuleInit {
     return i >= 0 && argv[i + 1] ? argv[i + 1]! : path.basename(argv[0] ?? '');
   }
 
+  /** The weighing under way for this agent, if any. */
+  weighing(agentId: string): { since: number; model: string } | null {
+    const r = this.running.get(agentId);
+    return r ? { since: r.since, model: r.model } : null;
+  }
+
+  /** Starts a weighing and does not wait for it; a failure is logged and kept for `list` to say. */
+  start(
+    agentId: string,
+    opts: { onlyIfStale?: boolean; model?: string } = {},
+  ): { since: number; model: string } {
+    void this.classify(agentId, opts).catch((err: Error) =>
+      this.logger.warn(
+        `agent ${agentId}: weighing the dialog failed: ${err.message}`,
+      ),
+    );
+    return this.weighing(agentId)!;
+  }
+
+  /** The classifier command, with another model in its `--model` when one is asked for. */
+  private command(model?: string): string[] {
+    const argv = this.config.dialogClassifier;
+    if (!argv)
+      throw new ConflictException(
+        'no classifier is configured on this manager',
+      );
+    if (!model) return argv;
+    const i = argv.indexOf('--model');
+    if (i < 0)
+      throw new ConflictException(
+        'the configured classifier command takes no --model',
+      );
+    return argv.map((a, k) => (k === i + 1 ? model : a));
+  }
+
   /**
    * Weighs the whole dialog with the classifier, replacing the weights
    * there were: every exchange is judged again, since what came later
    * decides whether an earlier one still stands. One run per agent at a
    * time; a second caller gets the first one's result. With
    * `onlyIfStale` nothing runs when at most a few exchanges were added
-   * since the last time.
+   * since the last time. It takes minutes: a caller that cannot wait
+   * that long uses `start` and asks `weighing` and `list` how it went.
    */
   classify(
     agentId: string,
     opts: { onlyIfStale?: boolean; model?: string } = {},
   ): Promise<Classified> {
     const going = this.running.get(agentId);
-    if (going) return going;
-    const run = this.classifyNow(agentId, opts).finally(() =>
-      this.running.delete(agentId),
-    );
-    this.running.set(agentId, run);
-    return run;
+    if (going) return going.done;
+    const argv = this.command(opts.model); // refused before anything is said to be under way
+    this.agents.get(agentId);
+    const done = this.classifyNow(agentId, argv, opts)
+      .then((r) => {
+        this.failed.delete(agentId);
+        return r;
+      })
+      .catch((err: Error) => {
+        this.failed.set(agentId, { at: Date.now(), message: err.message });
+        throw err;
+      })
+      .finally(() => this.running.delete(agentId));
+    this.running.set(agentId, {
+      done,
+      since: Date.now(),
+      model: this.classifierName(argv),
+    });
+    return done;
   }
 
   private async classifyNow(
     agentId: string,
-    opts: { onlyIfStale?: boolean; model?: string },
+    argv: string[],
+    opts: { onlyIfStale?: boolean },
   ): Promise<Classified> {
-    let argv = this.config.dialogClassifier;
-    if (!argv)
-      throw new ConflictException(
-        'no classifier is configured on this manager',
-      );
-    if (opts.model) {
-      const i = argv.indexOf('--model');
-      if (i < 0)
-        throw new ConflictException(
-          'the configured classifier command takes no --model',
-        );
-      argv = argv.map((a, k) => (k === i + 1 ? opts.model! : a));
-    }
     const model = this.classifierName(argv);
     const live = (await this.exchanges(agentId)).filter((e) => !e.withdrawn);
     const last = this.weighed(agentId);
@@ -443,7 +485,7 @@ export class DialogService implements OnModuleInit {
     const going = this.running.get(agentId);
     if (going)
       await Promise.race([
-        going.catch(() => undefined),
+        going.done.catch(() => undefined),
         new Promise((r) => setTimeout(r, this.config.dialogWaitMs)),
       ]);
     const { sel, files } = await this.preview(agentId);

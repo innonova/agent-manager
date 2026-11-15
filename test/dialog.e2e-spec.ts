@@ -151,9 +151,14 @@ describe('the dialog handed back after a compaction', () => {
     );
 
     // weighed: one call with the whole dialog, both sides, and the instructions on top
-    const weighed = (await api.post(`/api/agents/${agent.id}/dialog/weigh`, {}))
-      .body;
-    expect(weighed).toMatchObject({ weighed: 6, of: 6 });
+    // started, not waited for: a real one takes minutes
+    const started = await api.post(`/api/agents/${agent.id}/dialog/weigh`, {});
+    expect(started.status).toBe(202);
+    expect(started.body.weighing.model).toBe('node'); // the command's program, when it names no model
+    await until('the weighing to end', async () => {
+      const l = (await api.get(`/api/agents/${agent.id}/dialog`)).body;
+      return l.weighing === null && l.weighed !== null;
+    });
     const input = fs.readFileSync(seen, 'utf8');
     expect(input).toContain('output exactly one line of JSON');
     expect(input).toContain('=== exchange 2 (');

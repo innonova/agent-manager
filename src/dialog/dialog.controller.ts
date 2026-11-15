@@ -12,7 +12,7 @@ import {
 import type { Request } from 'express';
 import type { AgentScope, User } from '../auth/auth.service.js';
 import type { Exchange } from './dialog.js';
-import { Classified, DialogService, ExchangeLine } from './dialog.service.js';
+import { DialogService, ExchangeLine } from './dialog.service.js';
 
 type Caller = Request & { user?: User; agentScope?: AgentScope };
 
@@ -30,6 +30,8 @@ export class DialogController {
   list(@Param('id') id: string): Promise<{
     exchanges: ExchangeLine[];
     weighed: { at: number; model: string; upTo: number } | null;
+    weighing: { since: number; model: string } | null;
+    failed: { at: number; message: string } | null;
     classifier: string | null;
   }> {
     return this.dialog.list(id);
@@ -68,20 +70,27 @@ export class DialogController {
     return { exchange: await this.dialog.exchange(id, num) };
   }
 
-  /** Weighs the dialog now, with the configured classifier or `{ model }` in its place: for trying a model, and for the first time. Takes minutes. */
+  /**
+   * Starts a weighing of the dialog, with the configured classifier or
+   * `{ model }` in its place (how a model is tried), and answers at
+   * once: it takes minutes. `GET .../dialog` says when it is done
+   * (`weighing` gone, `weighed` new) or how it failed.
+   */
   @Post('agents/:id/dialog/weigh')
-  @HttpCode(200)
+  @HttpCode(202)
   weigh(
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
-  ): Promise<Classified> {
+  ): { weighing: { since: number; model: string } } {
     const model = body?.model;
     if (
       model !== undefined &&
       (typeof model !== 'string' || !/^[\w.[\]:-]{1,80}$/.test(model))
     )
       throw new BadRequestException('"model" is a model name');
-    return this.dialog.classify(id, { model: model as string | undefined });
+    return {
+      weighing: this.dialog.start(id, { model: model as string | undefined }),
+    };
   }
 
   /** The hook Claude Code runs after a compaction, asking for the agent's dialog: only an agent's own token has one to ask for. */
