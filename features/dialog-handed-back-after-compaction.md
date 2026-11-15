@@ -307,3 +307,52 @@ named reversal as not in force). Hence the default, `fable[1m]`.
   the service's `PATH`, so the password is now in this session's log.
 - The lint warning in `scripts/smoke-agents.mjs` (a body on a GET) is
   older than this work.
+
+## Report (2026-11-15)
+
+A second round the same day, from the conversation after the first
+report. Gated alone.
+
+### What changed
+
+- **A hand-back on request** (`cfc76fc`, CLI `ec76b08`). An agent that
+  went through compactions before there was a hand-back holds only
+  summaries of its earlier dialog. `am recall --handback --now`, inside
+  its session, writes the files now and prints a notice worded for
+  that case; the flow says "dialog handed back on request". The
+  person's reason: the xcom agent should not spend the rest of a
+  low-quality window waiting for its next compaction.
+- **The 1M window is read off the agent's configured model name too**
+  (`8272f47`). Claude Code 2.1.325 reports the model at start without
+  `[1m]`, so the header showed no context window until a turn ended.
+
+### What was verified
+
+- Manager 148 unit and 151 end-to-end, CLI 22 and 10; the end-to-end
+  tests cover the on-request notice, its flow line, and that `--now`
+  is the agent's own.
+- This agent was restarted from the UI: its session was started with
+  the settings file that carries the hook, and its header shows the
+  window again (61% of 1M at the time).
+- The xcom agent was asked, at the person's request, to weigh its
+  dialog and hand it back to itself; its answer is in the conversation,
+  not here.
+
+### Agreed in the conversation, not built
+
+- **Weigh only what is new.** Every weighing now sends the whole
+  dialog. To be changed: the first weighing of an agent is the whole
+  history; after that only the exchanges added since, in full, with
+  the older ones as their index lines and current verdicts (those
+  weighing 2 or 3 in full), and the classifier answering for each new
+  exchange and for any older one the new ones reversed or closed. A
+  full pass again on request and when the classifier model changes.
+  To be checked against a full pass on this agent's dialog before it
+  is the default.
+- **An index into the whole transcript**, the person's suggestion: so
+  an agent can go back and look something up in the work, not only in
+  the dialog. Proposed shape: per exchange an outline of what was done
+  under it (each tool call one line: its number, the tool, its own
+  description or path, the size of the result; the commits made), any
+  one item in full by its number, and a search over both. All from the
+  transcript the manager holds, no model call.
