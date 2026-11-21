@@ -33,8 +33,10 @@ export interface Turn {
   end: number | null;
   by: Starter;
   tokens: Tokens;
-  /** As the vendor priced it, when it does. */
-  costUsd: number;
+  /** The cost its end recorded, as recorded: a turn's own, or in older records the session's running total (see `totalCost`). */
+  reported: number;
+  /** The session it ran in. */
+  session: string;
 }
 
 /** What `TurnLog` needs of a transcript item. */
@@ -88,10 +90,6 @@ export class TurnLog {
   readonly persons: { at: number; by: string }[] = [];
   private open: Turn | null = null;
   private lastAt = 0;
-  /** What the turns before cost in all, for telling a carried-over total from a turn's own cost. */
-  private costSoFar = 0;
-  private costSession: string | null = null;
-
   feed(s: LogItem): void {
     const it = s.item;
     if (it.kind === 'user') {
@@ -109,14 +107,22 @@ export class TurnLog {
       if (!this.open) this.start(s.at - num(it.durationMs), 'self');
       const t = this.open!;
       t.tokens = tokensOf(it.usage);
-      t.costUsd = this.cost(num(it.costUsd), s.sessionId);
+      t.reported = num(it.costUsd);
+      t.session = s.sessionId;
       this.close(s.at);
     }
     this.lastAt = s.at;
   }
 
   private start(at: number, by: Starter): void {
-    this.open = { start: at, end: null, by, tokens: zero(), costUsd: 0 };
+    this.open = {
+      start: at,
+      end: null,
+      by,
+      tokens: zero(),
+      reported: 0,
+      session: '',
+    };
     this.turns.push(this.open);
   }
 
@@ -126,29 +132,64 @@ export class TurnLog {
     this.open = null;
   }
 
-  /**
-   * A turn's cost. Claude Code's running total starts, in a resumed
-   * session, from what the conversation cost before, and the adapter
-   * takes each turn's cost as the step from the session's previous
-   * total: so the first turn after a restart carries everything before
-   * it (a turn of no length at $1,723 was seen). Such a turn is given
-   * what it adds to the sum so far.
-   */
-  private cost(reported: number, session: string): number {
-    const first = session !== this.costSession;
-    this.costSession = session;
-    const own =
-      first && this.costSoFar > 1 && reported > this.costSoFar * 0.5
-        ? Math.max(0, reported - this.costSoFar)
-        : reported;
-    this.costSoFar += own;
-    return own;
-  }
-
   /** When the last item fed happened: where a turn left open by a session that died is taken to have stopped. */
   get last(): number {
     return this.lastAt;
   }
+}
+
+/** A session's records are running totals where they never fall for this many turns in a row; steps do not rise that long by chance. */
+const RUNNING_TOTAL_RUN = 8;
+
+/**
+ * What the turns cost in all, from what their ends recorded, which is
+ * not always a turn's own cost:
+ *
+ * - The manager's first days recorded the session's running total on
+ *   every turn end (learnings #14), and transcripts from then still
+ *   hold it. Within a session, a run of eight or more values that
+ *   never fall is such a total, and counts once, at its last value.
+ * - Claude Code's own counter, in a resumed session, starts from where
+ *   the conversation's last session left it, and the adapter takes a
+ *   turn's cost as the step from the session's previous total: so the
+ *   first turn after a restart carries everything before it (a turn of
+ *   no length at $1,723 was seen). A session whose first value is at
+ *   least what that counter stood at is taken to carry it, and only
+ *   the rest is its own.
+ *
+ * Summed naively, this project's own agent came to $10,622 where its
+ * turns cost about a tenth of that.
+ */
+export function totalCost(
+  turns: { reported: number; session: string }[],
+): number {
+  const sessions: number[][] = [];
+  let at: string | null = null;
+  for (const t of turns) {
+    if (!t.session) continue; // no end recorded: no cost
+    if (t.session !== at) sessions.push([]);
+    at = t.session;
+    sessions[sessions.length - 1]!.push(t.reported);
+  }
+  let total = 0;
+  /** Where the vendor's own running counter stands after the sessions so far. */
+  let counter = 0;
+  for (const seq of sessions) {
+    const carried = counter > 0 && seq[0]! >= counter * 0.98 ? counter : 0;
+    const own = [Math.max(0, seq[0]! - carried), ...seq.slice(1)];
+    let sum = 0;
+    for (let i = 0; i < own.length;) {
+      let j = i;
+      while (j + 1 < own.length && own[j + 1]! >= own[j]!) j++;
+      if (j - i + 1 >= RUNNING_TOTAL_RUN && own[i]! > 0 && own[j]! >= sum)
+        sum = own[j]!;
+      else for (let k = i; k <= j; k++) sum += own[k]!;
+      i = j + 1;
+    }
+    total += sum;
+    counter = carried + sum;
+  }
+  return total;
 }
 
 /** Work more than this long after a person last wrote counts as unattended: they have most likely gone to do something else. */
@@ -243,7 +284,6 @@ export function statsOf(
   };
   const tokens = zero();
   let runtimeMs = 0;
-  let costUsd = 0;
   for (const t of turns) {
     const ms = t.end - t.start;
     runtimeMs += ms;
@@ -253,7 +293,6 @@ export function statsOf(
     tokens.cacheWrite += t.tokens.cacheWrite;
     tokens.cacheRead += t.tokens.cacheRead;
     tokens.output += t.tokens.output;
-    costUsd += t.costUsd;
   }
   // one run per message: the work between it and the next one
   const runs: { at: number; by: string; runtimeMs: number; late: number }[] =
@@ -281,7 +320,7 @@ export function statsOf(
     turns: turns.length,
     runtimeMs,
     tokens,
-    costUsd: Math.round(costUsd * 100) / 100,
+    costUsd: Math.round(totalCost(log.turns) * 100) / 100,
     working: working && log.turns[log.turns.length - 1]?.end === null,
     startedBy,
     sinceLastMessage: last

@@ -1037,15 +1037,20 @@ running counts up to now.
   fresh, input written to the vendor's cache, input read from it. The
   last dwarfs the rest and is not text: every request of a turn reads
   the whole context again.
-- **Cost** is the vendors' own pricing of the turns, summed, with one
-  correction. In a resumed session Claude Code's running total starts
-  from what the conversation cost before, and the adapter takes each
-  turn's cost as the step from the session's previous total, so the
-  first turn after a restart carries everything before it (a turn of
-  no length at $1,723 was seen). A session's first turn that reports
-  more than half of all cost so far is given only what it adds to that
-  sum. `status.usage.total` does not have this correction and can
-  count earlier sessions twice.
+- **Cost** is the vendors' own pricing of the turns, summed from what
+  the turns' ends recorded, which is not always a turn's own cost
+  (`totalCost`). The manager's first days recorded the session's
+  running total on every turn end (learnings #14) and old transcripts
+  still hold it: within a session, eight or more values in a row that
+  never fall are such a total and count once. And in a resumed session
+  Claude Code's own counter starts from where the conversation's last
+  session left it, while the adapter takes a turn's cost as the step
+  from the session's previous total, so the first turn after a restart
+  carries everything before it (a turn of no length at $1,723 was
+  seen): a session whose first value is at least what the counter
+  stood at is taken to carry it. Summed naively this project's own
+  agent came to $10,622, about ten times what its turns cost.
+  `status.usage.total` has neither correction.
 - **Since a person last wrote**: the agent's working time since the
   last message from a person, in the flow (a turn or a steer) or said
   beside the work in the chat; the turns begun since, and their output.

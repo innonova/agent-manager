@@ -1,5 +1,11 @@
 import type { Item } from '../adapters/adapter.js';
-import { statsOf, tokensOf, TurnLog, UNATTENDED_AFTER_MS } from './stats.js';
+import {
+  statsOf,
+  tokensOf,
+  totalCost,
+  TurnLog,
+  UNATTENDED_AFTER_MS,
+} from './stats.js';
 
 const MIN = 60_000;
 const H = 60 * MIN;
@@ -52,7 +58,8 @@ describe('TurnLog', () => {
     ]);
     expect(l.turns[0]).toMatchObject({
       tokens: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 },
-      costUsd: 0.5,
+      reported: 0.5,
+      session: 's1',
     });
     expect(l.persons).toEqual([
       { at: 0, by: 'aek' },
@@ -75,23 +82,35 @@ describe('TurnLog', () => {
     ]);
   });
 
-  it("gives the first turn after a restart its own cost, not the conversation's carried-over total", () => {
-    const l = log([
-      [0, user('aek')],
-      [10, end({ costUsd: 100 })],
-      [20, user('aek')],
-      [30, end({ costUsd: 50 })],
-      // restarted: Claude's total starts from the 150 before, and the turn itself cost 2
-      [40, sys('session resumed (s2)')],
-      [40, sys('resumed on its own'), 's2'],
-      [40, end({ costUsd: 152 }), 's2'],
-      [50, user('aek'), 's2'],
-      [55, end({ costUsd: 3 }), 's2'],
-      // a vendor that starts from zero: a first turn that is just a turn
-      [60, user('aek'), 's3'],
-      [65, end({ costUsd: 4 }), 's3'],
-    ]);
-    expect(l.turns.map((t) => t.costUsd)).toEqual([100, 50, 2, 3, 4]);
+  it("sums cost from records that are not all a turn's own: old running totals, and a counter carried across a restart", () => {
+    const t = (session: string, ...values: number[]) =>
+      values.map((reported) => ({ reported, session }));
+    // each turn's own cost: just the sum
+    expect(totalCost(t('a', 3, 1, 4, 1, 5))).toBe(14);
+    // the first days recorded the session's running total on every turn: it counts once
+    expect(
+      totalCost(t('a', 1.2, 3, 3.4, 3.9, 4.4, 5.5, 6.1, 8.5, 11, 143)),
+    ).toBe(143);
+    // a session that switched from totals to steps in the middle
+    expect(totalCost(t('a', 1, 2, 3, 4, 5, 6, 7, 37, 0.3, 4.5, 4))).toBeCloseTo(
+      45.8,
+    );
+    // Claude's counter carried over: the second session starts at 14.04 plus its own 8.46,
+    // the third at what the second left it at, plus nothing
+    expect(
+      totalCost([
+        ...t('a', 8.35),
+        ...t('b', 9.6, 4.44),
+        ...t('c', 22.5, 0.5, 7.5),
+        ...t('d', 30.5, 2),
+      ]),
+    ).toBeCloseTo(8.35 + 1.25 + 4.44 + 8.46 + 0.5 + 7.5 + 0 + 2);
+    // a counter that started over: a first turn that is just a turn
+    expect(totalCost([...t('a', 100, 50), ...t('b', 4, 1)])).toBe(155);
+    // eight free turns in a row are not a running total of nothing
+    expect(totalCost(t('a', 5, 0, 0, 0, 0, 0, 0, 0, 0, 2))).toBe(7);
+    // a turn with no end recorded has no session and no cost
+    expect(totalCost([{ reported: 0, session: '' }, ...t('a', 2)])).toBe(2);
   });
 
   it("reads a turn's tokens under either vendor's names", () => {
