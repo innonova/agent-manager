@@ -20,6 +20,7 @@ import { LearningsModule } from './learnings/learnings.module.js';
 import { ProfilesController } from './profiles.controller.js';
 import { ProjectsModule } from './projects/projects.module.js';
 import { RunsModule } from './runs/runs.module.js';
+import { StatsModule } from './stats/stats.module.js';
 
 @Module({})
 export class AppModule {
@@ -42,6 +43,7 @@ export class AppModule {
         PushModule,
         ChatModule,
         DialogModule,
+        StatsModule,
         ChangesModule,
         RunsModule,
         LearningsModule,

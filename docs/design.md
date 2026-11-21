@@ -1015,6 +1015,50 @@ reversals (the classifiers tried all missed some), and the decisions an
 agent takes alone in a long stretch without the person, which are
 dialog only once they are in a reply or in the chat.
 
+## Statistics: how an agent has been run
+
+`GET /api/agents/:id/stats` reads an agent's transcript for how it has
+been run (`src/stats/`): the UI's "statistics" among an agent's facts,
+`am stats`. Nothing is recorded for it; a `TurnLog` per agent is fed
+the transcript's items and then only what is added, since a first
+reading of a long transcript takes seconds.
+
+The unit is the turn: from the item that started it to its `turn_end`.
+A `user` item starts one (by a person, by another agent, `agent-<name>`,
+or by the manager itself, its background poke); one that arrives while
+a turn runs is a steer and starts none. Claude's "resumed on its own"
+starts one nobody sent: a background job finished. A turn whose session
+ended without a `turn_end` stops at the last item recorded; one still
+running counts up to now.
+
+- **Runtime** is the turns' lengths by the clock, added up. Waiting on
+  a tool counts; sitting idle between turns does not.
+- **Tokens** are summed from each turn's end: output, input read
+  fresh, input written to the vendor's cache, input read from it. The
+  last dwarfs the rest and is not text: every request of a turn reads
+  the whole context again.
+- **Cost** is the vendors' own pricing of the turns, summed, with one
+  correction. In a resumed session Claude Code's running total starts
+  from what the conversation cost before, and the adapter takes each
+  turn's cost as the step from the session's previous total, so the
+  first turn after a restart carries everything before it (a turn of
+  no length at $1,723 was seen). A session's first turn that reports
+  more than half of all cost so far is given only what it adds to that
+  sum. `status.usage.total` does not have this correction and can
+  count earlier sessions twice.
+- **Since a person last wrote**: the agent's working time since the
+  last message from a person, in the flow (a turn or a steer) or said
+  beside the work in the chat; the turns begun since, and their output.
+- **Runs**: the work between one message from a person and the next is
+  one run; how many there were, the median, the longest.
+- **Unattended**: work done more than thirty minutes after a person
+  last wrote, on the reasoning that by then they have most likely
+  turned to something else, plus whatever ran before anyone wrote. The
+  manager does not know who was looking (presence is not recorded), so
+  this is an estimate from the messages, and the thirty minutes is a
+  constant (`UNATTENDED_AFTER_MS`), stated wherever the figure is
+  shown.
+
 ## Notes: the small actionable items
 
 A project's notes are the person's small actionable items about it,
@@ -1731,6 +1775,7 @@ POST   /api/agents/:id/chat/read                                -> { messages, s
 POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
 GET    /api/projects/:id/chat                                   -> [{ agentId, unread, questions, last }] for the agents that have a chat
 POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
+GET    /api/agents/:id/stats                                    -> { since, turns, runtimeMs, tokens: { input, cacheWrite, cacheRead, output }, costUsd, working, startedBy: { person, agent, manager, self: { turns, runtimeMs } }, sinceLastMessage: { at, by, runtimeMs, turns, outputTokens } | null, runs: { count, medianMs, longestMs, longest: [{ at, by, runtimeMs }] }, unattended: { afterMs, runtimeMs, share, runs, longestMs, medianMs } }; see Statistics
 POST   /api/agents/:id/compact                                  -> 202 { ok }; compacts the agent's context now: the dialog weighed first when not fresh, then the vendor's compaction sent as a turn; 409 in a turn or for a vendor without one
 GET    /api/agents/:id/dialog                                   -> { exchanges: [{ n, at, by, tokens, line, kind, weight, inForce, supersededBy, withdrawn }], weighed: { at, model, upTo } | null, weighing: { since, model } | null, failed: { at, message } | null, classifier }; the agent's dialog with its people, one line per exchange (see The dialog after a compaction)
 GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent

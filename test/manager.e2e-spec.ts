@@ -603,6 +603,50 @@ describe('agents', () => {
     expect(fake.usage.context).toBeUndefined();
   }, 30000);
 
+  it("an agent's statistics are read off its transcript: turns, runtime, who started them, the work since a person last wrote", async () => {
+    const p = await createProject();
+    const { agent } = await createAgent(p.id, 'counted');
+    expect((await api.get(`/api/agents/${agent.id}/stats`)).body).toMatchObject(
+      {
+        since: null,
+        turns: 0,
+        runtimeMs: 0,
+        sinceLastMessage: null,
+      },
+    );
+    for (const text of ['one', 'two']) {
+      await api.post(`/api/agents/${agent.id}/turn`, { text });
+      // the reply and then the turn's end: an idle seen earlier may be the one from before the turn
+      for (let i = 0; i < 100; i++) {
+        const items = (await api.get(`/api/agents/${agent.id}/items`)).body
+          .items as any[];
+        const said = items.findIndex(
+          (it) =>
+            it.item.kind === 'text' &&
+            it.item.text.includes(`You said: ${text}`),
+        );
+        if (
+          said >= 0 &&
+          items.slice(said).some((it) => it.item.kind === 'turn_end')
+        )
+          break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    const s = (await api.get(`/api/agents/${agent.id}/stats`)).body;
+    expect(s).toMatchObject({
+      turns: 2,
+      working: false,
+      startedBy: { person: { turns: 2 }, self: { turns: 0 } },
+      sinceLastMessage: { by: 'admin', turns: 1 },
+      runs: { count: 2 },
+      unattended: { runtimeMs: 0, runs: 0 },
+    });
+    expect(s.runtimeMs).toBeGreaterThan(0);
+    expect(s.sinceLastMessage.runtimeMs).toBeLessThanOrEqual(s.runtimeMs);
+    expect((await api.get('/api/agents/nope/stats')).status).toBe(404);
+  }, 30000);
+
   it('an agent is told about the harness at session start, from the operator template when there is one', async () => {
     const p = await createProject();
     const { agent } = await createAgent(p.id, 'told');
