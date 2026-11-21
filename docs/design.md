@@ -1051,18 +1051,22 @@ running counts up to now.
   stood at is taken to carry it. Summed naively this project's own
   agent came to $10,622, about ten times what its turns cost.
   `status.usage.total` has neither correction.
-- **Since a person last wrote**: the agent's working time since the
-  last message from a person, in the flow (a turn or a steer) or said
-  beside the work in the chat; the turns begun since, and their output.
-- **Runs**: the work between one message from a person and the next is
-  one run; how many there were, the median, the longest.
+- **Since a person's last direct message**: the agent's working time
+  since the last message from a person in the flow (a turn or a
+  steer); the turns begun since, and their output.
+- **Runs**: the work between one direct message and the next is one
+  run; how many there were, the median, the longest. What a person
+  says in the chat is beside the work and ends no run: the first
+  version counted it, and a 24-hour turn in which the person answered
+  one of the agent's questions after 18 hours read as an 18-hour run.
 - **Unattended**: work done more than thirty minutes after a person
-  last wrote, on the reasoning that by then they have most likely
-  turned to something else, plus whatever ran before anyone wrote. The
-  manager does not know who was looking (presence is not recorded), so
-  this is an estimate from the messages, and the thirty minutes is a
-  constant (`UNATTENDED_AFTER_MS`), stated wherever the figure is
-  shown.
+  last wrote anything, in the flow or the chat, on the reasoning that
+  by then they have most likely turned to something else, plus
+  whatever ran before anyone wrote. Here the chat counts: an answer
+  there shows somebody was looking. The manager does not know who was
+  looking (presence is not recorded), so this is an estimate from the
+  messages, and the thirty minutes is a constant
+  (`UNATTENDED_AFTER_MS`), stated wherever the figure is shown.
 
 ## Notes: the small actionable items
 

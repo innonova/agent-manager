@@ -132,6 +132,25 @@ describe('TurnLog', () => {
 });
 
 describe('statsOf', () => {
+  it('does not end a run at what a person says in the chat, but takes it as somebody being there', () => {
+    // one turn of 24 hours on one message, with a question answered in the chat after 18
+    const l = log([
+      [0, user('aek')],
+      [24 * 60, end()],
+      [24 * 60 + 10, user('aek')],
+      [24 * 60 + 11, end()],
+    ]);
+    const s = statsOf(l, 30 * H, false, [{ at: 18 * H, by: 'aek' }]);
+    expect(s.runs.longest[0]).toEqual({ at: 0, by: 'aek', runtimeMs: 24 * H });
+    expect(s.runs.count).toBe(2);
+    // unattended: all of it but the half hour after the message and the half hour after the answer
+    expect(s.unattended).toMatchObject({
+      runtimeMs: 23 * H,
+      runs: 1,
+      longestMs: 23 * H,
+    });
+  });
+
   it('adds up runtime, tokens and cost, and says who started what', () => {
     const l = log([
       [0, user('aek')],
@@ -185,16 +204,10 @@ describe('statsOf', () => {
       turns: 2,
       outputTokens: 6,
     });
-    // said beside the work at minute 42: three minutes of work since
+    // something said beside the work at minute 42 is not a direct message
     expect(
       statsOf(l, H, false, [{ at: 42 * MIN, by: 'djm' }]).sinceLastMessage,
-    ).toMatchObject({
-      at: 42 * MIN,
-      by: 'djm',
-      runtimeMs: 3 * MIN,
-      turns: 0,
-      outputTokens: 4,
-    });
+    ).toMatchObject({ at: 20 * MIN, by: 'aek', runtimeMs: 15 * MIN });
     expect(statsOf(new TurnLog(), H, false).sinceLastMessage).toBeNull();
   });
 
