@@ -126,3 +126,22 @@ end-to-end; CLI 22 and 11; new UI 30 unit and 12 in the browser.
 - The changes "since I last looked" diff of the current UI
   (`/api/projects/:id/changes`) still measures a clone from a commit,
   not by stream.
+
+## Report (2026-11-22, two things after the first)
+
+- **The store's commits now say who may have caused a change**, which
+  was this feature's one "not in this round". The manager still does
+  not know which turn wrote a file, so it says what it does know, in
+  the commit's body: who wrote into the stream's folder through the
+  manager since its last commit ("Written through the manager by
+  aek."), and which of the stream's agents had a turn since then
+  ("worker had a turn in the stream since its last commit."). A file
+  edited by hand with nobody at work has no body. The subject stays
+  `<stream>: <files>`.
+- **A run of a stream's feature could be seen without its clones** for
+  an instant after it opened: the run was written before git had been
+  asked where each clone stood. Found by this feature's own test
+  failing once under load. The clones are asked first and written with
+  the run.
+
+Manager 199 unit and 176 end-to-end.

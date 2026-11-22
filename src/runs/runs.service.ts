@@ -354,6 +354,21 @@ export class RunsService
     }
     const range = this.features.range(projectId, slug)[feature.repo];
     const base = range?.base ?? (repo ? await head(repo.path) : null);
+    // A stream's work is in its clones: where each stands as the run
+    // begins. Asked before the run is written, so that the run and its
+    // clones appear together: nobody sees a stream's run without them.
+    const clones: { name: string; base: string | null }[] = [];
+    if (project.kind === 'stream')
+      for (const clone of codeRepos(project))
+        clones.push({ name: clone.name, base: await head(clone.path) });
+    if (
+      this.db
+        .prepare(
+          'SELECT id FROM runs WHERE project_id = ? AND slug = ? AND ended_at IS NULL',
+        )
+        .get(projectId, slug)
+    )
+      return; // opened meanwhile, while git was being asked
     const status = this.agents.status(agent.id);
     const id = randomUUID();
     this.db
@@ -380,14 +395,12 @@ export class RunsService
         this.agents.itemCount(agent.id),
         JSON.stringify(snapshotOf(status.usage, agent.currentSessionId)),
       );
-    // a stream's work is in its clones: where each stands as the run begins
-    if (project.kind === 'stream')
-      for (const clone of codeRepos(project))
-        this.db
-          .prepare(
-            'INSERT OR IGNORE INTO run_clones (run_id, clone, base_commit) VALUES (?, ?, ?)',
-          )
-          .run(id, clone.name, await head(clone.path));
+    for (const c of clones)
+      this.db
+        .prepare(
+          'INSERT OR IGNORE INTO run_clones (run_id, clone, base_commit) VALUES (?, ?, ?)',
+        )
+        .run(id, c.name, c.base);
     this.announce(id);
   }
 

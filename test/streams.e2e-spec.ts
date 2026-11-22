@@ -541,6 +541,51 @@ describe('a stream', () => {
         return false;
       }
     });
+    // Who may have caused a change is in the commit's body: whoever wrote
+    // through the manager, and the stream's agents that had a turn since.
+    const bodyOf = (subject: string) =>
+      git(store, 'log', '-1', '--format=%b', `--grep=^${subject}$`).trim();
+    const put = await fetch(
+      `${m.url}/api/projects/${other.id}/file?path=stream/via-api.md`,
+      {
+        method: 'PUT',
+        headers: {
+          cookie: api.cookie,
+          'content-type': 'application/octet-stream',
+        },
+        body: 'through the manager\n',
+      },
+    );
+    expect(put.status).toBeLessThan(300);
+    await committed('other: via-api.md');
+    expect(bodyOf('other: via-api.md')).toBe(
+      'Written through the manager by admin.',
+    );
+    const quiet = (
+      await api.post(`/api/projects/${other.id}/agents`, {
+        name: 'scribe',
+        profile: 'fake',
+      })
+    ).body.agent as { id: string };
+    await idle(quiet.id);
+    await sleep(400); // its start is not a turn; let a sweep pass
+    await api.post(`/api/agents/${quiet.id}/turn`, { text: 'a slow answer' });
+    fs.writeFileSync(path.join(other.path, 'stream', 'in-a-turn.md'), 'd\n');
+    await committed('other: in-a-turn.md');
+    expect(bodyOf('other: in-a-turn.md')).toBe(
+      'scribe had a turn in the stream since its last commit.',
+    );
+    await idle(quiet.id);
+    await sleep(400);
+    // its turn went on after that commit, so it is named once more; then nobody is
+    fs.writeFileSync(path.join(other.path, 'stream', 'after.md'), 'e\n');
+    await committed('other: after.md');
+    expect(bodyOf('other: after.md')).toBe(
+      'scribe had a turn in the stream since its last commit.',
+    );
+    fs.writeFileSync(path.join(other.path, 'stream', 'nobody.md'), 'f\n');
+    await committed('other: nobody.md');
+    expect(bodyOf('other: nobody.md')).toBe('');
     // a clone is not in the store, whatever happens in it
     fs.writeFileSync(path.join(tidy.path, 'thing', 'scratch.txt'), 'x\n');
     await sleep(500);

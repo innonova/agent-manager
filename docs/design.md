@@ -1694,14 +1694,21 @@ makes one commit per stream that has changes (`<stream>: <files>`),
 under its own name, then pushes when the store has a remote. Agents and
 people write files; many agents committing into one repository sweep
 each other's folders into their commits and race on the push, which is
-why notes left the repositories. Who caused a change is not in the
-commit yet (the manager does not know which turn wrote a file), except
-where the manager made the change itself on a person's word: a stream
-started, put away or brought back is written and committed as one step
-(`storeChange`), so that the periodic commit cannot come between and
-take the change into a commit that names only the file (`<stream>:
-started by aek`). A push that fails is tried again at every sweep
-until one succeeds, whether or not anything changed since.
+why notes left the repositories. The manager does not know which turn
+wrote a file, so a commit says who may have caused it, in its body:
+whoever wrote into the folder through the manager since the stream's
+last commit (a feature answered, a file saved: "Written through the
+manager by aek."), and which of the stream's agents had a turn since
+then ("worker had a turn in the stream since its last commit."; an
+agent whose turn is still running is named again in the next). A file
+edited by hand with nobody at work has no body. Where the manager made
+the change itself on a person's word (a stream started, put away or
+brought back) the subject says so, and the change and its commit are
+one step (`storeChange`), so that the periodic commit cannot come
+between and take the change into a commit that names only the file
+(`<stream>: started by aek`). A push that fails is tried again at
+every sweep until one succeeds, whether or not anything changed
+since.
 
 A command the manager runs for streams (git, a setup) has a time
 limit that holds whatever the command does: it runs in a process
@@ -1957,12 +1964,11 @@ began and when it ended (`run.clones: [{ name, base, end }]`,
 run's own `repo`, `baseCommit` and `endCommit` are about, and the work
 is in the clones.
 
-Not built: the store's commits naming who caused a file to change
-(the manager's own acts do), compressing what a stream that is away
-keeps, putting a single clone away, a view across streams of who
-touched a repository, streams on another machine. The current UI shows
-a stream as a project whose repositories are its folder and its
-clones, and no longer lists one that is put away.
+Not built: compressing what a stream that is away keeps, putting a
+single clone away, a view across streams of who touched a repository,
+streams on another machine. The current UI shows a stream as a project
+whose repositories are its folder and its clones, and no longer lists
+one that is put away.
 
 ## Runs
 

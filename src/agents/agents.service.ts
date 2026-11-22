@@ -3598,6 +3598,8 @@ export class AgentsService
       return;
     }
     live.stateHeld = false;
+    // for the store's commits: who had a turn in a stream since its folder was last committed
+    this.projects.noteTurn(agent.projectId, agent.name, state === 'working');
     if (live.activityFlush) {
       clearTimeout(live.activityFlush);
       live.activityFlush = null;

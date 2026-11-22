@@ -151,6 +151,51 @@ export class ProjectsService implements OnModuleInit {
     for (const p of this.list()) this.keepWorkspace(p);
   }
 
+  /**
+   * Who may have caused what changed in a project's files since they
+   * were last asked about: the agents that had a turn, and whoever wrote
+   * through the manager. Kept for a stream's folder, whose changes the
+   * manager commits without knowing which turn wrote a file: this is
+   * what it can say about it, and it is "may have", not "did".
+   */
+  private readonly authors = new Map<
+    string,
+    { turns: Set<string>; working: Set<string>; wrote: Set<string> }
+  >();
+
+  private authorsOf(projectId: string) {
+    let a = this.authors.get(projectId);
+    if (!a) {
+      a = { turns: new Set(), working: new Set(), wrote: new Set() };
+      this.authors.set(projectId, a);
+    }
+    return a;
+  }
+
+  /** An agent of the project went into a turn, or out of one. */
+  noteTurn(projectId: string, agent: string, working: boolean): void {
+    const a = this.authorsOf(projectId);
+    if (working) {
+      a.turns.add(agent);
+      a.working.add(agent);
+    } else a.working.delete(agent);
+  }
+
+  /** Someone wrote into the project through the manager (a feature answered, a file saved). */
+  noteWrote(projectId: string, who: string): void {
+    this.authorsOf(projectId).wrote.add(who);
+  }
+
+  /** Who had a turn and who wrote through the manager since this was last asked; an agent still in its turn is told of again next time. */
+  takeAuthors(projectId: string): { turns: string[]; wrote: string[] } {
+    const a = this.authors.get(projectId);
+    if (!a) return { turns: [], wrote: [] };
+    const out = { turns: [...a.turns].sort(), wrote: [...a.wrote].sort() };
+    a.turns = new Set(a.working);
+    a.wrote = new Set();
+    return out;
+  }
+
   /** Marks a stream as put away, on its way, or (null) simply there. */
   setArchive(id: string, state: ArchiveState | null): Project {
     const current = this.get(id);

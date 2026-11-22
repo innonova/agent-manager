@@ -384,6 +384,31 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
           why && why.stream === top
             ? why.text
             : `${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}`;
+        // Who may have caused it, in the body: the manager does not know
+        // which turn wrote a file, only who wrote through it and which of
+        // the stream's agents had a turn since its last commit.
+        const stream = top
+          ? this.projects
+              .list()
+              .find((p) => p.kind === 'stream' && p.name === top)
+          : undefined;
+        const by = stream ? this.projects.takeAuthors(stream.id) : null;
+        const list = (names: string[]) =>
+          names.length < 2
+            ? names.join('')
+            : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+        const body = by
+          ? [
+              by.wrote.length
+                ? `Written through the manager by ${list(by.wrote)}.`
+                : '',
+              by.turns.length
+                ? `${list(by.turns)} had ${by.turns.length === 1 ? 'a turn' : 'turns'} in the stream since its last commit.`
+                : '',
+            ]
+              .filter(Boolean)
+              .join('\n')
+          : '';
         const add = await this.git(['add', '-A', '--', spec]);
         const commit =
           add.code === 0
@@ -392,6 +417,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
                 '-q',
                 '-m',
                 `${top || 'store'}: ${what}`,
+                ...(body ? ['-m', body] : []),
                 '--',
                 spec,
               ])
