@@ -439,11 +439,13 @@ export class ArchiveService extends EventEmitter {
       void worker.finally(() => this.owned.delete(p.id));
       return this.projects.get(p.id);
     } finally {
-      if (!handed) {
-        // whatever threw, the stream is where it was and nobody's
-        if (marked) this.projects.setArchive(p.id, null);
-        this.owned.delete(p.id);
-      }
+      if (!handed)
+        try {
+          // whatever threw, the stream is where it was
+          if (marked) this.projects.setArchive(p.id, null);
+        } finally {
+          this.owned.delete(p.id); // and nobody's, whether or not the state could be put back
+        }
     }
   }
 
@@ -664,10 +666,12 @@ export class ArchiveService extends EventEmitter {
       void worker.finally(() => this.owned.delete(p.id));
       return away;
     } finally {
-      if (!handed) {
-        this.projects.setArchive(p.id, 'archived');
-        this.owned.delete(p.id);
-      }
+      if (!handed)
+        try {
+          this.projects.setArchive(p.id, 'archived');
+        } finally {
+          this.owned.delete(p.id); // released whether or not the state could be put back
+        }
     }
   }
 

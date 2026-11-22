@@ -1792,8 +1792,10 @@ route's own words make no difference). `ArchiveService`
   - _Somewhere else_ means on a branch of `origin` as it is now. For
     the look, the remote's branches are fetched into a namespace of the
     manager's own (`refs/agent-manager/origin/heads/*`) with a refspec
-    and settings of its own, and what was fetched must agree with what
-    the remote lists (`git ls-remote --symref`, which also says which
+    and settings of its own (and `--refmap=`, so that git does not
+    also move the clone's own remembered branches on the side), and
+    what was fetched must be the same set as what the remote lists
+    (`git ls-remote --symref`, which also says which
     branch is main). So the look changes none of the clone's refs (a
     fetch as the clone is set up may prune tags) and takes none of them
     for news: not another remote's, and not the clone's own memory of

@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
@@ -925,9 +926,18 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
           await ask('where its origin is', 'remote', 'get-url', 'origin')
         )?.trim() || null;
     let elsewhere = !!source;
-    if (source && !/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {
-      // a path on this machine, perhaps: one inside what goes with the clone is no other place
-      const at = real(path.resolve(cwd, source));
+    let local: string | null = null;
+    if (source && /^file:\/\//i.test(source)) {
+      try {
+        local = fileURLToPath(source);
+      } catch {
+        local = null;
+      }
+    } else if (source && !/^[a-z][a-z0-9+.-]*:\/\//i.test(source))
+      local = path.resolve(cwd, source);
+    if (source && local) {
+      // a place on this machine, perhaps: one inside what goes with the clone is no other place
+      const at = real(local);
       const root = real(within);
       if (
         fs.existsSync(at) &&
@@ -960,6 +970,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
           '--no-write-fetch-head',
           '--no-recurse-submodules',
           '--prune', // of the namespace named here, and nothing else
+          '--refmap=', // and no update of the clone's own remembered branches on the side: one of them may be the last thing holding commits
           'origin',
           `+refs/heads/*:${EVIDENCE}/heads/*`,
         ],
@@ -1057,14 +1068,18 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       if (there.get(name) !== oid) refs.push(name.replace(/^refs\//, ''));
     }
     // what was fetched is what the remote lists: or the remote moved while it was being asked
-    if (fetched)
-      for (const [name, oid] of there)
-        if (name.startsWith('refs/heads/') && fetchedHeads.get(name) !== oid) {
-          unknown.push(
-            'what its remote holds (it changed while it was being asked: ask again)',
-          );
-          break;
-        }
+    if (fetched) {
+      const listed = [...there].filter(([name]) =>
+        name.startsWith('refs/heads/'),
+      );
+      if (
+        listed.length !== fetchedHeads.size ||
+        listed.some(([name, oid]) => fetchedHeads.get(name) !== oid)
+      )
+        unknown.push(
+          'what its remote holds (it changed while it was being asked: ask again)',
+        );
+    }
     const mainSha = mainName
       ? (there.get(`refs/heads/${mainName}`) ?? null)
       : null;
@@ -1125,6 +1140,16 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       }
     }
     const print = createHash('sha256');
+    // what is staged, by what the index holds for each changed path (its mode and blob), not only that the path is listed
+    print.update(
+      (await ask(
+        'what is staged',
+        'status',
+        '--porcelain=v2',
+        '-z',
+        '--untracked-files=all',
+      )) ?? '',
+    );
     for (const rel of [...paths].sort()) {
       let stat = 'gone';
       try {
@@ -1190,7 +1215,9 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
     )?.trim();
     if (gitDir) {
       const kept: string[] = [];
+      let seen = 0;
       const walk = (dir: string, depth: number) => {
+        if (++seen > 20_000) return; // said below: a look that was not finished is not an answer
         let names: string[] = [];
         try {
           names = fs.readdirSync(dir);
@@ -1213,10 +1240,13 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
           walk(path.join(dir, 'modules'), depth + 1);
           return;
         }
-        if (depth < 6)
-          for (const n of names) walk(path.join(dir, n), depth + 1);
+        for (const n of names) walk(path.join(dir, n), depth + 1);
       };
       walk(path.join(gitDir, 'modules'), 0);
+      if (seen > 20_000)
+        unknown.push(
+          'which repositories of submodules it keeps (there is too much under .git/modules to look through)',
+        );
       if (kept.length)
         beyond.push(
           `it keeps the repository of a submodule that is not checked out (${kept.join(', ')}): what that holds is not looked at. Check it out again, or remove it if nothing there is wanted`,

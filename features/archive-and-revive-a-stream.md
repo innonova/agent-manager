@@ -324,3 +324,31 @@ I am asking the reviewer for one more, narrow, look at this round's
 changes and will stop there unless it finds something that loses work
 in ordinary use: each round has gone further from what an agent's
 clone looks like in practice.
+
+## Report (2026-11-22, the reviewer's third look, and where the loop stops)
+
+Of the second round's thirteen fixes the reviewer called seven fixed
+and six partly, and found six things, three of which it marked as
+contrived (a person would have to set them up by hand). All six are
+fixed:
+
+- **The look could still move the clone's memory of a remote branch**
+  while fetching (git updates it on the side unless told not to), and
+  with it erase the one ref that should have made it refuse. It is
+  told not to (`--refmap=`). Tested with a branch force-pushed on the
+  remote.
+- **A branch deleted on the remote between the fetch and the listing**
+  still counted. What was fetched and what is listed must now be the
+  same set, both ways.
+- **Work staged into the index alone** (the file on disk untouched)
+  did not change the key for "what you were shown". It does now.
+- Contrived: an origin given as a `file:` address inside the stream's
+  home; a submodule's kept repository more than six directories deep;
+  a database error at the exact moment a revival is rolled back.
+
+I stop the loop here. Three rounds: fifteen findings, fourteen, six,
+each round further from a clone as an agent leaves it, and the last
+round's ordinary cases needed a concurrent change on the remote or a
+hand-edited index. What remains untested by anything but reading is
+listed in the first review's report above. Manager 199 unit and 172
+end-to-end.

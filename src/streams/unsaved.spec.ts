@@ -246,4 +246,49 @@ describe('what of a clone is nowhere else', () => {
     expect((await look()).stashes).toBe(1); // one stash as before, and not the same one
     expect((await look()).print).not.toBe(stashed);
   });
+
+  it('leaves what the clone remembers of the remote alone while it asks, and does not take a branch that went for one that is there', async () => {
+    // origin/topic remembers commits that the remote has rewritten since, and no local branch has them
+    fs.writeFileSync(path.join(clone, 'b.txt'), 'b\n');
+    git(clone, 'add', '-A');
+    git(clone, 'checkout', '-q', '-b', 'topic');
+    git(clone, 'commit', '-qm', 'the first take');
+    git(clone, 'push', '-q', '-u', 'origin', 'topic');
+    const first = git(clone, 'rev-parse', 'HEAD').trim();
+    git(clone, 'checkout', '-q', 'main');
+    git(clone, 'branch', '-D', 'topic');
+    const other = path.join(root, 'other');
+    git(root, 'clone', '-q', remote, other);
+    git(other, 'checkout', '-q', 'topic');
+    git(other, 'commit', '-q', '--amend', '-m', 'the second take');
+    git(other, 'push', '-q', '--force', 'origin', 'topic');
+    const u = await look();
+    expect(git(clone, 'rev-parse', 'origin/topic').trim()).toBe(first); // not moved by the look
+    expect(u.beyond).toHaveLength(1);
+    expect(u.beyond[0]).toContain(
+      "remotes/origin/topic is the clone's memory of a branch with 1 commit that origin does not have now",
+    );
+  });
+
+  it('counts what is staged as part of what is not committed', async () => {
+    fs.writeFileSync(path.join(clone, 'a.txt'), 'a\nmore\n');
+    const before = (await look()).print;
+    // more work goes into the index alone: the file on disk is as it was
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: clone,
+      input: 'a\nstaged and nowhere else\n',
+      encoding: 'utf8',
+    }).trim();
+    git(clone, 'update-index', '--cacheinfo', `100644,${blob},a.txt`);
+    const after = await look();
+    expect(after.uncommitted).toEqual(['a.txt']);
+    expect(after.print).not.toBe(before);
+  });
+
+  it('takes a file: address inside what goes with the clone for no other place either', async () => {
+    git(clone, 'remote', 'set-url', 'origin', `file://${clone}`);
+    const u = await look();
+    expect(u.fetched).toBe(false);
+    expect(u.beyond[0]).toContain('is inside what would be removed with it');
+  });
 });
