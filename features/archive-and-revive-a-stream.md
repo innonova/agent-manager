@@ -257,3 +257,70 @@ Not provoked by a test: a stop that cannot be confirmed, a removal
 that fails, a record that cannot be committed, a revival asked for
 while clones are being removed. Each is a few lines read twice, not a
 test.
+
+## Report (2026-11-22, the reviewer's second look)
+
+The reviewer read the fixes as new code. Of its fifteen findings it
+called six fixed and nine partly, and found fourteen more things in
+what the fixes had left or made, most of them further out than the
+first round's. Fixed, except one that cannot occur here.
+
+- **The fetch that served as evidence could itself change the clone or
+  be stale.** A clone set up to prune tags lost an unpublished tag to
+  the look; a clone that follows only some branches kept a stale
+  memory of the others, which then counted as "pushed". The remote's
+  branches are now fetched into a namespace of the manager's own, with
+  its own refspec and settings; nothing of the clone's refs is touched
+  or trusted, and what was fetched must agree with what the remote
+  lists.
+- **What is checked out was only looked at when the clone had refs.**
+  A detached HEAD in a repository with no branch left went unseen.
+- **Some questions still failed quietly**: which commit is checked
+  out, which branch is main (now read from the remote itself, not
+  from the clone), whether there is an origin at all.
+- **A remembered remote branch can be the last thing holding
+  commits.** It refuses, by name.
+- **A submodule** is now looked at as strictly as the clone, in its
+  own repository; the kept repository of one that is no longer
+  checked out refuses.
+- **An origin inside the stream's own home** is no other place.
+- **A session could still start while a stream was away**: through a
+  fork that was under way, or by taking back a message. The check is
+  now in the one place every session starts from, and putting a
+  stream away refuses if any agent still has a session after the
+  stops.
+- **When one agent's stop failed, the others' compactions went on**
+  after the stream had been given back. All are waited for.
+- **Two ways to leave a stream stuck** until the manager restarted (an
+  exception between marking and starting the work), and one to leave
+  it away with no record (an exception after it was back). Closed.
+- **The key for "what you were shown" named files and counted
+  stashes.** More work in a listed file, or a different stash, kept
+  the same key. It is now made of the files' sizes and times and the
+  stashes' commits. And `discard: true` means whatever is found, up to
+  the removal, as it was meant to.
+- **A clone that was on main is checked out on main again** even if
+  the remote starts a clone on another branch by then.
+
+Not done: notices written by the first version into the old column
+are not moved to the new one. The first version was live for twenty
+minutes on a machine with no stream; there are none.
+
+Also closed, found by a test that failed once under load: the
+manager's periodic commit of the store could come between a file being
+written and the commit that names who caused it ("started by", "put
+away by"), which then said only the file's name. A change and its
+commit are one step now.
+
+Tests: the unit file for the look at a clone has nine cases (added: a
+clone that prunes tags and follows one branch, a detached HEAD with no
+refs, a remembered branch holding the only copy, an origin inside the
+home, a submodule no longer checked out, the key changing with a
+file's contents and with which stash it is). End to end: more work in
+a listed file refuses under the old key. Manager 196 unit and 172
+end-to-end.
+
+I am asking the reviewer for one more, narrow, look at this round's
+changes and will stop there unless it finds something that loses work
+in ordinary use: each round has gone further from what an agent's
+clone looks like in practice.

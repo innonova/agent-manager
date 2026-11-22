@@ -1695,9 +1695,13 @@ under its own name, then pushes when the store has a remote. Agents and
 people write files; many agents committing into one repository sweep
 each other's folders into their commits and race on the push, which is
 why notes left the repositories. Who caused a change is not in the
-commit yet (the manager does not know which turn wrote a file). A
-push that fails is tried again at every sweep until one succeeds,
-whether or not anything changed since.
+commit yet (the manager does not know which turn wrote a file), except
+where the manager made the change itself on a person's word: a stream
+started, put away or brought back is written and committed as one step
+(`storeChange`), so that the periodic commit cannot come between and
+take the change into a commit that names only the file (`<stream>:
+started by aek`). A push that fails is tried again at every sweep
+until one succeeds, whether or not anything changed since.
 
 A command the manager runs for streams (git, a setup) has a time
 limit that holds whatever the command does: it runs in a process
@@ -1785,12 +1789,19 @@ route's own words make no difference). `ArchiveService`
 - **Nothing that exists only in a clone goes with it.** Before
   anything is done each clone is looked at (`StreamsService.unsaved`),
   and the look is strict, because its answer licenses a removal:
-  - _Somewhere else_ means on a branch of `origin` as just fetched
-    (`git fetch --prune`), and for a tag, a note or any other ref,
-    held by `origin` under the same name with the same object
-    (`git ls-remote`). Not another remote's refs, and not `origin`'s
-    as the clone last saw them. A remote that cannot be asked refuses
-    the request.
+  - _Somewhere else_ means on a branch of `origin` as it is now. For
+    the look, the remote's branches are fetched into a namespace of the
+    manager's own (`refs/agent-manager/origin/heads/*`) with a refspec
+    and settings of its own, and what was fetched must agree with what
+    the remote lists (`git ls-remote --symref`, which also says which
+    branch is main). So the look changes none of the clone's refs (a
+    fetch as the clone is set up may prune tags) and takes none of them
+    for news: not another remote's, and not the clone's own memory of
+    `origin`, which a narrowed refspec leaves stale. A tag, a note or
+    any other ref is somewhere else when the remote lists it under the
+    same name with the same object. A remote that cannot be asked
+    refuses the request, and an origin that is a directory inside the
+    stream's home is no other place.
   - _A question git does not answer_ (a corrupt index, a timeout) is
     reported as unknown and refuses the request; it is never read as
     "nothing to save".
@@ -1801,36 +1812,51 @@ route's own words make no difference). `ArchiveService`
     each named with what would change it: commits on the local branch
     that is main's (pushing them would be landing without the gate),
     commits on a detached HEAD, a clone with commits and no `origin`,
-    a tag or other ref the remote does not have as it is here, linked
-    worktrees (what is checked out in them is not looked at, and they
-    break when the clone goes), and a submodule with commits or files
-    of its own that are nowhere else.
+    a tag or other ref the remote does not have as it is here, a
+    remembered remote branch (`refs/remotes/…`) that is the last thing
+    holding commits, linked worktrees (what is checked out in them is
+    not looked at, and they break when the clone goes), a submodule
+    that fails the same look in its own repository, and the kept
+    repository of a submodule that is no longer checked out. What is
+    checked out is looked at whatever refs there are: a detached HEAD
+    in a repository with no branch left holds its commits too.
   - Files that are changed or new and not committed, stashes, and
     files hidden from `git status` (assume-unchanged, skip-worktree:
     they may have changed unseen) are listed and go only with
     `discard`, the person's word. `discard: true` is that word for
-    whatever is found; the plan's `uncommittedKey` sent as `discard`
-    lets go of exactly what the person was shown, and the request is
-    refused if something else is uncommitted by then (the UI sends
-    the key).
+    whatever is found, up to the removal; the plan's `uncommittedKey`
+    sent as `discard` lets go of exactly what the person was shown
+    (the files by their sizes and times, the stashes by their
+    commits), and anything else found uncommitted, at the request or
+    at the second look, refuses: another file, more in a file that was
+    listed, another stash (the UI sends the key).
   - Not counted as work: ignored files (dependencies and build output
     are what is being reclaimed), and commits no ref holds (what a
     rebase, an amend or a reset leaves behind for the reflog: every
     rebase leaves some).
-    An agent in a turn or with a background job, and a clone still being
-    made, refuse it too. The refusal is one 409 (`archive-refused`) with
-    every reason and the plan; `GET …/archive/plan` gives the same
-    without asking for anything.
+
+  An agent in a turn or with a background job, and a clone still being
+  made, refuse it too. The refusal is one 409 (`archive-refused`) with
+  every reason and the plan; `GET …/archive/plan` gives the same
+  without asking for anything.
+
 - **One operation per stream, and an order that is safe to fail.** A
   request owns the stream from its first look to its last step
   (`ArchiveService.owned`): a second one, of either kind, is refused
   at once, so a revival cannot begin while clones are still being
-  removed. Then: the stream is marked `archiving` (from here no
-  person's turn is taken, no agent started or restarted, no clone
-  made), and what was at work is asked once more now that nothing new
-  can begin; branches are pushed; every agent the stream has by then
-  is compacted where that is cheap and stopped, and a stop that cannot
-  be confirmed refuses (something may still be writing); the clones
+  removed; whatever fails before the work is handed to the background
+  leaves the stream as it was and nobody's. Then: the stream is marked
+  `archiving`. From here no session starts in it: the check is in the
+  one place every session comes from (`AgentsService.startSession`: a
+  turn, a restart, a new agent, a fork, a message taken back), with
+  the manager's own compaction as the exception, and no clone is
+  made. What was at work is asked once more now that nothing new can
+  begin; branches are pushed; every agent the stream has by then is
+  compacted where that is cheap and stopped, each of them waited for
+  even when another has failed, and a stop that cannot be confirmed,
+  or an agent that still has a session afterwards (one whose start
+  was under way at the mark), refuses: something may still be
+  writing; the clones
   are looked at again, as strictly as before, and what is uncommitted
   must be what was let go; the record is written and must be committed
   in the store; the stream is marked `archived`; and only then are the
@@ -1889,7 +1915,10 @@ route's own words make no difference). `ArchiveService`
   agent tells of the last absence, once. The stream is marked as back
   before its record is removed, so that a stop between the two leaves
   a leftover file and not a stream that is away with nothing to come
-  back by. A clone that
+  back by, and nothing that fails after the stream is back (tidying
+  the record away, the last announcement) puts it away again. A clone
+  is checked out on the branch it was on also when that was main's:
+  the remote may start a clone elsewhere by then. A clone that
   cannot be made does not keep the stream away: it is back without
   it, and the notice and the result say so.
 - **How far it is** is `GET …/archive` (`{ archive, progress: { step,
