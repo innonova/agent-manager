@@ -71,6 +71,8 @@ export interface Agent {
   effort: string | null;
   /** What the agent was told about running here at its last session start; null when the note is off. */
   harnessNote: string | null;
+  /** When it stops, the manager asks it whether it can go on (see `NudgeService`); off unless a person turns it on. */
+  nudge: boolean;
   /** Who created it: a person's name, or `agent-<name>` for a helper started by another agent. */
   createdBy: string | null;
   /** The machine its sessions run on: null for this one, else a spoke's name; `cwd` is a path there. */
@@ -104,6 +106,13 @@ export interface AgentStatus {
    * the agent itself (`am hold`), cleared when the time passes.
    */
   holdUntil: number | null;
+  /**
+   * What the manager is doing about the agent having stopped, for an
+   * agent with `nudge` on: `reading` its last message, or `waiting` to
+   * ask it at `at` (unix ms) whether it can go on. Null otherwise. Not
+   * kept across a restart of the manager.
+   */
+  nudge: { state: 'reading' | 'waiting'; at: number | null } | null;
 }
 
 export interface StoredItem {
@@ -132,6 +141,7 @@ interface AgentRow {
   harness_note: string | null;
   created_by: string | null;
   hold_until: number | null;
+  nudge?: number;
   host: string | null;
   current_session_id: string | null;
   created_at: number;
@@ -301,6 +311,7 @@ const toAgent = (r: AgentRow): Agent => ({
   model: r.model ?? null,
   effort: r.effort ?? null,
   harnessNote: r.harness_note ?? null,
+  nudge: r.nudge === 1,
   createdBy: r.created_by ?? null,
   host: r.host ?? null,
   currentSessionId: r.current_session_id,
@@ -468,6 +479,7 @@ export class AgentsService
       model?: unknown;
       effort?: unknown;
       permissions?: unknown;
+      nudge?: unknown;
     },
   ): { agent: Agent; status: AgentStatus; appliesAtRestart: string[] } {
     const current = this.get(id);
@@ -486,11 +498,14 @@ export class AgentsService
       input.effort === undefined
         ? current.effort
         : vendorSetting(input.effort, 'effort');
+    const nudge = input.nudge === undefined ? current.nudge : input.nudge;
+    if (typeof nudge !== 'boolean')
+      throw new BadRequestException('"nudge" must be true or false');
     this.db
       .prepare(
-        'UPDATE agents SET name = ?, model = ?, effort = ?, permissions = ? WHERE id = ?',
+        'UPDATE agents SET name = ?, model = ?, effort = ?, permissions = ?, nudge = ? WHERE id = ?',
       )
-      .run(name.trim(), model, effort, permissions, id);
+      .run(name.trim(), model, effort, permissions, nudge ? 1 : 0, id);
     const agent = this.get(id);
     const live = this.ensureLive(agent);
     const appliesAtRestart = (
@@ -504,6 +519,16 @@ export class AgentsService
       .map(([what]) => what);
     this.emit('updated', agent, live.status);
     return { agent, status: live.status, appliesAtRestart };
+  }
+
+  /** What the manager is doing about the agent having stopped (see `AgentStatus.nudge`); announced like any change of status. */
+  setNudge(id: string, nudge: AgentStatus['nudge']): void {
+    const agent = this.find(id);
+    if (!agent) return;
+    const live = this.ensureLive(agent);
+    if (JSON.stringify(live.status.nudge) === JSON.stringify(nudge)) return;
+    live.status = { ...live.status, nudge };
+    this.emit('state', agent.id, agent.projectId, live.status);
   }
 
   /** The agent's own word on how long its background wait is expected: the watchdog holds its poke until then. */
@@ -853,6 +878,7 @@ export class AgentsService
       model,
       effort,
       harnessNote: null, // set when the session starts
+      nudge: false,
       createdBy,
       host,
     };
@@ -2688,7 +2714,7 @@ export class AgentsService
         const cached = sl.fromCache ? sl.settled?.status : null;
         if (cached) {
           this.setState(agent, live, cached.state, cached.error, true);
-          live.status = { ...cached, queued: 0 }; // nothing survives a restart
+          live.status = { ...cached, queued: 0, nudge: null }; // neither a held message nor a pending nudge survives a restart
           live.stateHeld = true;
           if (cached.usage) this.noteUsage(agent, cached.usage); // the account's state as of the cache
         } else
@@ -2787,6 +2813,7 @@ export class AgentsService
           usage: null,
           activity: null,
           holdUntil: this.holdOf(agent.id),
+          nudge: null,
         },
         items: [],
         itemBase: 0,
@@ -2938,6 +2965,7 @@ export class AgentsService
       usage: live.status.usage,
       activity,
       holdUntil: live.status.holdUntil,
+      nudge: live.status.nudge,
     };
     // A message held for the next turn goes as soon as the agent can take
     // one; a transition replayed from history is not that moment.

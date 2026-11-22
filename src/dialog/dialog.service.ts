@@ -6,7 +6,6 @@ import {
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { AdaptersService } from '../adapters/adapters.service.js';
@@ -16,6 +15,7 @@ import { ChatService } from '../chat/chat.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
+import { runModel } from '../util/run-model.js';
 import {
   classifierInput,
   DialogItem,
@@ -431,43 +431,9 @@ export class DialogService implements OnModuleInit {
 
   /** Runs the classifier command with the input on stdin; its stdout is the answer. */
   private runClassifier(argv: string[], input: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const env = { ...process.env };
-      // a model call of the manager's own, not an agent's: none of a session's identity goes with it
-      for (const k of Object.keys(env))
-        if (k.startsWith('AGENT_MANAGER_') || k === 'ELECTRON_RUN_AS_NODE')
-          delete env[k];
-      const child = spawn(argv[0]!, argv.slice(1), {
-        cwd: this.config.dataDir,
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      let out = '';
-      let err = '';
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM');
-        reject(new Error('the classifier took too long'));
-      }, this.config.dialogClassifierMs);
-      child.stdout.setEncoding('utf8').on('data', (d: string) => (out += d));
-      child.stderr.setEncoding('utf8').on('data', (d: string) => {
-        if (err.length < 4000) err += d;
-      });
-      child.on('error', (e) => {
-        clearTimeout(timer);
-        reject(e);
-      });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (code === 0) resolve(out);
-        else
-          reject(
-            new Error(
-              `the classifier exited ${code}: ${err.trim().slice(0, 300) || out.trim().slice(0, 300)}`,
-            ),
-          );
-      });
-      child.stdin.on('error', () => undefined); // a command that exits early: its exit code says why
-      child.stdin.end(input);
+    return runModel(argv, input, {
+      cwd: this.config.dataDir,
+      timeoutMs: this.config.dialogClassifierMs,
     });
   }
 

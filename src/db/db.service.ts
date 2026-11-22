@@ -175,6 +175,11 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   closed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_agent ON chat_messages (agent_id, id);
+CREATE TABLE IF NOT EXISTS agent_nudges (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  last_at INTEGER NOT NULL,
+  in_row INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dialog_windows (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
   size INTEGER NOT NULL
@@ -227,6 +232,10 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec('ALTER TABLE agents ADD COLUMN created_by TEXT');
     if (!agentCols.includes('hold_until'))
       this.db.exec('ALTER TABLE agents ADD COLUMN hold_until INTEGER');
+    if (!agentCols.includes('nudge'))
+      this.db.exec(
+        'ALTER TABLE agents ADD COLUMN nudge INTEGER NOT NULL DEFAULT 0',
+      );
     if (!agentCols.includes('host'))
       this.db.exec('ALTER TABLE agents ADD COLUMN host TEXT');
     // The session in which the agent's hook last asked about its chat: an

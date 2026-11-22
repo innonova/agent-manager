@@ -59,6 +59,23 @@ export interface ManagerConfig {
   dialogBudget: number;
   /** How long a hand-back waits for a weighing under way (ms). */
   dialogWaitMs: number;
+  /**
+   * The command that reads an agent's last message when it stops, for
+   * agents with `nudge` on: the instructions and the message on stdin,
+   * one line of JSON back. Null: nobody is nudged.
+   * `AGENT_MANAGER_NUDGE_MODEL` names the model of the default command
+   * (`off` for none); `AGENT_MANAGER_NUDGE_READER` replaces the command,
+   * as a JSON array.
+   */
+  nudgeReader: string[] | null;
+  /** How long one reading may take (ms). */
+  nudgeReaderMs: number;
+  /** How long after a stop the nudge goes, the time a person has to say something first (ms). */
+  nudgeDelayMs: number;
+  /** An agent is nudged again only after this much work since the last nudge (ms). */
+  nudgeWorkMs: number;
+  /** No more than this many nudges in a row without a word from a person. */
+  nudgeMaxInRow: number;
   /** While a working agent has unread chat messages it is told so again this often (ms). */
   chatRepeatMs: number;
   /** How often the chat looks for messages a state change did not deliver (ms). */
@@ -119,7 +136,27 @@ export function baseDir(
  * dollars and happens about once per context window.
  */
 function dialogClassifier(env: NodeJS.ProcessEnv): string[] | null {
-  const whole = env.AGENT_MANAGER_DIALOG_CLASSIFIER;
+  return modelCommand(
+    env.AGENT_MANAGER_DIALOG_CLASSIFIER,
+    env.AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL ?? 'fable[1m]',
+    'AGENT_MANAGER_DIALOG_CLASSIFIER',
+    'You weigh the exchanges of a dialog exactly as the instructions at the top of the input say. Output only the JSON lines they ask for.',
+  );
+}
+
+/**
+ * A model call of the manager's own as a command: the whole command
+ * when one is given (a JSON array; `off` or empty for none), else
+ * Claude Code, headless, with no tools, on the model named (`off` or
+ * empty for none) and a system prompt of one line: the instructions
+ * come with the input, on stdin.
+ */
+function modelCommand(
+  whole: string | undefined,
+  model: string,
+  name: string,
+  system: string,
+): string[] | null {
   if (whole !== undefined) {
     if (!whole || whole === 'off') return null;
     try {
@@ -134,10 +171,9 @@ function dialogClassifier(env: NodeJS.ProcessEnv): string[] | null {
       /* said below */
     }
     throw new Error(
-      'AGENT_MANAGER_DIALOG_CLASSIFIER must be a JSON array of strings (the command and its arguments), or "off"',
+      `${name} must be a JSON array of strings (the command and its arguments), or "off"`,
     );
   }
-  const model = env.AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL ?? 'fable[1m]';
   if (!model || model === 'off') return null;
   return [
     'claude',
@@ -150,7 +186,7 @@ function dialogClassifier(env: NodeJS.ProcessEnv): string[] | null {
     '--output-format',
     'text',
     '--system-prompt',
-    'You weigh the exchanges of a dialog exactly as the instructions at the top of the input say. Output only the JSON lines they ask for.',
+    system,
   ];
 }
 
@@ -233,6 +269,16 @@ export function loadConfig(
     dialogClassifyAt: Number(env.AGENT_MANAGER_DIALOG_CLASSIFY_AT ?? 0.7),
     dialogBudget: Number(env.AGENT_MANAGER_DIALOG_BUDGET ?? 0.1),
     dialogWaitMs: Number(env.AGENT_MANAGER_DIALOG_WAIT_MS ?? 150_000),
+    nudgeReader: modelCommand(
+      env.AGENT_MANAGER_NUDGE_READER,
+      env.AGENT_MANAGER_NUDGE_MODEL ?? 'claude-sonnet-5-5',
+      'AGENT_MANAGER_NUDGE_READER',
+      'You read one message and answer exactly as the instructions say.',
+    ),
+    nudgeReaderMs: Number(env.AGENT_MANAGER_NUDGE_READER_MS ?? 90_000),
+    nudgeDelayMs: Number(env.AGENT_MANAGER_NUDGE_DELAY_MS ?? 5 * 60_000),
+    nudgeWorkMs: Number(env.AGENT_MANAGER_NUDGE_WORK_MS ?? 30 * 60_000),
+    nudgeMaxInRow: Number(env.AGENT_MANAGER_NUDGE_MAX ?? 20),
     chatRepeatMs: Number(env.AGENT_MANAGER_CHAT_REPEAT_MS ?? 5 * 60_000),
     chatSweepMs: Number(env.AGENT_MANAGER_CHAT_SWEEP_MS ?? 15_000),
     hubToken: env.AGENT_MANAGER_HUB_TOKEN || null,

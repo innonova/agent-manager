@@ -251,6 +251,22 @@ const median = (xs: number[]): number => {
   return s.length % 2 ? s[m]! : Math.round((s[m - 1]! + s[m]!) / 2);
 };
 
+/** The agent's working time since a moment, as of `now`: the turns' lengths from then on, one under way counted up to now. */
+export function workSince(
+  log: TurnLog,
+  at: number,
+  now: number,
+  working: boolean,
+): number {
+  let ms = 0;
+  for (const t of log.turns) {
+    const end = t.end ?? (working ? now : Math.max(log.last, t.start));
+    if (end <= at) continue;
+    ms += end - Math.max(t.start, at);
+  }
+  return ms;
+}
+
 /**
  * The numbers, as of `now`. `messages` are the moments a person wrote
  * in the chat beside the work, which counts for whether somebody was

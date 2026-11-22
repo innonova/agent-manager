@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { AgentsService } from '../agents/agents.service.js';
 import { ChatService } from '../chat/chat.service.js';
-import { Stats, statsOf, TurnLog } from './stats.js';
+import { Stats, statsOf, TurnLog, workSince } from './stats.js';
 
 /** How many transcript items are read at a time. */
 const PAGE = 2000;
@@ -52,6 +52,29 @@ export class StatsService implements OnModuleInit {
     })().finally(() => this.reading.delete(agentId));
     this.reading.set(agentId, run);
     return run;
+  }
+
+  /** The agent's work since a moment, and when a person last wrote to it, in the flow or the chat: what the nudge's rule goes by. */
+  async since(
+    agentId: string,
+    at: number,
+  ): Promise<{ workedMs: number; personAt: number | null }> {
+    const log = await this.log(agentId);
+    const state = this.agents.status(agentId).state;
+    const chat = this.chat
+      .all(agentId)
+      .filter((m) => m.from === 'person')
+      .map((m) => m.at);
+    const persons = [...log.persons.map((p) => p.at), ...chat];
+    return {
+      workedMs: workSince(
+        log,
+        at,
+        Date.now(),
+        state === 'working' || state === 'waiting-permission',
+      ),
+      personAt: persons.length ? Math.max(...persons) : null,
+    };
   }
 
   async stats(agentId: string): Promise<Stats> {

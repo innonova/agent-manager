@@ -115,6 +115,7 @@ export async function startManager(
       spokesFile: path.join(dataDir, 'spokes.json'), // nor their spokes: a test manager must not front for a real machine
       workspacesDir: path.join(dataDir, 'workspaces'), // nor a workspace file beside a real repository
       dialogClassifier: null, // nor a model call on the developer's account, unless a test brings its own command
+      nudgeReader: null, // the same for the reader of last messages
       ...overrides,
     },
     { quiet: !process.env.TEST_VERBOSE },
