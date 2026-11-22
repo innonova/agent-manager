@@ -80,12 +80,13 @@ export async function createApp(
   );
   // A hub: requests about a spoke's projects and agents go to the spoke.
   app.use('/api', hubProxy(app.get(HubService), app.get(AuthService)));
-  if (
-    config.uiNextDir &&
-    fs.existsSync(path.join(config.uiNextDir, 'index.html'))
-  ) {
+  if (config.uiNextDir) {
     // The second UI, under its own prefix and before the first one's
     // catch-all: its files, and its index.html for any path beneath it.
+    // Whether it is there is asked per request, not at start: it is
+    // installed by swapping the directory under a running manager, the
+    // first time included.
+    const nextIndex = path.join(config.uiNextDir, 'index.html');
     app.useStaticAssets(config.uiNextDir, {
       prefix: '/next/',
       index: 'index.html',
@@ -99,7 +100,8 @@ export async function createApp(
         if (
           req.method === 'GET' &&
           (req.path === '/next' || req.path.startsWith('/next/')) &&
-          (req.headers.accept ?? '').includes('text/html')
+          (req.headers.accept ?? '').includes('text/html') &&
+          fs.existsSync(nextIndex)
         )
           return res.sendFile('index.html', { root: config.uiNextDir! });
         next();

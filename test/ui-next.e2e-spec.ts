@@ -10,6 +10,7 @@ import type { TestDaemon, TestManager } from './helpers.js';
  */
 let daemon: TestDaemon;
 let m: TestManager;
+let install: (name: 'ui' | 'ui-next', mark: string) => void;
 
 const get = (p: string, accept = 'text/html') =>
   fetch(m.url + p, { headers: { accept } }).then(async (r) => ({
@@ -20,17 +21,16 @@ const get = (p: string, accept = 'text/html') =>
 beforeAll(async () => {
   daemon = await startDaemon();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-two-uis-'));
-  for (const [name, mark] of [
-    ['ui', 'the first'],
-    ['ui-next', 'the second'],
-  ] as const) {
+  install = (name: 'ui' | 'ui-next', mark: string) => {
     fs.mkdirSync(path.join(dir, name, 'assets'), { recursive: true });
     fs.writeFileSync(
       path.join(dir, name, 'index.html'),
       `<html>${mark}</html>`,
     );
     fs.writeFileSync(path.join(dir, name, 'assets', 'app.js'), `// ${mark}`);
-  }
+  };
+  install('ui', 'the first');
+  // the second is not there yet when the manager starts
   m = await startManager(daemon.url, undefined, {
     uiDir: path.join(dir, 'ui'),
     uiNextDir: path.join(dir, 'ui-next'),
@@ -47,6 +47,10 @@ describe('two UIs', () => {
     expect((await get('/')).text).toBe('<html>the first</html>');
     expect((await get('/projects/abc')).text).toBe('<html>the first</html>');
     expect((await get('/assets/app.js', '*/*')).text).toBe('// the first');
+    // until the second is installed its address is the first one's, like any other path
+    expect((await get('/next/a/1234')).text).toBe('<html>the first</html>');
+    // installed under a running manager, the first time included: no restart
+    install('ui-next', 'the second');
     for (const p of [
       '/next/',
       '/next',
