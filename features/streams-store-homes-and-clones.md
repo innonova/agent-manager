@@ -165,4 +165,4 @@ all fixed and tested unless said:
 Not fixed: a clone job that failed stays in the manager's memory after
 its stream is deleted (a few bytes, until the next restart).
 
-Manager 196 unit and 168 end-to-end.
+Manager 184 unit and 167 end-to-end.

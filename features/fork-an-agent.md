@@ -151,4 +151,4 @@ tested:
   failed three times on the way to passing, each time for a reason
   worth knowing.
 
-Manager 196 unit and 168 end-to-end.
+Manager 184 unit and 167 end-to-end.
