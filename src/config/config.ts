@@ -9,6 +9,13 @@ export interface ManagerConfig {
   dataDir: string;
   /** Directory with the built UI to serve at `/`; null disables. Defaults to `<install>/ui` next to `dist/`. */
   uiDir: string | null;
+  /**
+   * A second built UI, served under `/next/` beside the first: the UI
+   * being built for streams (`docs/streams.md`), there while the
+   * current one stays in use. Defaults to `<install>/ui-next`; null or
+   * a directory without an index.html serves nothing.
+   */
+  uiNextDir: string | null;
   /** The origin browsers use to reach the manager (behind TLS: https://...). Enables Secure cookies and is accepted by the origin check. */
   publicOrigin: string | null;
   adminPassword: string | null;
@@ -216,6 +223,16 @@ export function loadConfig(
     port,
     daemonUrl: env.AGENT_MANAGER_DAEMON_URL ?? 'ws://127.0.0.1:4267/',
     dataDir: env.AGENT_MANAGER_DATA_DIR ?? path.join(xdgState, 'agent-manager'),
+    uiNextDir:
+      env.AGENT_MANAGER_UI_NEXT_DIR === ''
+        ? null
+        : (env.AGENT_MANAGER_UI_NEXT_DIR ??
+          path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '..',
+            '..',
+            'ui-next',
+          )),
     uiDir:
       env.AGENT_MANAGER_UI_DIR === ''
         ? null

@@ -285,6 +285,9 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec(
         "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'",
       );
+    // A label the tree groups projects and streams under; null is ungrouped.
+    if (!projectCols.includes('group_name'))
+      this.db.exec('ALTER TABLE projects ADD COLUMN group_name TEXT');
     // Projects created before repos existed: their path becomes the single
     // repo. Not a stream's: its path is its home, and it has no such list.
     const legacy = this.db

@@ -159,6 +159,31 @@ describe('a stream', () => {
         })
       ).body.project.delegation,
     ).toBe('on-request');
+    // a group is a label to list it under, for a stream and a project alike
+    expect(made.body.project.group).toBeNull();
+    const grouped = await api.call('PATCH', `/api/projects/${tidy.id}`, {
+      group: ' household ',
+    });
+    expect(grouped.body.project).toMatchObject({
+      group: 'household',
+      delegation: 'on-request',
+    });
+    expect(
+      (await api.call('PATCH', `/api/projects/${tidy.id}`, { group: '' })).body
+        .project.group,
+    ).toBeNull();
+    expect(
+      (
+        await api.call('PATCH', `/api/projects/${tidy.id}`, {
+          group: 'x'.repeat(61),
+        })
+      ).status,
+    ).toBe(400);
+    const born = await api.post('/api/streams', {
+      name: 'grouped-from-birth',
+      group: 'household',
+    });
+    expect(born.body.project.group).toBe('household');
   }, 30000);
 
   it('has agents that start in the home and are told what a stream is', async () => {

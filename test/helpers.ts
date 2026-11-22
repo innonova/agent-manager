@@ -107,6 +107,7 @@ export async function startManager(
       dataDir,
       adminPassword: ADMIN_PASSWORD,
       uiDir: null,
+      uiNextDir: null,
       loginAttemptsPerMinute: 1000,
       harnessFile: path.join(dataDir, 'harness.md'), // never the developer's own ~/.config file
       modelsFile: path.join(dataDir, 'models.md'), // nor their models file

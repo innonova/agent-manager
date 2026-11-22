@@ -60,6 +60,8 @@ export interface Project {
    * with agents; different in where an agent starts and what `repos` is.
    */
   kind: 'project' | 'stream';
+  /** The label a tree shows it under, so many streams need not be one flat list; null is ungrouped. A way to find things, nothing more: no setting and no permission follows from it. */
+  group: string | null;
   /** The primary repo's path, or a stream's home: where an agent starts unless told otherwise. */
   path: string;
   /** A project's repositories as registered; a stream's own folder (named `stream`) and then whatever clones are in its home right now. */
@@ -75,10 +77,22 @@ interface Row {
   id: string;
   name: string;
   kind?: string | null;
+  group_name?: string | null;
   path: string;
   default_profile: string | null;
   delegation: string | null;
   created_at: number;
+}
+
+/** A group from a request: a short label, or null (also for an empty one) to ungroup; undefined when the request does not say. */
+export function parseGroup(v: unknown): string | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  if (typeof v !== 'string' || v.trim().length > 60)
+    throw new BadRequestException(
+      '"group" is a label of at most 60 characters, or null',
+    );
+  return v.trim() || null;
 }
 
 /** Validates a delegation value from a request, or throws. */
@@ -158,6 +172,7 @@ export class ProjectsService implements OnModuleInit {
       id: r.id,
       name: r.name,
       kind: 'project',
+      group: r.group_name ?? null,
       path: repos[0]?.path ?? r.path,
       repos,
       defaultProfile: r.default_profile,
@@ -177,6 +192,7 @@ export class ProjectsService implements OnModuleInit {
       id: r.id,
       name: r.name,
       kind: 'stream',
+      group: r.group_name ?? null,
       path: r.path,
       repos: [
         {
@@ -208,6 +224,7 @@ export class ProjectsService implements OnModuleInit {
     home: string;
     defaultProfile: string | null;
     delegation: Delegation;
+    group: string | null;
   }): Project {
     if (!STREAM_NAME_RE.test(input.name))
       throw new BadRequestException(
@@ -222,7 +239,7 @@ export class ProjectsService implements OnModuleInit {
     const id = randomUUID();
     this.db
       .prepare(
-        "INSERT INTO projects (id, name, path, default_profile, delegation, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, 'stream')",
+        "INSERT INTO projects (id, name, path, default_profile, delegation, created_at, kind, group_name) VALUES (?, ?, ?, ?, ?, ?, 'stream', ?)",
       )
       .run(
         id,
@@ -231,6 +248,7 @@ export class ProjectsService implements OnModuleInit {
         input.defaultProfile,
         input.delegation,
         Date.now(),
+        input.group,
       );
     const project = this.get(id);
     this.keepWorkspace(project);
@@ -279,6 +297,7 @@ export class ProjectsService implements OnModuleInit {
     repos?: unknown;
     defaultProfile?: unknown;
     delegation?: unknown;
+    group?: unknown;
   }): Project {
     if (typeof input.name !== 'string' || input.name.trim() === '')
       throw new BadRequestException('"name" is required');
@@ -299,7 +318,7 @@ export class ProjectsService implements OnModuleInit {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          'INSERT INTO projects (id, name, path, default_profile, delegation, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO projects (id, name, path, default_profile, delegation, created_at, group_name) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           id,
@@ -308,6 +327,7 @@ export class ProjectsService implements OnModuleInit {
           (input.defaultProfile as string | null) ?? null,
           delegation,
           createdAt,
+          parseGroup(input.group) ?? null,
         );
       this.saveRepos(id, repos);
     });
@@ -325,9 +345,16 @@ export class ProjectsService implements OnModuleInit {
       repos?: unknown;
       path?: unknown;
       delegation?: unknown;
+      group?: unknown;
     },
   ): Project {
     const current = this.get(id);
+    // The group is the one thing both kinds set the same way.
+    const group = parseGroup(input.group);
+    if (group !== undefined)
+      this.db
+        .prepare('UPDATE projects SET group_name = ? WHERE id = ?')
+        .run(group, id);
     if (current.kind === 'stream') return this.updateStream(current, input);
     const name = input.name === undefined ? current.name : input.name;
     const defaultProfile =

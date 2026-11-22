@@ -46,7 +46,10 @@ changes alike:
 For a change to the UI only, skip all that: `npm run build` in
 `../agent-manager-ui`, then `npm run install:ui` here. It swaps the served
 directory in place and does not restart the manager; open tabs offer a
-reload when they next check for a new build.
+reload when they next check for a new build. The UI being built for
+streams is installed the same way, beside the first: `npm run build` in
+`../agent-streams-ui`, then `npm run install:ui-next` here; it is served
+under `/next/`.
 
 It leaves the database and `proxy.conf` under
 `~/.config/systemd/user/agent-manager.service.d/` alone; it rewrites

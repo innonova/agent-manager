@@ -17,6 +17,7 @@ import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import {
   parseDelegation,
+  parseGroup,
   Project,
   ProjectsService,
 } from '../projects/projects.service.js';
@@ -299,6 +300,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       purpose?: unknown;
       defaultProfile?: unknown;
       delegation?: unknown;
+      group?: unknown;
     },
     by: string,
   ): Promise<Project> {
@@ -319,6 +321,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       input.delegation === undefined
         ? 'free'
         : parseDelegation(input.delegation);
+    const group = parseGroup(input.group) ?? null;
     if (this.projects.list().some((p) => p.name === name))
       throw new ConflictException(
         `there is already a project or stream called "${name}"`,
@@ -343,6 +346,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       home,
       defaultProfile: (input.defaultProfile as string | null) ?? null,
       delegation,
+      group,
     });
     await this.commitStore({ stream: name, text: `started by ${by}` });
     this.logger.log(`stream ${name} started by ${by}: ${home}`);

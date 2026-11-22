@@ -1650,6 +1650,20 @@ reads the registry, adds to it and corrects it (it could clone by hand
 anyway), and clones into its own stream; removing a repository from the
 registry is a person's.
 
+**Groups.** A project of either kind has a `group`: a label a tree
+lists it under, so that many streams are not one flat list
+(`projects.group_name`; `PATCH /api/projects/:id { group }`, at most 60
+characters, null or empty to ungroup; accepted at creation too). It is
+a way to find things and nothing else: no setting and no permission
+follows from it.
+
+**A second UI.** The UI being built for streams (`agent-streams-ui`) is
+served under `/next/` from `<install>/ui-next`
+(`AGENT_MANAGER_UI_NEXT_DIR`), with its `index.html` for any path
+beneath it, registered before the first UI's catch-all; the current UI
+stays at `/`. Same origin, cookie and API. `npm run install:ui-next`
+swaps that directory as `install:ui` swaps the other.
+
 Not built: changes and the run log by stream (the changes view shows a
 clone's whole history), the store's commits naming who caused them,
 archive and revive, streams on another machine, the fresh UI. The
@@ -1951,7 +1965,7 @@ PATCH  /api/users/me         { name }                           -> { user }; onl
 POST   /api/users/:id/password                                  -> { password }; a new generated one; ends the user's other sessions
 DELETE /api/users/:id                                           -> { ok }; not yourself, not the last user
 
-POST   /api/streams                 { name, purpose?, defaultProfile?, delegation? } -> { project, agentCounts }; starts a stream (its folder in the store, its home, one commit); a person only. A stream is then a project of kind `stream` to every route below
+POST   /api/streams                 { name, purpose?, defaultProfile?, delegation?, group? } -> { project, agentCounts }; starts a stream (its folder in the store, its home, one commit); a person only. A stream is then a project of kind `stream` to every route below
 GET    /api/repositories                                        -> { repositories: [{ name, source, setup, seed: [path], usedBy: [stream] }] }; the registry a stream clones from
 PUT    /api/repositories/:name      { source?, setup? }          -> { repository }; adds one or changes what is said about it
 PUT    /api/repositories/:name/seed { from, files: [path] }      -> { repository }; takes untracked files from a checkout on this machine into the seed copied into every new clone
@@ -1962,7 +1976,7 @@ GET    /api/projects                                            -> [{ project, a
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, delegation?, host? }   (`path` alone is accepted as a one-repo shorthand; `delegation` is `free` (default) or `on-request`; `host` creates on that spoke)
 GET    /api/projects/:id/profiles                               -> { profiles } of the machine the project is on
 GET    /api/projects/:id
-PATCH  /api/projects/:id            same fields; `repos` replaces the whole list, order included. Running agents keep the directories they were started with; see the restart below.
+PATCH  /api/projects/:id            same fields, and `group` (a label a tree lists it under; null ungroups); `repos` replaces the whole list, order included. Running agents keep the directories they were started with; see the restart below.
 POST   /api/projects/:id/agents/restart -> { restarted: [agentId], skipped: [{ id, why }] }; stops and resumes every idle agent with a live session so it picks up the project's current repositories; agents working, waiting on a permission or with background jobs are skipped with the reason, exited ones need nothing
 DELETE /api/projects/:id            (does not touch the repository)
 
@@ -2189,6 +2203,7 @@ swept once a minute.
 | `AGENT_MANAGER_DIALOG_WAIT_MS`            | `150000`                             | how long the hand-back waits for a weighing under way                                                                                                                                                                            |
 | `AGENT_MANAGER_DIALOG_CLASSIFIER_MS`      | `900000` (15 min)                    | how long one weighing may take                                                                                                                                                                                                   |
 | `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
+| `AGENT_MANAGER_UI_NEXT_DIR`               | `<install>/ui-next`                  | a second built UI, served under `/next/` beside the first; empty serves none                                                                                                                                                     |
 | `AGENT_MANAGER_STREAMS_DIR`               | `~/streams`                          | where streams live: each stream's home is a directory here. Nothing is made until the first stream. Every test harness sets it to a temp dir                                                                                     |
 | `AGENT_MANAGER_STORE_DIR`                 | `<streams>/.store`                   | the store: one git repository with a folder per stream, committed by the manager                                                                                                                                                 |
 | `AGENT_MANAGER_STORE_COMMIT_MS`           | `30000`                              | how often the manager commits what changed in the store; 0 never                                                                                                                                                                 |

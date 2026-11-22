@@ -22,6 +22,7 @@
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "install:service": "scripts/install-user-service.sh",
     "install:ui": "scripts/install-ui.sh",
+    "install:ui-next": "AGENT_MANAGER_UI_NAME=ui-next scripts/install-ui.sh",
     "user:add": "node scripts/user-add.mjs",
     "smoke:agents": "node scripts/smoke-agents.mjs",
     "install:windows": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
