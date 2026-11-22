@@ -1040,10 +1040,14 @@ start`), which is answered like the one after a compaction, with a
   notice worded for an agent that has not even a summary. A new
   conversation that replaces nothing asks too and is answered with
   nothing. The manager only calls a conversation gone where the vendor
-  has demonstrably kept conversations for that working directory (the
-  directory the file would be in exists): it assumes the vendor's
-  default location, as the take-back does, and a session set up to
-  keep them elsewhere must not lose a conversation to that assumption.
+  demonstrably keeps conversations where it looks: it has found one
+  under the same root, this agent's or another's, since it started. It
+  assumes the vendor's default location, as the take-back does, and a
+  session set up to keep them elsewhere must not lose a conversation
+  to that assumption; without the evidence the resume is tried as
+  before. (The first version asked for the project's own directory to
+  exist, and Claude Code removes that directory with its last
+  conversation: two agents here were exactly that case.)
   What the new conversation lacks is the vendor's summary of the work
   itself; the agent's reports in the dialog and the repositories carry
   most of it, and a summary rebuilt from the daemon's log is possible

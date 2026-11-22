@@ -18,6 +18,7 @@ let m: TestManager;
 let api: Api;
 let project: { id: string };
 let vendor: string;
+let repo: string;
 
 async function until<T>(
   what: string,
@@ -92,7 +93,7 @@ beforeAll(async () => {
   m = await startManager(daemon.url);
   api = new Api(m.url);
   await api.login();
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'am-conversation-repo-'));
+  repo = fs.mkdtempSync(path.join(os.tmpdir(), 'am-conversation-repo-'));
   project = (
     await api.post('/api/projects', {
       name: 'forgetful',
@@ -116,7 +117,7 @@ describe('a conversation the vendor deletes', () => {
     await idle(agent.id);
     await turn(agent.id, 'the logo is teal, never blue');
     const first = (await agentOf(agent.id)).agent.vendorConversationId!;
-    const theirs = path.join(vendor, `${first}.jsonl`);
+    const theirs = path.join(vendor, path.basename(repo), `${first}.jsonl`);
     const ours = path.join(
       m.dataDir,
       'conversations',
@@ -134,6 +135,7 @@ describe('a conversation the vendor deletes', () => {
     ).toEqual({ text: null });
 
     // the vendor writes its record; by the end of the next turn the manager has its own name for the same file
+    fs.mkdirSync(path.dirname(theirs));
     fs.writeFileSync(theirs, 'one\n');
     await turn(agent.id, 'thanks');
     expect(fs.statSync(ours).ino).toBe(fs.statSync(theirs).ino);
@@ -160,8 +162,9 @@ describe('a conversation the vendor deletes', () => {
       /a new conversation begins/,
     );
 
-    // nothing left of it anywhere: a new conversation, told so, with the dialog handed back
-    fs.rmSync(theirs);
+    // nothing left of it anywhere, its directory gone with it as Claude Code leaves things:
+    // a new conversation, told so, with the dialog handed back
+    fs.rmSync(path.dirname(theirs), { recursive: true });
     fs.rmSync(ours);
     await restart(agent.id);
     const second = (await agentOf(agent.id)).agent.vendorConversationId;

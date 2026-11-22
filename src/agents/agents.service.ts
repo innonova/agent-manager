@@ -1565,11 +1565,15 @@ export class AgentsService
    * file, and puts the file back when the vendor's name for it is gone
    * (see `keepConversation`). Null when there is nothing to keep: no
    * conversation yet, a vendor whose file the manager cannot name, an
-   * agent on another machine. `gone` is only said where the vendor has
-   * demonstrably kept conversations for this working directory: the
+   * agent on another machine. `gone` is only said where the vendor
+   * demonstrably keeps conversations where the manager looks: the
    * manager assumes the vendor's default location, as the take-back
    * does, and a session set up to keep them elsewhere must not lose its
-   * conversation to that assumption. There the resume is tried as before.
+   * conversation to that assumption. The evidence is a conversation
+   * found under the same root, this agent's or any other's (the
+   * directory the file would be in is not evidence enough the other
+   * way: Claude Code removes a project's directory with its last
+   * conversation). Without it the resume is tried as before.
    */
   private keepConversation(agent: Agent): Kept | null {
     if (agent.host || !agent.vendorConversationId) return null;
@@ -1589,7 +1593,13 @@ export class AgentsService
           `${agent.vendorConversationId}.jsonl`,
         ),
       );
-      if (kept === 'gone' && !existsSync(path.dirname(file))) return null;
+      const root = path.dirname(path.dirname(file));
+      if (kept === 'gone')
+        return this.conversationRoots.has(root) ||
+          existsSync(path.dirname(file))
+          ? kept
+          : null;
+      this.conversationRoots.add(root);
       if (kept === 'unlinkable' && !this.unlinkableSaid) {
         this.unlinkableSaid = true;
         this.logger.warn(
@@ -1604,6 +1614,8 @@ export class AgentsService
       return null;
     }
   }
+  /** Where the vendor has been seen to keep conversations: the directories above the ones a conversation file was found in. */
+  private readonly conversationRoots = new Set<string>();
   private unlinkableSaid = false;
 
   /** Every agent's conversation, once at start: the ones that existed before the manager kept any, and archived and exited agents, which start nothing for a long time. */

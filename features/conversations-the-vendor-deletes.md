@@ -114,24 +114,43 @@ Built and deployed, gated alone. The setting is in
 
 ### Decided for the person
 
-- "Gone" is only said where the directory the file would be in exists.
-  If Claude Code removes a project's directory when it deletes its
-  last conversation (not checked), such an agent fails to resume as
-  before rather than starting anew.
+- "Gone" is only said where the manager has found some conversation
+  under the same root since it started (this agent's or another's),
+  or the directory the file would be in exists. Without that evidence
+  the resume is tried as before.
 - A conversation found gone is forgotten for good: the agent's record
   no longer names it.
 - The link is kept under the manager's data directory, per agent, and
   an earlier conversation's link is left there when an agent gets a
   new one.
 
+### Found at the deploy, and fixed
+
+At its start the installed manager linked 10 of the 20 local
+conversations it has on record. Of the other ten, two belong to Codex
+agents, and eight Claude conversations were already deleted:
+
+- active agents: `dns-server/claude`, `mimiri/fable`,
+  `agent-system/opus48`;
+- archived: `mimiri/claude`, and this project's `opus-helper`,
+  `sonnet-helper`, `sonnet-ui` and `fable-curator`.
+
+Two of the eight (`opus48`, `sonnet-ui`) showed that the first rule
+for "gone" was wrong: it asked for the project's directory under
+`~/.claude/projects` to exist, and Claude Code had removed
+`-home-inno-projects-agent-manager-ui` along with its last
+conversation. Those two would have gone on failing to resume. The
+rule is now evidence of a conversation under the same root, and the
+end-to-end test deletes the directory with the file.
+
 ### Left open
 
 - **Not seen: the vendor's own sweep deleting a file the manager
   holds.** The deletion was mine, by hand. With the setting at ten
   years it should not come to that here.
-- The agents whose conversations were already deleted (the September
-  helpers) will start new conversations with their dialog handed back
-  the next time someone writes to them. None was tried.
+- The eight agents whose conversations were already deleted will
+  start new conversations with their dialog handed back the next time
+  someone writes to them. None was tried: they are not mine to wake.
 - Not weighed before the hand-back in the real check: the separate
   instance had the classifier off.
 

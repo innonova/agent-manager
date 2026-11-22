@@ -27,11 +27,14 @@ export class FakeAdapter implements AgentAdapter {
    * The fake agent keeps no conversation on disk. A test that wants to
    * see the manager keep one, put one back or find one gone names a
    * directory here and plays the vendor itself: writes and deletes
-   * `<conversation id>.jsonl` in it.
+   * `<the working directory's name>/<conversation id>.jsonl` in it, a
+   * directory per project as Claude Code has.
    */
-  conversationFile(_cwd: string, conversationId: string): string | null {
+  conversationFile(cwd: string, conversationId: string): string | null {
     const dir = process.env.AGENT_MANAGER_FAKE_CONVERSATIONS;
-    return dir ? path.join(dir, `${conversationId}.jsonl`) : null;
+    return dir
+      ? path.join(dir, path.basename(cwd), `${conversationId}.jsonl`)
+      : null;
   }
   private streamingText = '';
   private textKey = '';
