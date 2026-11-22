@@ -1015,6 +1015,92 @@ reversals (the classifiers tried all missed some), and the decisions an
 agent takes alone in a long stretch without the person, which are
 dialog only once they are in a reply or in the chat.
 
+## Nudge: an agent that stopped is asked whether it can go on
+
+Agents given a long job stop at "natural stopping points", a
+milestone reached and reported with plenty left to do, whatever the
+harness note says about keeping going: ending a turn at a milestone is
+deeply trained. For an agent with `nudge` on (a setting of the agent,
+off unless a person turns it on; `PATCH /api/agents/:id { nudge }`),
+the manager asks (`NudgeService`).
+
+When such an agent's turn ends (its state goes from working to idle),
+a model reads its last message, the turn's last text, with what a
+person last wrote for context, and answers one of three things with a
+line of why:
+
+- `needs_person`: the people are paged by push notification ("<agent>
+  needs you", the reason, a link to the agent) and the flow says
+  "stopped, and needs a person: …; paged". No nudge. An agent that
+  stops with its question in its last message, and not in the chat,
+  used to reach nobody.
+- `done`: the flow says "stopped: it says the work is done (…)", and
+  nothing else happens.
+- `paused`, or an answer that cannot be read: the nudge, if one is due.
+
+A nudge is due at the first stop after a person wrote, however short
+the work, and after a nudge only once the agent has worked
+`AGENT_MANAGER_NUDGE_WORK_MS` more (thirty minutes; the work is the
+statistics' turn time), and never more than
+`AGENT_MANAGER_NUDGE_MAX` times in a row without a word from a person.
+The person's reason for the rule: "to prevent a model that really
+isn't able to do more to keep being pressured". An agent that answers
+a nudge in a minute has said what there is to say, and is left alone
+until a person writes. When none is due the flow says why ("not asked
+whether it can go on: it has worked 3 min since it was last asked").
+
+A due nudge waits `AGENT_MANAGER_NUDGE_DELAY_MS` (five minutes), so a
+person who is there can read the last message and answer it
+themselves. Meanwhile the status carries `nudge: { state: 'waiting',
+at }` (`reading` while the model reads), which the UI shows as a
+notice over the flow's input with one button that calls the question
+off (`POST /api/agents/:id/nudge/hold`; the flow then says who called
+it off): to type there a person presses it first, so their message
+and the manager's cannot cross. Any turn that starts in the meantime
+(a message by another way, a chat message that wakes the agent) drops
+the question too. Then the question goes as a turn in the manager's
+name, like the background poke:
+
+> The manager, not a person: you stopped, and nobody is watching right
+> now. Which of these is it? There is meaningful work left that you
+> can do without the person: then carry on with it. … You need the
+> person for something: say what … and they will be paged. … The work
+> is done, or nothing that is left is worth doing without them: say so
+> in a line. That is a fine answer … This is a question, not an
+> instruction to continue.
+
+Three answers and no instruction: an order to continue would press an
+agent with nothing left into inventing work. The agent's answer is a
+turn like any other, and its end is read like any other: "page them"
+is read as `needs_person` and pages.
+
+Nothing is read or asked after a turn a person stopped or whose
+message they took back (the flow's "interrupt requested" or
+"withdrawn" within the turn), after one that ended in an error (the
+state is `error`, not `idle`), while a background job runs (its end
+starts a turn whose end is read), while the agent's `am hold` stands,
+or when an account window is at 95% or refused. A reading that fails
+(the model is away) asks nothing: an agent is not nudged on the
+strength of a reading that did not happen.
+
+The reader is a model call of the manager's own, like the dialog's
+classifier: `claude -p --model claude-sonnet-5-5 --tools ""` with the
+instructions and the message on stdin and one line of JSON back
+(`AGENT_MANAGER_NUDGE_MODEL`, `off` for none;
+`AGENT_MANAGER_NUDGE_READER` for another command). The model was
+chosen by trying: on 58 real last messages of two agents, with Fable's
+verdict as the reference, Sonnet 5.5 agreed on 56 and Haiku 5.5 on 53;
+the question form makes the remaining mistakes cheap (a missed blocker
+is nudged and says "page them"; an imagined one pages the person). A
+reading takes a few seconds and costs about a cent.
+
+What is pending lives in memory: a restart of the manager drops a
+waiting nudge, and the agent's next stop is read afresh. The last
+nudge and the count in a row are kept (`agent_nudges`). Considered and
+not taken: Claude Code's `Stop` hook, which can refuse a stop and feed
+the agent a reason to go on within the turn; it is Claude only, cannot
+wait for the person, and reads as an order.
+
 ## Statistics: how an agent has been run
 
 `GET /api/agents/:id/stats` reads an agent's transcript for how it has
@@ -1784,6 +1870,7 @@ POST   /api/agents/:id/chat/read                                -> { messages, s
 POST   /api/agents/:id/chat/:messageId/close                    -> { message }; an open question closed: by the agent (its token) or dismissed by a person
 GET    /api/projects/:id/chat                                   -> [{ agentId, unread, questions, last }] for the agents that have a chat
 POST   /api/chat/notice                                         -> { text | null }; an agent's hook asking whether to say that messages are unread; an agent token only
+POST   /api/agents/:id/nudge/hold                               -> { ok, held }; calls off the question the manager is about to ask a stopped agent (see Nudge); `held` says whether one was pending
 GET    /api/agents/:id/stats                                    -> { since, turns, runtimeMs, tokens: { input, cacheWrite, cacheRead, output }, costUsd, working, startedBy: { person, agent, manager, self: { turns, runtimeMs } }, sinceLastMessage: { at, by, runtimeMs, turns, outputTokens } | null, runs: { count, medianMs, longestMs, longest: [{ at, by, runtimeMs }] }, unattended: { afterMs, runtimeMs, share, runs, longestMs, medianMs } }; see Statistics
 POST   /api/agents/:id/compact                                  -> 202 { ok }; compacts the agent's context now: the dialog weighed first when not fresh, then the vendor's compaction sent as a turn; 409 in a turn or for a vendor without one
 GET    /api/agents/:id/dialog                                   -> { exchanges: [{ n, at, by, tokens, line, kind, weight, inForce, supersededBy, withdrawn }], weighed: { at, model, upTo } | null, weighing: { since, model } | null, failed: { at, message } | null, classifier }; the agent's dialog with its people, one line per exchange (see The dialog after a compaction)
@@ -1935,6 +2022,11 @@ swept once a minute.
 | `AGENT_MANAGER_CLOCK_MS`                  | `600000` (10 min)                    | how often, at most, a Claude agent started here is told the time beside a tool result (see Agents: the clock); 0 never                                                                                                           |
 | `AGENT_MANAGER_CHAT_REPEAT_MS`            | `300000` (5 min)                     | how long after telling a working agent of unread chat messages it is told again, while they stay unread (see Chat)                                                                                                               |
 | `AGENT_MANAGER_CHAT_SWEEP_MS`             | `15000`                              | how often unread chat messages are looked over: delivered to an agent that is idle, said again to a working one without a hook; 0 leaves it to the events                                                                        |
+| `AGENT_MANAGER_NUDGE_MODEL`               | `claude-sonnet-5-5`                  | the model that reads a stopped agent's last message, for agents with `nudge` on (see Nudge); `off`: nobody is asked                                                                                                              |
+| `AGENT_MANAGER_NUDGE_READER`              | unset                                | the whole command instead, a JSON array: the instructions and the message on stdin, one line of JSON back; `off` as above                                                                                                        |
+| `AGENT_MANAGER_NUDGE_DELAY_MS`            | `300000` (5 min)                     | how long after a stop the question goes, the time a person has to say something first                                                                                                                                            |
+| `AGENT_MANAGER_NUDGE_WORK_MS`             | `1800000` (30 min)                   | an agent is asked again only after this much work since it was last asked                                                                                                                                                        |
+| `AGENT_MANAGER_NUDGE_MAX`                 | `20`                                 | no more than this many questions in a row without a word from a person                                                                                                                                                           |
 | `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL`   | `fable[1m]`                          | the model that weighs an agent's dialog, in the default command (see The dialog after a compaction); `off`: nothing is weighed, and only the recent exchanges are handed back whole                                              |
 | `AGENT_MANAGER_DIALOG_CLASSIFIER`         | unset                                | the whole command instead, a JSON array of program and arguments: it gets the instructions and the dialog on stdin and answers on stdout; `off` as above                                                                         |
 | `AGENT_MANAGER_DIALOG_BUDGET`             | `0.1`                                | the share of an agent's context window the handed-back dialog may take                                                                                                                                                           |
