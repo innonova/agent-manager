@@ -171,15 +171,27 @@ describe('ui build announcements', () => {
       path.join(uiDir, 'build.json'),
       JSON.stringify({ id: 'one' }),
     );
+    // the second UI, served under /next/, has a build of its own
+    const uiNextDir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-ui-next-'));
+    fs.writeFileSync(path.join(uiNextDir, 'index.html'), '<html></html>');
+    fs.writeFileSync(
+      path.join(uiNextDir, 'build.json'),
+      JSON.stringify({ id: 'next-one' }),
+    );
     const m2 = await startManager(daemon.url, undefined, {
       uiDir,
+      uiNextDir,
       eventsPingMs: 150,
     });
     try {
       const api2 = new Api(m2.url);
       await api2.login();
       const e = await Events.connect(m2.url, api2.cookie);
-      expect(e.frames[0]).toMatchObject({ type: 'hello', uiBuild: 'one' });
+      expect(e.frames[0]).toMatchObject({
+        type: 'hello',
+        uiBuild: 'one',
+        uiNextBuild: 'next-one',
+      });
       const mark = e.mark();
       fs.writeFileSync(
         path.join(uiDir, 'build.json'),
@@ -187,6 +199,17 @@ describe('ui build announcements', () => {
       );
       const f = await e.waitFor((x) => x.type === 'ui.build', 5000, mark);
       expect(f.id).toBe('two');
+      // each UI hears of its own deploys: a page of one must not offer a reload for the other's
+      const mark2 = e.mark();
+      fs.writeFileSync(
+        path.join(uiNextDir, 'build.json'),
+        JSON.stringify({ id: 'next-two' }),
+      );
+      const g = await e.waitFor((x) => x.type === 'ui-next.build', 5000, mark2);
+      expect(g.id).toBe('next-two');
+      expect(
+        e.frames.slice(mark2).filter((x: any) => x.type === 'ui.build'),
+      ).toEqual([]);
       await e.close();
     } finally {
       await m2.stop();

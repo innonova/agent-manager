@@ -1662,7 +1662,10 @@ served under `/next/` from `<install>/ui-next`
 (`AGENT_MANAGER_UI_NEXT_DIR`), with its `index.html` for any path
 beneath it, registered before the first UI's catch-all; the current UI
 stays at `/`. Same origin, cookie and API. `npm run install:ui-next`
-swaps that directory as `install:ui` swaps the other.
+swaps that directory as `install:ui` swaps the other. Its build is
+announced apart from the first UI's (`uiNextBuild` in `hello`, a
+`ui-next.build` frame when it changes), so a page of one never offers
+a reload for the other's deploy.
 
 Not built: changes and the run log by stream (the changes view shows a
 clone's whole history), the store's commits naming who caused them,

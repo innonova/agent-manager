@@ -50,6 +50,8 @@ export class EventsGateway
   private lastPresence = '';
   /** Id of the UI build being served (from build.json next to it); null when no UI is served. */
   private uiBuild: string | null = null;
+  /** The same for the second UI, served under /next/: a page of one must not take the other's deploy for its own. */
+  private uiNextBuild: string | null = null;
   /** Sockets that answered the last ping (or are new); the rest are dead. */
   private readonly alive = new Set<WebSocket>();
   private sweep: NodeJS.Timeout | null = null;
@@ -160,11 +162,16 @@ export class EventsGateway
     // wherever the manager is deployed; a client that does not answer by
     // the next ping is gone and is dropped rather than kept as a ghost.
     void this.readUiBuild();
+    void this.readUiNextBuild();
     this.pinger = setInterval(() => {
       // The same tick notices a UI-only deploy (the served build swapped
       // under us) and tells every tab, so the page needs no polling.
       void this.readUiBuild().then((changed) => {
         if (changed) this.broadcast({ type: 'ui.build', id: this.uiBuild });
+      });
+      void this.readUiNextBuild().then((changed) => {
+        if (changed)
+          this.broadcast({ type: 'ui-next.build', id: this.uiNextBuild });
       });
       for (const c of this.clients.keys()) {
         if (c.readyState !== c.OPEN) continue;
@@ -180,25 +187,35 @@ export class EventsGateway
     this.pinger.unref();
   }
 
+  /** The id in a served UI's build.json; null when there is none to read. */
+  private async buildIn(dir: string | null): Promise<string | null> {
+    if (!dir) return null;
+    try {
+      const raw = await fs.readFile(path.join(dir, 'build.json'), 'utf8');
+      const parsed = JSON.parse(raw) as { id?: unknown };
+      return typeof parsed.id === 'string' ? parsed.id : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Re-reads build.json; true when the id differs from the last read. */
   private async readUiBuild(): Promise<boolean> {
-    if (!this.config.uiDir) return false;
-    let id: string | null = null;
-    try {
-      const raw = await fs.readFile(
-        path.join(this.config.uiDir, 'build.json'),
-        'utf8',
-      );
-      const parsed = JSON.parse(raw) as { id?: unknown };
-      id = typeof parsed.id === 'string' ? parsed.id : null;
-    } catch {
-      id = null;
-    }
+    const id = await this.buildIn(this.config.uiDir);
     // A read that fails (mid-swap, say) keeps the last known id as the
     // baseline; only a different id is a change.
     if (id === null || id === this.uiBuild) return false;
     const changed = this.uiBuild !== null;
     this.uiBuild = id;
+    return changed;
+  }
+
+  /** The same for the second UI. */
+  private async readUiNextBuild(): Promise<boolean> {
+    const id = await this.buildIn(this.config.uiNextDir);
+    if (id === null || id === this.uiNextBuild) return false;
+    const changed = this.uiNextBuild !== null;
+    this.uiNextBuild = id;
     return changed;
   }
 
@@ -325,6 +342,7 @@ export class EventsGateway
         daemon: { connected: this.daemons.local.connected },
         presence: this.presenceSnapshot(),
         uiBuild: this.uiBuild,
+        uiNextBuild: this.uiNextBuild,
         hosts: this.hub.hosts(),
       }),
     );
