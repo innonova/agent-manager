@@ -1952,11 +1952,29 @@ else a clone holds is the repository's, listed with
 else the run in whose window in that clone it falls. Unread is by
 time (made after the reader last marked the clone as read), since a
 stream's work sits on several branches and a rebase reorders nothing
-that a hash could say. A commit an agent makes from the stream's home
-(`git -C clone commit`: the vendor reports the home, which is no
-repository) is recorded for whichever clone got a commit in the last
-two minutes that no turn is recorded for yet; one made from a
-directory inside a clone, for that clone.
+that a hash could say.
+
+Which turn made a commit is not something a vendor tells for a stream:
+Claude Code reports a commit in the repository its session started
+in, and a stream's agent starts in its home, which is none (tried
+2026-11-22: no notice at all). So the manager reads it off the agent's
+own commands (`recordCommandCommits`), in two ways that are facts
+about git and hold for every profile: a hash git printed after
+committing (`[branch 1a2b3c4] subject`) that is a commit in one of the
+stream's clones; and, since agents commit quietly as often as not, the
+commits that came to be in the clones between the start and the end of
+a command that ran git to commit. The window is one command's, so
+another agent's commit in the same clone is mistaken for this one's
+only if it fell in those seconds. A vendor that does report a commit
+is still heard: from a directory inside a clone, for that clone; from
+the home, for whichever clone got a commit in the last two minutes
+that no turn is recorded for.
+
+A commit's feature is read from the message itself, every line of the
+form `Feature: <name>` (`featuresNamed`), not with git's trailer
+parser: that counts only the last paragraph, and agents write the
+feature, a blank line and then the co-author, which to git is one
+trailer and not two (seen with a real agent, 2026-11-22).
 
 A run of a stream's feature records where each clone stood when it
 began and when it ended (`run.clones: [{ name, base, end }]`,

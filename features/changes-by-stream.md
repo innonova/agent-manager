@@ -145,3 +145,36 @@ end-to-end; CLI 22 and 11; new UI 30 unit and 12 in the browser.
   the run.
 
 Manager 199 unit and 176 end-to-end.
+
+## Report (2026-11-22, what a real agent showed)
+
+I ran the one check the first report left open, a real Claude agent
+(Haiku) committing in a stream's clone on a separate instance, and it
+found two things no test of mine had:
+
+- **The feature was not read from the commit.** Agents write
+  `Feature: x`, a blank line, then `Co-Authored-By:`. Git's own
+  trailer parser counts only the last paragraph, so it saw the
+  co-author and no feature. The manager now reads every `Feature:`
+  line of the message itself.
+- **The agent was not named, because Claude never said it had
+  committed.** Its "committed" notice is about the repository a
+  session starts in, and a stream's agent starts in its home, which is
+  none. So for a stream that channel says nothing, ever, and the
+  two-minute rule I built on it never fires for Claude. The manager
+  now reads it off the agent's own commands: a hash git printed after
+  a commit, and (the real agent committed with `-q`, which prints
+  nothing) the commits that appeared in the clones while a command
+  that ran git to commit was under way.
+
+After both: the real agent's commit shows with its feature, its agent,
+and a link to the command that made it. About 10 cents in three runs.
+
+Tests: a unit test for reading `Feature:` lines, and end-to-end cases
+for a printed hash, a quiet commit, and a commit that appears while
+the agent runs something else (not its own). Manager 201 unit and 177
+end-to-end.
+
+Left open: the window rule takes a commit another agent makes in the
+same clone, in the same seconds as this agent's commit command, for
+this agent's.

@@ -59,7 +59,8 @@ import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
 import { codeRepos, ProjectsService } from '../projects/projects.service.js';
 import type { Project } from '../projects/projects.service.js';
-import { commitMeta, head } from '../changes/git.js';
+import { commitMeta, head, logOf } from '../changes/git.js';
+import type { CommitInfo } from '../changes/git.js';
 import { spendOnlyUsage } from './usage.js';
 
 export interface Agent {
@@ -389,6 +390,9 @@ const asHttp = (err: unknown): unknown =>
  * disconnect invalidates every session until it is re-attached; an exit
  * for a session whose log has not been replayed yet is held until it has.
  */
+/** A command that makes git commit something: said of a tool call's input, whatever the vendor calls its shell. */
+const COMMITS = /\bgit\b[^|;&\n]*?\b(commit|cherry-pick|revert|merge|am)\b/;
+
 @Injectable()
 export class AgentsService
   extends EventEmitter<AgentEvents>
@@ -2330,6 +2334,25 @@ export class AgentsService
     for (const op of ingest.ops ?? []) {
       this.applyOp(agent.id, live, sl, record.seq, op, record.t);
       if (op.item.kind === 'turn_end') turnEnded = true;
+      // A command that runs git to commit, and what it then printed: how
+      // a stream's agent's commits are known (see `recordCommandCommits`).
+      if (op.op === 'append' && op.item.kind === 'tool_use') {
+        if (COMMITS.test(JSON.stringify(op.item.input ?? '')))
+          this.committing.set(`${agent.id}/${op.item.id}`, record.t);
+      } else if (op.op === 'append' && op.item.kind === 'tool_result') {
+        const key = `${agent.id}/${op.item.toolUseId}`;
+        const began = this.committing.get(key);
+        this.committing.delete(key);
+        if (!op.item.isError || began !== undefined)
+          this.recordCommandCommits(
+            agent,
+            sl.id,
+            op.item.output,
+            live.itemBase + live.items.length - 1,
+            began,
+            record.t,
+          );
+      }
     }
     // Work landing is worth a line of its own in the transcript: the
     // vendor says it happened, nothing else in the stream does.
@@ -2499,6 +2522,88 @@ export class AgentsService
           meta?.subject ?? null,
         );
     });
+  }
+
+  /** Commands under way that run git to make a commit, by agent and tool call, with when each began. */
+  private readonly committing = new Map<string, number>();
+
+  /**
+   * The commits an agent of a stream made, found from its own commands.
+   * A stream's agent works from its home, which is no repository, and
+   * there the vendor reports no commit at all (Claude Code watches the
+   * repository its session started in; tried 2026-11-22). Two things
+   * are known all the same, and neither is a fact about a vendor:
+   *
+   * - what git printed: `[branch 1a2b3c4] subject` after a commit, a
+   *   cherry-pick, a revert or a merge. Such a hash that is a commit in
+   *   one of the stream's clones is this agent's;
+   * - that a command which ran git to commit was under way (`began`,
+   *   set when the call was seen): the commits that came to be in the
+   *   stream's clones between its start and its end are this agent's,
+   *   also when it committed quietly and nothing was printed. The
+   *   window is one command's, so another agent committing in the same
+   *   clone is taken for this one only if it did so in those seconds.
+   *
+   * Each is recorded with the transcript item of the command's result.
+   */
+  private recordCommandCommits(
+    agent: Agent,
+    sessionId: string,
+    output: string,
+    itemIndex: number,
+    began: number | undefined,
+    ended: number,
+  ): void {
+    const printed = [
+      ...output
+        .slice(0, 50_000)
+        .matchAll(/^\[[^\]\n]*?\b([0-9a-f]{7,40})\] /gm),
+    ].map((m) => m[1]!);
+    if (!printed.length && began === undefined) return;
+    let project: Project;
+    try {
+      project = this.projects.get(agent.projectId);
+    } catch {
+      return;
+    }
+    if (project.kind !== 'stream') return;
+    const record = (clone: string, meta: CommitInfo) =>
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO commit_attributions
+             (project_id, repo, hash, agent_id, agent_name, session_id, item_index, at, author_at, subject)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          agent.projectId,
+          clone,
+          meta.hash,
+          agent.id,
+          agent.name,
+          sessionId,
+          itemIndex,
+          ended,
+          meta.authorAt ?? null,
+          meta.subject,
+        );
+    void (async () => {
+      for (const clone of codeRepos(project)) {
+        for (const short of new Set(printed)) {
+          const meta = await commitMeta(clone.path, short);
+          if (meta) record(clone.name, meta);
+        }
+        if (began === undefined) continue;
+        // a commit's time is in whole seconds, and the two clocks are one machine's
+        const from = Math.floor(began / 1000) - 1;
+        const to = Math.ceil(ended / 1000) + 1;
+        for (const c of (await logOf(
+          clone.path,
+          ['--branches', 'HEAD', `--since=${from}`],
+          50,
+        )) ?? [])
+          if (c.at >= from * 1000 && c.at <= to * 1000) record(clone.name, c);
+      }
+    })().catch(() => undefined);
   }
 
   /** For a commit reported from a stream's home: the head of each clone that was committed within the last two minutes and that no turn is recorded for yet. */

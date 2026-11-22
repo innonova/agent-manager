@@ -234,6 +234,32 @@ async function turn(text) {
     await finish(t0);
     return;
   }
+  if (text.startsWith('printed:') || text.startsWith('echoed:')) {
+    // A command whose output is the rest of the message: `printed:` as a
+    // command that ran git to commit, `echoed:` as one that did not.
+    const git = text.startsWith('printed:');
+    const id = `toolu_${turns}`;
+    out({
+      type: 'tool_use',
+      id,
+      name: 'Bash',
+      input: git
+        ? {
+            command: 'cd lib && git add -A && git commit -q -m work',
+            description: 'Commit the work',
+          }
+        : { command: 'echo', description: 'Say something' },
+    });
+    out({
+      type: 'tool_result',
+      id,
+      output: text.slice(text.indexOf(':') + 1).trim(),
+      isError: false,
+    });
+    await stream('Done.');
+    await finish(t0);
+    return;
+  }
   if (text.includes('tool')) {
     out({ type: 'thinking', text: 'I should look at the file first.' });
     // Held long enough for each activity (thinking, then tool) to outlast

@@ -115,7 +115,8 @@ describe('what a stream changed', () => {
     const made = commit(
       alpha.clone,
       'a.txt',
-      'alpha’s first\n\nFeature: alpha/first',
+      // as agents write it: the feature, a blank line, then the co-author, which to git's own parser is one trailer and not two
+      'alpha’s first\n\nWhat it is for.\n\nFeature: alpha/first\n\nCo-Authored-By: Someone <someone@example.invalid>',
     );
     const list = await commitsOf(alpha.id);
     expect(list.commits).toMatchObject([
@@ -171,6 +172,68 @@ describe('what a stream changed', () => {
     );
   }, 30000);
 
+  it('finds an agent’s commit in what its command printed, which is all a stream’s agent gives away', async () => {
+    // A vendor's "committed" comes from the repository a session started
+    // in, and a stream's agent starts in its home. What git printed when
+    // the agent ran it is in the flow all the same.
+    await sleep(1100);
+    const made = commit(alpha.clone, 'p.txt', 'alpha’s printed one');
+    await api.post(`/api/agents/${alpha.agent}/turn`, {
+      text: `printed: [alpha/one ${made.slice(0, 7)}] alpha’s printed one\n 1 file changed, 1 insertion(+)`,
+    });
+    const row = await until('the commit to be the agent’s', async () => {
+      const c = (await commitsOf(alpha.id)).commits.find(
+        (x) => x.hash === made,
+      );
+      return c?.agentId ? c : null;
+    });
+    expect(row).toMatchObject({ agent: 'worker', agentId: alpha.agent });
+    // the item it leads to is the one that printed it
+    const items = (await api.get(`/api/agents/${alpha.agent}/items`)).body
+      .items as any[];
+    expect(items.find((i) => i.index === row.item)?.item).toMatchObject({
+      kind: 'tool_result',
+    });
+    // committed quietly, git prints nothing: the commit that appeared while the command ran is the agent's all the same
+    await until(
+      'the agent',
+      async () => (await stateOf(alpha.agent)) === 'idle',
+    );
+    await sleep(2100); // out of the window of the command before
+    const quiet = commit(alpha.clone, 'q.txt', 'alpha’s quiet one');
+    await api.post(`/api/agents/${alpha.agent}/turn`, { text: 'printed: ok' });
+    await until('the quiet commit to be the agent’s', async () =>
+      (await commitsOf(alpha.id)).commits.find(
+        (x) => x.hash === quiet && x.agentId === alpha.agent,
+      ),
+    );
+    // a commit that appears while the agent runs something else is not its own, whatever that printed
+    await until(
+      'the agent',
+      async () => (await stateOf(alpha.agent)) === 'idle',
+    );
+    await sleep(2100);
+    const other = commit(
+      alpha.clone,
+      'e.txt',
+      'somebody else’s, in alpha’s clone',
+    );
+    await api.post(`/api/agents/${alpha.agent}/turn`, {
+      text: 'echoed: [INFO 1234567] nothing to do with git',
+    });
+    await until(
+      'the agent',
+      async () => (await stateOf(alpha.agent)) === 'idle',
+    );
+    await sleep(300);
+    const mine = (await commitsOf(alpha.id)).commits;
+    expect(mine.find((c) => c.hash === other)).toMatchObject({
+      agent: null,
+      unread: true,
+    }); // the stream's, being on its branch; nobody's turn
+    expect(mine.filter((c) => c.agentId).length).toBe(3);
+  }, 30000);
+
   it('keeps a commit the stream’s after the rebase that lands it, and another stream’s out', async () => {
     // beta lands first
     git(beta.clone, 'checkout', '-q', '-b', 'beta/x');
@@ -196,12 +259,18 @@ describe('what a stream changed', () => {
     const after = await commitsOf(alpha.id);
     // both are still alpha's, under new hashes: the first by its trailer, the second by the turn that made it
     expect(after.commits.map((c) => [c.subject, c.feature, c.agent])).toEqual([
+      ['alpha’s quiet one', null, 'worker'],
+      ['alpha’s printed one', null, 'worker'],
       ['alpha’s second', null, 'worker'],
       ['alpha’s first', 'first', null],
     ]);
     expect(after.commits[0].item).toBeGreaterThan(0); // and the moment in the flow is still linked
+    // what somebody committed there by hand, with no feature named, was the stream's while it was on its branch and is the repository's now
     // the repository's history has all of it
     expect(await subjects(alpha.id, '?scope=repository')).toEqual([
+      'somebody else’s, in alpha’s clone',
+      'alpha’s quiet one',
+      'alpha’s printed one',
       'alpha’s second',
       'alpha’s first',
       'beta’s work',
@@ -214,7 +283,7 @@ describe('what a stream changed', () => {
     const project = (
       await api.post('/api/projects', { name: 'plain', path: plain })
     ).body.project;
-    expect((await subjects(project.id)).length).toBe(5);
+    expect((await subjects(project.id)).length).toBe(8);
   }, 60000);
 
   it('records where each clone stood when a run of a stream’s feature began and ended', async () => {

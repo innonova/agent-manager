@@ -173,15 +173,28 @@ export async function log(
   return commits;
 }
 
-/** A commit with the features its message names in `Feature:` trailers. */
+/** A commit with the features its message names in `Feature:` lines. */
 export interface TrailedCommit extends CommitInfo {
   features: string[];
 }
 
 /**
+ * The features a commit message names: every line of the form
+ * `Feature: <name>`. Read from the message itself and not with git's
+ * trailer parser, which only counts the message's last paragraph: an
+ * agent that writes `Feature:`, a blank line and then `Co-Authored-By:`
+ * (as they do) has, to git, one trailer and not two.
+ */
+export function featuresNamed(message: string): string[] {
+  return [...message.matchAll(/^Feature:[ \t]*(\S.*?)[ \t]*$/gim)].map(
+    (m) => m[1]!,
+  );
+}
+
+/**
  * The most recent commits reachable from any of `revs` (branches, a
- * remote's main, HEAD), newest first, each with its `Feature:` trailers.
- * Null on git failure.
+ * remote's main, HEAD), newest first, each with the features its
+ * message names. Null on git failure.
  */
 export async function logOf(
   cwd: string,
@@ -192,7 +205,7 @@ export async function logOf(
     '--no-optional-locks',
     'log',
     `--max-count=${limit}`,
-    '--format=%H%x1f%s%x1f%an%x1f%ct%x1f%(trailers:key=Feature,valueonly,separator=%x1e)%x1f%at',
+    '--format=%H%x1f%s%x1f%an%x1f%ct%x1f%at%x1f%B',
     '-z',
     ...revs,
     '--',
@@ -201,17 +214,14 @@ export async function logOf(
   const commits: TrailedCommit[] = [];
   for (const rec of out.split('\0')) {
     if (!rec) continue;
-    const [hash, subject, author, ct, trailers, at] = rec.split('\x1f');
+    const [hash, subject, author, ct, at, message] = rec.split('\x1f');
     commits.push({
       hash: hash!,
       subject: subject ?? '',
       author: author ?? '',
       at: Number(ct) * 1000,
       authorAt: Number(at) * 1000,
-      features: (trailers ?? '')
-        .split('\x1e')
-        .map((t) => t.trim())
-        .filter(Boolean),
+      features: featuresNamed(message ?? ''),
     });
   }
   return commits;
