@@ -57,6 +57,20 @@ from the Users page, not by reinstalling. The unit `Wants=` the daemon's,
 so starting the manager starts the daemon if it is not running.
 Restarting the manager is a non-event for agents.
 
+## Claude Code deletes old conversations
+
+Claude Code removes a conversation's record once it has gone unused
+for `cleanupPeriodDays`, 30 by default, and an agent whose record is
+gone cannot be resumed. The manager keeps its own hard link to each
+local agent's conversation file and puts the file back before a
+resume, so nothing needs setting for that; when a record is gone
+anyway, the agent starts a new conversation with its dialog handed
+back. To stop the deletion altogether, which also keeps what the
+manager does not (spilled-over tool results, subagent transcripts),
+put `"cleanupPeriodDays": 3650` in `~/.claude/settings.json`. The
+link needs the manager's data directory and `~/.claude` on one
+filesystem.
+
 ## Several machines, one UI (hub and spokes)
 
 Every machine runs its own daemon and manager. To see and drive them all

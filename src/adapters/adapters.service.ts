@@ -24,6 +24,20 @@ export class AdaptersService {
     return this.factories.get(profile)?.create().compactCommand ?? null;
   }
 
+  /** The file a profile's vendor keeps a conversation in on this machine; null when the manager cannot name it (or the profile is unknown). */
+  conversationFile(
+    profile: string,
+    cwd: string,
+    conversationId: string,
+  ): string | null {
+    return (
+      this.factories
+        .get(profile)
+        ?.create()
+        .conversationFile?.(cwd, conversationId) ?? null
+    );
+  }
+
   create(profile: string): AgentAdapter {
     const f = this.factories.get(profile);
     if (!f) throw new NotFoundException(`no adapter for profile "${profile}"`);

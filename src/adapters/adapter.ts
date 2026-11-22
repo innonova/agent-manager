@@ -304,6 +304,13 @@ export interface AgentAdapter {
   turn(text: string, images?: TurnImage[]): unknown[];
   /** The message that asks the CLI to compact its context now, sent as a turn, for a vendor that has one (Claude Code's `/compact`). */
   readonly compactCommand?: string;
+  /**
+   * The file the vendor keeps a conversation in on this machine, for a
+   * vendor whose file the manager can name (Claude Code): what a resume
+   * needs, and what the vendor may delete on its own (see
+   * `keepConversation`). Null when it cannot be named.
+   */
+  conversationFile?(cwd: string, conversationId: string): string | null;
   /** stdin lines to interrupt the current turn, if supported. */
   interrupt?(): unknown[];
   /** Whether the log so far shows a turn without its result yet. */

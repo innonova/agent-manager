@@ -26,6 +26,7 @@ import {
   parseWeights,
   renderFiles,
   renderNotice,
+  type HandbackOn,
   select,
   Selection,
   Weight,
@@ -560,7 +561,20 @@ export class DialogService implements OnModuleInit {
    * compaction, and yesterday's weights are still right about last
    * month's exchanges.
    */
-  async handback(agentId: string, onRequest = false): Promise<string | null> {
+  async handback(
+    agentId: string,
+    on: HandbackOn = 'compact',
+  ): Promise<string | null> {
+    if (on === 'start') {
+      // Every new conversation asks; only one that replaces a lost one is owed anything.
+      const owed = this.db
+        .prepare('DELETE FROM dialog_owed WHERE agent_id = ?')
+        .run(agentId);
+      if (!owed.changes) return null;
+      // An agent that sat unused long enough to lose its conversation was likely never weighed, or long ago.
+      if (this.config.dialogClassifier)
+        this.start(agentId, { onlyIfStale: true });
+    }
     const going = this.running.get(agentId);
     if (going)
       await Promise.race([
@@ -582,7 +596,7 @@ export class DialogService implements OnModuleInit {
     const whole = sel.recent.length + sel.kept.length;
     this.agents.note(
       agentId,
-      `dialog handed back${onRequest ? ' on request' : ''}: ${whole} exchange${whole === 1 ? '' : 's'} word for word (${sel.recent.length} recent, ${sel.kept.length} earlier), ${sel.indexed.length} as index lines, about ${sel.tokens < 1000 ? sel.tokens : `${Math.round(sel.tokens / 1000)}k`} tokens` +
+      `dialog handed back${on === 'request' ? ' on request' : on === 'start' ? ' to the new conversation' : ''}: ${whole} exchange${whole === 1 ? '' : 's'} word for word (${sel.recent.length} recent, ${sel.kept.length} earlier), ${sel.indexed.length} as index lines, about ${sel.tokens < 1000 ? sel.tokens : `${Math.round(sel.tokens / 1000)}k`} tokens` +
         ` in ${paths.length} file${paths.length === 1 ? '' : 's'} it reads when it next acts` +
         (last
           ? `; weighed by ${last.model}`
@@ -590,6 +604,6 @@ export class DialogService implements OnModuleInit {
             ? '; not weighed yet'
             : ''),
     );
-    return renderNotice(paths, sel, onRequest);
+    return renderNotice(paths, sel, on);
   }
 }

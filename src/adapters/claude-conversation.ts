@@ -122,3 +122,58 @@ export function withdrawLastPrompt(
     held: false,
   };
 }
+
+/** What `keepConversation` found and did. */
+export type Kept =
+  /** The vendor's file is there and the manager's name for it is the same file. */
+  | 'kept'
+  /** The vendor's file was gone and the manager's name for it was not: it is back. */
+  | 'restored'
+  /** Neither is there: there is no conversation to resume. */
+  | 'gone'
+  /** The vendor's file is there, but a second name for it could not be made (another filesystem). */
+  | 'unlinkable';
+
+/**
+ * Keeps a conversation the vendor may delete. Claude Code removes
+ * conversation files that have not been used for `cleanupPeriodDays` (30
+ * unless set), from any session that starts on the machine, and a
+ * resume of one that is gone fails ("No conversation found"). So the
+ * manager holds a second name for the same file, a hard link at `kept`:
+ * no copy and no space, current for as long as the vendor appends to
+ * the file (Claude Code does, across compactions), and what the vendor
+ * deletes is then only its own name. Called before a resume, it puts
+ * the file back when the vendor's name is gone; called at any other
+ * time, it makes or renews the link (a file replaced by a rename, as
+ * the take-back does, is a new file and needs linking again).
+ */
+export function keepConversation(file: string, kept: string): Kept {
+  const stat = (p: string) => {
+    try {
+      const s = fs.statSync(p);
+      return s.isFile() ? s : null;
+    } catch {
+      return null;
+    }
+  };
+  const theirs = stat(file);
+  const ours = stat(kept);
+  if (!theirs && !ours) return 'gone';
+  if (!theirs) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.linkSync(kept, file);
+    return 'restored';
+  }
+  if (ours && ours.ino === theirs.ino && ours.dev === theirs.dev) return 'kept';
+  try {
+    fs.mkdirSync(path.dirname(kept), { recursive: true });
+    // a new name first and then the swap, so a failure leaves the old link standing
+    const next = `${kept}.next`;
+    fs.rmSync(next, { force: true });
+    fs.linkSync(file, next);
+    fs.renameSync(next, kept);
+    return 'kept';
+  } catch {
+    return 'unlinkable';
+  }
+}

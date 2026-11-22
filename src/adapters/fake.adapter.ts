@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { LogRecord } from '../daemon/daemon-client.js';
 import type {
   AgentAdapter,
@@ -22,6 +23,16 @@ type PermissionItem = Extract<Item, { kind: 'permission' }>;
 export class FakeAdapter implements AgentAdapter {
   /** As Claude's: the fake agent answers it like any message, which is enough to see it was sent. */
   readonly compactCommand = '/compact';
+  /**
+   * The fake agent keeps no conversation on disk. A test that wants to
+   * see the manager keep one, put one back or find one gone names a
+   * directory here and plays the vendor itself: writes and deletes
+   * `<conversation id>.jsonl` in it.
+   */
+  conversationFile(_cwd: string, conversationId: string): string | null {
+    const dir = process.env.AGENT_MANAGER_FAKE_CONVERSATIONS;
+    return dir ? path.join(dir, `${conversationId}.jsonl`) : null;
+  }
   private streamingText = '';
   private textKey = '';
   private texts = 0;

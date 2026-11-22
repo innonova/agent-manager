@@ -438,22 +438,30 @@ export function renderFiles(
   if (cur) files.push(cur);
   return files.map(
     (text, i) =>
-      `# Your dialog with the person, handed back after a compaction (file ${i + 1} of ${files.length})\n\n${text}\n`,
+      `# Your dialog with the person, handed back to you word for word (file ${i + 1} of ${files.length})\n\n${text}\n`,
   );
 }
 
 /** What the hook says to the agent: short, since Claude Code caps a hook's text at 10,000 characters. */
+/** When a hand-back happens: after a compaction, when the agent asks for one, or at the start of a conversation that replaces one the vendor no longer has. */
+export type HandbackOn = 'compact' | 'request' | 'start';
+
 export function renderNotice(
   paths: string[],
   sel: Selection,
-  onRequest = false,
+  on: HandbackOn = 'compact',
 ): string {
   const whole = sel.recent.length + sel.kept.length;
+  const both =
+    'It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered.';
   return [
-    // asked for in the middle of a window: nothing was just replaced, but what the context holds of earlier conversations has been through summaries
-    onRequest
-      ? 'The manager keeps your dialog with the person outside your context, word for word, and this copy of it was asked for now, without a compaction. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. What your context holds of earlier conversations has been through one or more summaries; where it and these files differ, the files are what was said.'
-      : 'Your context was just replaced by a summary of itself. The manager keeps your dialog with the person outside your context, word for word, and hands it back in the files below. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. Where the summary and these files differ, the files are what was said.',
+    on === 'request'
+      ? // asked for in the middle of a window: nothing was just replaced, but what the context holds of earlier conversations has been through summaries
+        `The manager keeps your dialog with the person outside your context, word for word, and this copy of it was asked for now, without a compaction. ${both} What your context holds of earlier conversations has been through one or more summaries; where it and these files differ, the files are what was said.`
+      : on === 'start'
+        ? // nothing to resume: this context has no summary either, so the dialog and the disk are all there is of the earlier work
+          `This is a new conversation, but not a new agent: you have worked with the person before, in a conversation whose record is gone from this machine, so nothing of it is in your context, not even a summary. The manager keeps your dialog with the person outside your context, word for word, and hands it back in the files below. ${both} What you did in that conversation is in the repositories and their history, and in your own reports in these files; what you had read or found and not written down is lost, so check the state of the work before you rely on a memory of it.`
+        : `Your context was just replaced by a summary of itself. The manager keeps your dialog with the person outside your context, word for word, and hands it back in the files below. ${both} Where the summary and these files differ, the files are what was said.`,
     '',
     `Read ${paths.length === 1 ? 'this file' : 'these files'} in full, in order, before you do anything else, with your file-reading tool (each fits one read; a shell's \`cat\` cuts them short):`,
     ...paths,

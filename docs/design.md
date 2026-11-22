@@ -997,6 +997,58 @@ be a loss to put off, and with the dialog handed back it is a way to
 trade a window that has drifted, or one filled before there was a
 hand-back, for a fresh summary and what was actually said.
 
+**A conversation the vendor deletes.** Claude Code removes
+conversation files that have not been used for `cleanupPeriodDays`, 30
+unless the user's settings say otherwise, in a sweep that any session
+starting on the machine sets off, the manager's own model calls
+included; and a resume of a conversation that is gone fails outright
+("No conversation found with session ID"), so an agent left alone for
+a month could not be spoken to again, and an archive that "keeps
+everything" did not keep the one thing the vendor holds. Three things
+answer it, of which the first is an operator's and the others the
+manager's:
+
+- `"cleanupPeriodDays": 3650` in `~/.claude/settings.json` stops the
+  sweep for practical purposes. It has to be the user's file: the
+  smallest value any starting session reads is the one that deletes.
+  It also covers what the manager does not keep (a session's
+  spilled-over tool results and subagent transcripts).
+- The manager keeps its own name for each local agent's conversation
+  file, a hard link at
+  `<dataDir>/conversations/<agent>/<conversation id>.jsonl`
+  (`keepConversation`): no copy and no space, current because Claude
+  Code appends to the file in place (one inode from September through
+  fourteen compactions, on this session's own), and what the vendor
+  then deletes is only its name. The link is made or renewed at every
+  turn's end, before every session start, and for every agent when the
+  manager starts (exited and archived agents start nothing for a long
+  time); a file replaced by a rename, as the take-back replaces it, is
+  a new file and is linked again at the next of those. Before a
+  resume, a conversation whose vendor name is gone is linked back and
+  the flow says so. Which file is the vendor's is the adapter's to say
+  (`conversationFile`); for a vendor that cannot say, and for an agent
+  on another machine, nothing is kept. A data directory on another
+  filesystem than `~/.claude` cannot hold such a link, and the log
+  says so once.
+- When neither name is there (a conversation deleted before the
+  manager kept any), the session starts a new conversation rather than
+  a resume that would fail, the flow says the agent remembers nothing
+  of the earlier one, and the dialog is handed back to it: the row in
+  `dialog_owed` is found by the hook of the new conversation
+  (`SessionStart` with source `startup`, the same script with `--on
+start`), which is answered like the one after a compaction, with a
+  notice worded for an agent that has not even a summary. A new
+  conversation that replaces nothing asks too and is answered with
+  nothing. The manager only calls a conversation gone where the vendor
+  has demonstrably kept conversations for that working directory (the
+  directory the file would be in exists): it assumes the vendor's
+  default location, as the take-back does, and a session set up to
+  keep them elsewhere must not lose a conversation to that assumption.
+  What the new conversation lacks is the vendor's summary of the work
+  itself; the agent's reports in the dialog and the repositories carry
+  most of it, and a summary rebuilt from the daemon's log is possible
+  and not built.
+
 Why a hook and files, and not the alternatives: a message from the
 manager would read as the person's, start a turn of its own on an idle
 agent, and be quoted as theirs by the next summary; rewriting Claude's
@@ -1879,7 +1931,7 @@ GET    /api/agents/:id/dialog                                   -> { exchanges: 
 GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent
 GET    /api/agents/:id/dialog/:n                                -> { exchange: { n, at, by, person, agent, withdrawn } }; one exchange word for word; 404 for one that was taken back
 POST   /api/agents/:id/dialog/weigh { model? }                  -> 202 { weighing: { since, model } }; starts a weighing and answers at once (it takes minutes; the list says when it is done or how it failed); 409 with no classifier configured
-POST   /api/dialog/handback         { on?: 'request' }          -> { text | null }; an agent's hook after a compaction, or the agent itself asking in the middle of a window (`on: 'request'`): the dialog is written to files and the notice naming them returned; an agent token only
+POST   /api/dialog/handback         { on?: 'request' | 'start' } -> { text | null }; an agent's hook after a compaction, the agent itself asking in the middle of a window (`on: 'request'`), or the hook of a conversation that begins (`on: 'start'`, answered with text only when it replaces a conversation the vendor no longer has): the dialog is written to files and the notice naming them returned; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
 PATCH  /api/projects/:id/notes/:noteId { done?, text? }         -> the list; 404 for an unknown note

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import {
   BadRequestException,
   Inject,
@@ -44,8 +45,10 @@ import type { DaemonClient } from '../daemon/daemon-client.js';
 import { DaemonClients } from '../daemon/daemon-clients.js';
 import {
   conversationFile,
+  keepConversation,
   withdrawLastPrompt,
 } from '../adapters/claude-conversation.js';
+import type { Kept } from '../adapters/claude-conversation.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
@@ -566,6 +569,7 @@ export class AgentsService
 
   onModuleInit(): void {
     this.startWatchdog();
+    this.keepConversations();
     this.daemons.on('output', (_host, id, record) => this.onOutput(id, record));
     this.daemons.on('changed', (_host, session) =>
       this.onSessionChanged(session),
@@ -1320,6 +1324,13 @@ export class AgentsService
           force: true,
         })
         .catch(() => undefined);
+      // the manager's own name for its conversation; the vendor's file is the vendor's to remove
+      await fs
+        .rm(path.join(this.config.dataDir, 'conversations', id), {
+          recursive: true,
+          force: true,
+        })
+        .catch(() => undefined);
       this.emit('removed', id, agent.projectId);
       this.emit('counts', agent.projectId, this.counts(agent.projectId));
     });
@@ -1458,6 +1469,21 @@ export class AgentsService
       .prepare('UPDATE agents SET harness_note = ? WHERE id = ?')
       .run(note, agent.id);
     agent.harnessNote = note;
+    // Before the resume: the vendor may have deleted its record of the
+    // conversation, and a resume of one that is gone fails outright.
+    const conversation = this.keepConversation(agent);
+    if (conversation === 'gone') {
+      this.db
+        .prepare('UPDATE agents SET vendor_conversation_id = NULL WHERE id = ?')
+        .run(agent.id);
+      agent.vendorConversationId = null;
+      // the new conversation's first hook asks for the dialog and finds this
+      this.db
+        .prepare(
+          'INSERT OR REPLACE INTO dialog_owed (agent_id, at) VALUES (?, ?)',
+        )
+        .run(agent.id, Date.now());
+    }
     let session: DaemonSession;
     try {
       session = await this.daemonOf(agent).start({
@@ -1500,6 +1526,14 @@ export class AgentsService
         ? `session resumed (${session.id})`
         : `session started (${session.id})`,
     });
+    if (conversation === 'restored' || conversation === 'gone')
+      this.appendItem(agent.id, live, session.id, 0, {
+        kind: 'system',
+        text:
+          conversation === 'restored'
+            ? "the CLI's record of this conversation had been deleted from its own directory; put back from the manager's copy, and resumed"
+            : "the CLI's record of the earlier conversation is gone from this machine, so a new conversation begins: the agent remembers nothing of the earlier one. Its dialog with you is handed back to it as it starts",
+      });
     sl.startedBoundary = true;
     this.setState(agent, live, adapter.initialState ?? 'starting', null);
     this.emit('session', agent.id, {
@@ -1524,6 +1558,66 @@ export class AgentsService
         }),
       );
     await this.reconcileCurrent(agent, live);
+  }
+
+  /**
+   * Makes or renews the manager's own name for the agent's conversation
+   * file, and puts the file back when the vendor's name for it is gone
+   * (see `keepConversation`). Null when there is nothing to keep: no
+   * conversation yet, a vendor whose file the manager cannot name, an
+   * agent on another machine. `gone` is only said where the vendor has
+   * demonstrably kept conversations for this working directory: the
+   * manager assumes the vendor's default location, as the take-back
+   * does, and a session set up to keep them elsewhere must not lose its
+   * conversation to that assumption. There the resume is tried as before.
+   */
+  private keepConversation(agent: Agent): Kept | null {
+    if (agent.host || !agent.vendorConversationId) return null;
+    try {
+      const file = this.adapters.conversationFile(
+        agent.profile,
+        agent.cwd,
+        agent.vendorConversationId,
+      );
+      if (!file) return null;
+      const kept = keepConversation(
+        file,
+        path.join(
+          this.config.dataDir,
+          'conversations',
+          agent.id,
+          `${agent.vendorConversationId}.jsonl`,
+        ),
+      );
+      if (kept === 'gone' && !existsSync(path.dirname(file))) return null;
+      if (kept === 'unlinkable' && !this.unlinkableSaid) {
+        this.unlinkableSaid = true;
+        this.logger.warn(
+          `conversations cannot be kept: ${file} is on another filesystem than ${this.config.dataDir}, so no second name can be made for it`,
+        );
+      }
+      return kept;
+    } catch (err) {
+      this.logger.warn(
+        `agent ${agent.id}: keeping its conversation failed: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+  private unlinkableSaid = false;
+
+  /** Every agent's conversation, once at start: the ones that existed before the manager kept any, and archived and exited agents, which start nothing for a long time. */
+  private keepConversations(): void {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM agents WHERE vendor_conversation_id IS NOT NULL AND host IS NULL',
+      )
+      .all() as AgentRow[];
+    let kept = 0;
+    for (const row of rows)
+      if (this.keepConversation(toAgent(row)) === 'kept') kept++;
+    if (rows.length)
+      this.logger.log(`kept ${kept} of ${rows.length} conversation file(s)`);
   }
 
   /** Where an agent on this machine reaches this manager: loopback and the port actually bound (configured 0 means ephemeral). */
@@ -1843,6 +1937,10 @@ export class AgentsService
         sl.pendingSends.push({ seq: record.seq, lines: ingest.send });
       else this.sendLines(agent, sl, ingest.send);
     }
+    // By a turn's end the vendor has written the conversation's file: an
+    // agent that is never restarted is kept from its first turn on.
+    if (turnEnded && !sl.attaching && sl.id === agent.currentSessionId)
+      this.keepConversation(agent);
     // State from a session that is no longer current is history, not now;
     // state from a replay in flight is applied but announced only at its end.
     if (ingest.background !== undefined && sl.id === agent.currentSessionId)
@@ -2374,6 +2472,17 @@ export class AgentsService
                 {
                   type: 'command',
                   command: handback,
+                  timeout: Math.ceil(this.config.dialogWaitMs / 1000) + 30,
+                },
+              ],
+            },
+            {
+              // a conversation that begins: answered only when it replaces one the vendor no longer has
+              matcher: 'startup',
+              hooks: [
+                {
+                  type: 'command',
+                  command: `${handback} --on start`,
                   timeout: Math.ceil(this.config.dialogWaitMs / 1000) + 30,
                 },
               ],

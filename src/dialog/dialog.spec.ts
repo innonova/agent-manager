@@ -311,6 +311,16 @@ describe('what the agent reads back', () => {
     expect(notice).toContain('3 exchanges are there word for word');
     expect(notice).toContain('`am recall <number>`');
     expect(notice.length).toBeLessThan(10_000); // Claude Code's cap on a hook's text
+    // each occasion says what the agent's context holds, since that is what the files are to be read against
+    expect(notice).toContain('Your context was just replaced by a summary');
+    expect(renderNotice(['/d/dialog-1.md'], sel, 'request')).toContain(
+      'asked for now, without a compaction',
+    );
+    const fresh = renderNotice(['/d/dialog-1.md'], sel, 'start');
+    expect(fresh).toContain('This is a new conversation, but not a new agent');
+    expect(fresh).toContain('not even a summary');
+    expect(fresh).toContain('Read this file in full');
+    expect(fresh.length).toBeLessThan(10_000);
   });
 });
 

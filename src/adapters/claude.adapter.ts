@@ -12,6 +12,7 @@ import type {
   Permissions,
 } from './adapter.js';
 import { toolActivityDetail } from './adapter.js';
+import { conversationFile } from './claude-conversation.js';
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -27,6 +28,9 @@ export class ClaudeAdapter implements AgentAdapter {
   /** A process is ready as soon as it runs; Claude says nothing until the first turn. */
   readonly initialState = 'idle' as const;
   readonly compactCommand = '/compact';
+  conversationFile(cwd: string, conversationId: string): string {
+    return conversationFile(cwd, conversationId);
+  }
   private message = 0;
   /** The content block in progress, built from stream deltas. */
   private streaming: {

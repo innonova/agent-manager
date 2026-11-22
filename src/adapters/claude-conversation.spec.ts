@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { conversationFile, withdrawLastPrompt } from './claude-conversation.js';
+import {
+  conversationFile,
+  keepConversation,
+  withdrawLastPrompt,
+} from './claude-conversation.js';
 
 const rec = (o: Record<string, unknown>) => JSON.stringify(o);
 
@@ -189,5 +193,59 @@ describe('claude conversation file', () => {
       removed: 4,
       held: false,
     });
+  });
+});
+
+describe('keeping a conversation the vendor may delete', () => {
+  const dirs = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-keep-'));
+    return {
+      file: path.join(dir, 'vendor', 'project', 'abc.jsonl'),
+      kept: path.join(dir, 'manager', 'agent', 'abc.jsonl'),
+    };
+  };
+  const write = (p: string, text: string) => {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text);
+  };
+
+  it('says so when there is nothing to keep and nothing kept', () => {
+    const { file, kept } = dirs();
+    expect(keepConversation(file, kept)).toBe('gone');
+    expect(fs.existsSync(path.dirname(kept))).toBe(false);
+  });
+
+  it('makes a second name for the same file, which reads what the vendor appends', () => {
+    const { file, kept } = dirs();
+    write(file, 'one\n');
+    expect(keepConversation(file, kept)).toBe('kept');
+    expect(fs.statSync(kept).ino).toBe(fs.statSync(file).ino);
+    fs.appendFileSync(file, 'two\n');
+    expect(fs.readFileSync(kept, 'utf8')).toBe('one\ntwo\n');
+    expect(keepConversation(file, kept)).toBe('kept'); // nothing to do the second time
+    expect(fs.readdirSync(path.dirname(kept))).toEqual(['abc.jsonl']);
+  });
+
+  it('links again when the file was replaced, as a take-back replaces it', () => {
+    const { file, kept } = dirs();
+    write(file, 'one\ntwo\n');
+    keepConversation(file, kept);
+    write(`${file}.tmp`, 'one\n');
+    fs.renameSync(`${file}.tmp`, file);
+    expect(fs.readFileSync(kept, 'utf8')).toBe('one\ntwo\n'); // still the old file
+    expect(keepConversation(file, kept)).toBe('kept');
+    expect(fs.readFileSync(kept, 'utf8')).toBe('one\n');
+    expect(fs.statSync(kept).ino).toBe(fs.statSync(file).ino);
+    expect(fs.readdirSync(path.dirname(kept))).toEqual(['abc.jsonl']);
+  });
+
+  it('puts the file back when the vendor deleted its name, directory and all', () => {
+    const { file, kept } = dirs();
+    write(file, 'one\n');
+    keepConversation(file, kept);
+    fs.rmSync(path.dirname(file), { recursive: true });
+    expect(keepConversation(file, kept)).toBe('restored');
+    expect(fs.readFileSync(file, 'utf8')).toBe('one\n');
+    expect(fs.statSync(kept).ino).toBe(fs.statSync(file).ino);
   });
 });

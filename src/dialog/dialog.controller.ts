@@ -110,7 +110,9 @@ export class DialogController {
    * The agent's dialog handed back to it: the hook Claude Code runs
    * after a compaction asks with no body; the agent itself may ask in
    * the middle of a window with `{ on: 'request' }` (`am recall
-   * --handback --now`). Only an agent's own token has a dialog to ask for.
+   * --handback --now`); the hook of a conversation that begins asks with
+   * `{ on: 'start' }` and gets text only when it replaces one the vendor
+   * no longer has. Only an agent's own token has a dialog to ask for.
    */
   @Post('dialog/handback')
   @HttpCode(200)
@@ -123,7 +125,7 @@ export class DialogController {
     return {
       text: await this.dialog.handback(
         req.agentScope.agentId,
-        body?.on === 'request',
+        body?.on === 'request' || body?.on === 'start' ? body.on : 'compact',
       ),
     };
   }
