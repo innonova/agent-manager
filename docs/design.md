@@ -1053,6 +1053,50 @@ start`), which is answered like the one after a compaction, with a
   most of it, and a summary rebuilt from the daemon's log is possible
   and not built.
 
+**Forking an agent.** `POST /api/agents/:id/fork { name, projectId? }`
+(`am fork`, the "fork…" in the new UI's agent menu) makes a new agent,
+in the same project or in another project or stream, whose
+conversation begins as a copy of this one's as it stands. The original
+is left as it is and carries on. It exists because of what a stream
+is: work that grows out of a conversation should be able to get a
+place of its own without being explained from nothing to an agent that
+knows nothing, which is the hard part of every hand-over.
+
+- The vendor does the copying: an adapter that `forks` is started with
+  `fork: true` beside the resume (Claude Code: `--resume <id>
+--fork-session`), until the fork has a conversation id of its own;
+  from then on it resumes that. Claude Code looks a conversation up by
+  working directory, so for a fork that works elsewhere the
+  conversation's file is copied there first and removed once the fork
+  has its own (tried: without the copy the resume finds nothing; with
+  it the fork has everything and the original is untouched).
+- Refused while the source is in a turn (the copy would be of half a
+  turn), before it has a conversation on disk, for an agent on another
+  machine, and for a vendor that cannot fork.
+- **The fork is told what it is**, once, when its session starts: its
+  context says it is the original, in the original's place. The
+  session-start hook asks with `on: 'resume'` (Claude Code reports a
+  forked session's start as source `fork`, later ones as `resume`; the
+  hook is registered for both) and is answered with the notice
+  composed at the fork: whose conversation is above and as of when,
+  who and where it is now (the same description of the project or
+  stream the harness note gives, `describeWork`), and that nothing is
+  asked of it. Every other resumed session asks too and is answered
+  with nothing. In the real check a Haiku fork, asked without tools,
+  named itself, the agent it was forked from, the moment, and the
+  stream's purpose from its instruction file.
+- **Its dialog record begins with the original's** (`DialogService.inherit`):
+  the exchanges as they stood at the fork are copied to
+  `<dataDir>/dialog-inherited/<agent>.json` with their weights, and the
+  fork's own follow, numbered after them. A copy and not a reference:
+  the original may be compacted, archived or deleted afterwards.
+- An agent's own token forks within its project; into another is a
+  person's.
+
+Not carried over: the original's chat (its open questions stay its
+own), its statistics, and its flow, which begins empty in the fork with
+a line saying where it came from.
+
 Why a hook and files, and not the alternatives: a message from the
 manager would read as the person's, start a turn of its own on an idle
 agent, and be quoted as theirs by the next summary; rewriting Claude's
@@ -2055,7 +2099,8 @@ GET    /api/agents/:id/dialog                                   -> { exchanges: 
 GET    /api/agents/:id/dialog/handback                          -> { recent: [n], kept: [n], indexed, tokens, budget, files: [text] }; what a hand-back would hold now; nothing is written or sent
 GET    /api/agents/:id/dialog/:n                                -> { exchange: { n, at, by, person, agent, withdrawn } }; one exchange word for word; 404 for one that was taken back
 POST   /api/agents/:id/dialog/weigh { model? }                  -> 202 { weighing: { since, model } }; starts a weighing and answers at once (it takes minutes; the list says when it is done or how it failed); 409 with no classifier configured
-POST   /api/dialog/handback         { on?: 'request' | 'start' } -> { text | null }; an agent's hook after a compaction, the agent itself asking in the middle of a window (`on: 'request'`), or the hook of a conversation that begins (`on: 'start'`, answered with text only when it replaces a conversation the vendor no longer has): the dialog is written to files and the notice naming them returned; an agent token only
+POST   /api/agents/:id/fork         { name, projectId? }         -> 201 { agent, status, inherited }; a new agent that begins with this one's whole conversation and dialog record, in the same project or in `projectId` (a project or a stream); 409 while the source is in a turn or has no conversation on disk
+POST   /api/dialog/handback         { on?: 'request' | 'start' | 'resume' } -> { text | null }; (`on: 'resume'`: the hook of a resumed session, answered only for a fork still to be told it is one) an agent's hook after a compaction, the agent itself asking in the middle of a window (`on: 'request'`), or the hook of a conversation that begins (`on: 'start'`, answered with text only when it replaces a conversation the vendor no longer has): the dialog is written to files and the notice naming them returned; an agent token only
 GET    /api/projects/:id/notes                                  -> { dir, items: [{ id, done, date, title, body }], open }; open first, then by date
 POST   /api/projects/:id/notes      { text }                    -> the list; the first line of text is the title, the rest the body
 PATCH  /api/projects/:id/notes/:noteId { done?, text? }         -> the list; 404 for an unknown note

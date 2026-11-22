@@ -23,6 +23,7 @@ type PermissionItem = Extract<Item, { kind: 'permission' }>;
 export class FakeAdapter implements AgentAdapter {
   /** As Claude's: the fake agent answers it like any message, which is enough to see it was sent. */
   readonly compactCommand = '/compact';
+  readonly forks = true;
   /**
    * The fake agent keeps no conversation on disk. A test that wants to
    * see the manager keep one, put one back or find one gone names a
@@ -50,11 +51,13 @@ export class FakeAdapter implements AgentAdapter {
 
   startArgs({
     resume,
+    fork,
     permissions,
     model,
     note,
   }: {
     resume?: string | null;
+    fork?: boolean;
     permissions?: Permissions;
     model?: string | null;
     effort?: string | null;
@@ -62,6 +65,7 @@ export class FakeAdapter implements AgentAdapter {
   }): string[] {
     return [
       ...(resume ? ['--resume', resume] : []),
+      ...(resume && fork ? ['--fork-session'] : []),
       ...(permissions === 'ask' ? ['--ask'] : []),
       ...(model ? ['--model', model] : []),
       ...(note ? ['--note', note] : []), // a "note" turn repeats it, so tests can see what was told

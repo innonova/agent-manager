@@ -443,13 +443,13 @@ export function renderFiles(
 }
 
 /** What the hook says to the agent: short, since Claude Code caps a hook's text at 10,000 characters. */
-/** When a hand-back happens: after a compaction, when the agent asks for one, or at the start of a conversation that replaces one the vendor no longer has. */
-export type HandbackOn = 'compact' | 'request' | 'start';
+/** When a hand-back happens: after a compaction, when the agent asks for one, or at the start of a conversation that replaces one the vendor no longer has. `resume` is the hook of a session that resumes a conversation asking: nothing is handed back then (the conversation is whole), but a fork is told that it is one. */
+export type HandbackOn = 'compact' | 'request' | 'start' | 'resume';
 
 export function renderNotice(
   paths: string[],
   sel: Selection,
-  on: HandbackOn = 'compact',
+  on: Exclude<HandbackOn, 'resume'> = 'compact',
 ): string {
   const whole = sel.recent.length + sel.kept.length;
   const both =

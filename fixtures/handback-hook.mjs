@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // A Claude Code SessionStart hook for the `compact` source: after a
 // compaction, the agent's dialog with the person is handed back to it.
+// With `--on resume` it is the hook for the `resume` source: the
+// conversation is whole and nothing is handed back, but a fork, which
+// resumes a copy of another agent's conversation, is told that it is one.
 // With `--on start` it is the hook for the `startup` source, a
 // conversation that begins: the manager answers that one with text only
 // when the conversation replaces one whose record the vendor no longer

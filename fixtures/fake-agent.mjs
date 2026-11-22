@@ -17,8 +17,13 @@ import { randomUUID } from 'node:crypto';
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const resumeIdx = process.argv.indexOf('--resume');
+// a fork: a conversation of its own that begins as a copy of the one named
+const forkOf =
+  resumeIdx >= 0 && process.argv.includes('--fork-session')
+    ? process.argv[resumeIdx + 1]
+    : null;
 const conversationId =
-  resumeIdx >= 0 ? process.argv[resumeIdx + 1] : randomUUID();
+  resumeIdx >= 0 && !forkOf ? process.argv[resumeIdx + 1] : randomUUID();
 let turns = 0;
 let interrupted = false;
 /** The turn's output "tokens" so far: one per word streamed, reset per turn, reported like a vendor's running count. */
@@ -122,6 +127,12 @@ async function turn(text) {
     );
     bill();
     out({ type: 'result', durationMs: Date.now() - t0 });
+    return;
+  }
+  if (text.includes('whence')) {
+    // whether this conversation began as a copy of another, as a forked CLI session would know
+    await stream(forkOf ? `Forked from ${forkOf}.` : 'Not a fork.', 0);
+    await finish(t0);
     return;
   }
   if (text.includes('note')) {

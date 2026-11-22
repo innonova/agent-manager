@@ -294,18 +294,15 @@ Found by running (2026-11-22):
   one commit per change per stream. The harness note carried all of
   it. One agent invented a git identity for its commit; the note now
   says whose identity commits carry.
-- **An agent can be forked into a stream with its context.** A Claude
-  conversation copied into another directory's store and resumed there
-  with `--fork-session` is a new conversation that has everything the
-  old one had and knows it is in the new directory; the original is
-  untouched and carries on. (Without the copy, a resume from another
-  directory finds nothing: Claude Code looks a conversation up by
-  working directory.) So a stream need not start from nothing: its
-  first agent can be a fork of the agent whose conversation gave rise
-  to it. Not built. What it would need beyond the fork itself: the
-  forked agent's dialog record, which the manager builds from its own
-  transcript and would have to carry over; and the system prompt,
-  which Claude Code keeps for a conversation until it is compacted.
+- **An agent can be forked into a stream with its context.** Built
+  the same day (`design.md`, "Forking an agent"; `am fork`): a new
+  agent, in the stream, that begins with the whole conversation of the
+  agent it was forked from, is told that it is a copy and where it now
+  is, and has that agent's dialog with the person as its own. The
+  original carries on untouched. So a stream need not start from
+  nothing: its first agent can be the conversation that gave rise to
+  it. It is also the way an existing agent can be moved into a stream
+  when the time comes: forked there, and the original archived.
 
 Still to be found by running:
 

@@ -1017,6 +1017,16 @@ describe('ClaudeAdapter', () => {
       'abc',
     ]);
     // the harness note rides on the system prompt, on a resume too
+    // a fork: the same resume, as a conversation of its own; meaningless without one to copy
+    expect(a.startArgs({ resume: 'abc', fork: true })).toEqual([
+      '--dangerously-skip-permissions',
+      '--resume',
+      'abc',
+      '--fork-session',
+    ]);
+    expect(a.startArgs({ resume: null, fork: true })).toEqual([
+      '--dangerously-skip-permissions',
+    ]);
     expect(a.startArgs({ resume: 'abc', note: 'You run here.' })).toEqual([
       '--dangerously-skip-permissions',
       '--resume',

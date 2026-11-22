@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import type { AgentScope, User } from '../auth/auth.service.js';
+import { AgentsService } from '../agents/agents.service.js';
+import type { Agent, AgentStatus } from '../agents/agents.service.js';
 import type { Exchange } from './dialog.js';
 import { DialogService, ExchangeLine } from './dialog.service.js';
 
@@ -23,7 +25,10 @@ type Caller = Request & { user?: User; agentScope?: AgentScope };
  */
 @Controller('api')
 export class DialogController {
-  constructor(private readonly dialog: DialogService) {}
+  constructor(
+    private readonly dialog: DialogService,
+    private readonly agents: AgentsService,
+  ) {}
 
   /**
    * Compacts the agent's context now: its dialog is weighed first when
@@ -36,6 +41,36 @@ export class DialogController {
   compact(@Req() req: Caller, @Param('id') id: string): { ok: true } {
     this.dialog.compact(id, req.user?.id);
     return { ok: true };
+  }
+
+  /**
+   * Forks an agent: a new one, in the same project or stream or in
+   * `projectId`, that begins with this one's whole conversation and
+   * its dialog record, and is told that it is a copy. An agent's own
+   * token forks within its project only.
+   */
+  @Post('agents/:id/fork')
+  async fork(
+    @Req() req: Caller,
+    @Param('id') id: string,
+    @Body() body?: Record<string, unknown>,
+  ): Promise<{ agent: Agent; status: AgentStatus; inherited: number }> {
+    if (
+      req.agentScope &&
+      body?.projectId !== undefined &&
+      body.projectId !== null &&
+      body.projectId !== req.agentScope.projectId
+    )
+      throw new ForbiddenException(
+        "an agent forks within its own project; into another is a person's to do",
+      );
+    const made = await this.agents.fork(
+      id,
+      body ?? {},
+      req.user?.name ?? null, // an agent's token acts as `agent-<name>`
+    );
+    const inherited = await this.dialog.inherit(made.agent.id, id);
+    return { ...made, inherited };
   }
 
   /** Every exchange as one line, with its weight once weighed. */
@@ -125,7 +160,9 @@ export class DialogController {
     return {
       text: await this.dialog.handback(
         req.agentScope.agentId,
-        body?.on === 'request' || body?.on === 'start' ? body.on : 'compact',
+        body?.on === 'request' || body?.on === 'start' || body?.on === 'resume'
+          ? body.on
+          : 'compact',
       ),
     };
   }

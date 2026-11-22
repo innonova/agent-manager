@@ -38,6 +38,11 @@ export class AdaptersService {
     );
   }
 
+  /** Whether a profile's vendor can start a conversation as a copy of another. */
+  forks(profile: string): boolean {
+    return this.factories.get(profile)?.create().forks === true;
+  }
+
   create(profile: string): AgentAdapter {
     const f = this.factories.get(profile);
     if (!f) throw new NotFoundException(`no adapter for profile "${profile}"`);

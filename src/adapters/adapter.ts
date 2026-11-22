@@ -243,6 +243,12 @@ export interface AgentAdapter {
   /** Extra daemon args for a new session; `resume` is the vendor conversation id. */
   startArgs(opts: {
     resume?: string | null;
+    /**
+     * With `resume`: continue as a new conversation that begins with
+     * everything that one holds, leaving it as it is (a fork). Only an
+     * adapter that says it `forks` is asked to.
+     */
+    fork?: boolean;
     extraDirs?: string[];
     permissions?: Permissions;
     /** Vendor model name; undefined leaves the vendor's default. */
@@ -302,6 +308,8 @@ export interface AgentAdapter {
   decide?(requestId: string, optionId: string): unknown[] | null;
   /** stdin lines for a user turn. */
   turn(text: string, images?: TurnImage[]): unknown[];
+  /** Whether the vendor can start a conversation as a copy of another (Claude Code's `--fork-session`); see `AgentsService.fork`. */
+  readonly forks?: boolean;
   /** The message that asks the CLI to compact its context now, sent as a turn, for a vendor that has one (Claude Code's `/compact`). */
   readonly compactCommand?: string;
   /**

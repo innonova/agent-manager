@@ -29,7 +29,11 @@ import type {
 import { AdaptersService } from '../adapters/adapters.service.js';
 import { HttpAdapterHost } from '@nestjs/core';
 import { AuthService } from '../auth/auth.service.js';
-import { loadHarnessTemplate, renderHarnessNote } from './harness.js';
+import {
+  describeWork,
+  loadHarnessTemplate,
+  renderHarnessNote,
+} from './harness.js';
 import type { HarnessContext } from './harness.js';
 import {
   type CachedSession,
@@ -81,6 +85,10 @@ export interface Agent {
   createdBy: string | null;
   /** The machine its sessions run on: null for this one, else a spoke's name; `cwd` is a path there. */
   host: string | null;
+  /** For a fork: the agent whose conversation it began as a copy of (see `fork`). The record only: that agent may be gone. */
+  forkOf: string | null;
+  /** For a fork that has no conversation of its own yet: the one its first session begins as a copy of. */
+  forkConversation: string | null;
 }
 
 export interface AgentSessionRef {
@@ -147,6 +155,10 @@ interface AgentRow {
   hold_until: number | null;
   nudge?: number;
   host: string | null;
+  fork_of?: string | null;
+  fork_conversation?: string | null;
+  fork_copy?: string | null;
+  fork_notice?: string | null;
   current_session_id: string | null;
   created_at: number;
   archived_at: number | null;
@@ -318,6 +330,8 @@ const toAgent = (r: AgentRow): Agent => ({
   nudge: r.nudge === 1,
   createdBy: r.created_by ?? null,
   host: r.host ?? null,
+  forkOf: r.fork_of ?? null,
+  forkConversation: r.fork_conversation ?? null,
   currentSessionId: r.current_session_id,
   createdAt: r.created_at,
   archivedAt: r.archived_at,
@@ -886,6 +900,8 @@ export class AgentsService
       nudge: false,
       createdBy,
       host,
+      forkOf: null,
+      forkConversation: null,
     };
     this.db
       .prepare(
@@ -925,6 +941,168 @@ export class AgentsService
     // client has seen; `created` is what makes it appear in every open tab.
     this.emit('created', fresh, live.status);
     return { agent: fresh, status: live.status };
+  }
+
+  /**
+   * Forks an agent: a new agent, here or in another project or stream,
+   * whose conversation begins as a copy of this one's as it stands. The
+   * original is left as it is and carries on; from the fork on, neither
+   * knows what the other does.
+   *
+   * This is how work that grew out of a conversation gets a place of
+   * its own without being explained from nothing to an agent that knows
+   * nothing: the new stream's first agent has the conversation that
+   * gave rise to it.
+   *
+   * The vendor does the copying (Claude Code: `--resume <id>
+   * --fork-session`); it looks a conversation up by working directory,
+   * so for a fork that works somewhere else the conversation's file is
+   * copied there first, and removed once the fork has a conversation of
+   * its own. The fork is told what it is by the manager when its session
+   * starts (`takeForkNotice`): its context says it is the original, in
+   * the original's place, until something says otherwise.
+   */
+  async fork(
+    sourceId: string,
+    input: { name?: unknown; projectId?: unknown },
+    createdBy: string | null = null,
+  ): Promise<{ agent: Agent; status: AgentStatus }> {
+    const source = this.get(sourceId);
+    if (typeof input.name !== 'string' || input.name.trim() === '')
+      throw new BadRequestException('"name" is required');
+    if (source.host)
+      throw new BadRequestException(
+        'an agent on another machine cannot be forked from here: its conversation is on that machine',
+      );
+    if (!this.adapters.forks(source.profile))
+      throw new BadRequestException(
+        `${source.profile} cannot start a conversation as a copy of another`,
+      );
+    const sourceLive = this.ensureLive(source);
+    await this.awaitSynced(sourceLive);
+    const state = sourceLive.status.state;
+    if (state !== 'idle' && state !== 'exited')
+      throw new ConflictException(
+        `the agent is ${state}; fork it when its turn has ended, so the copy is of a finished one`,
+      );
+    const from = source.vendorConversationId
+      ? this.adapters.conversationFile(
+          source.profile,
+          source.cwd,
+          source.vendorConversationId,
+        )
+      : null;
+    if (!source.vendorConversationId || !from || !existsSync(from))
+      throw new ConflictException(
+        'the agent has no conversation to copy yet: fork it once it has been spoken to',
+      );
+    const projectId =
+      input.projectId === undefined || input.projectId === null
+        ? source.projectId
+        : String(input.projectId);
+    const project = this.projects.get(projectId);
+    const sourceProject = this.projects.get(source.projectId);
+    const cwd = project.path;
+    // Where the fork works is where the vendor will look for the conversation.
+    const to = this.adapters.conversationFile(
+      source.profile,
+      cwd,
+      source.vendorConversationId,
+    )!;
+    const copied = to !== from;
+    if (copied) {
+      await fs.mkdir(path.dirname(to), { recursive: true });
+      await fs.copyFile(from, to);
+    }
+    const agent: Agent = {
+      id: randomUUID(),
+      projectId,
+      name: input.name.trim(),
+      profile: source.profile,
+      cwd,
+      vendorConversationId: null,
+      currentSessionId: null,
+      createdAt: Date.now(),
+      archivedAt: null,
+      permissions: source.permissions,
+      model: source.model,
+      effort: source.effort,
+      harnessNote: null,
+      nudge: false,
+      createdBy,
+      host: null,
+      forkOf: source.id,
+      forkConversation: source.vendorConversationId,
+    };
+    const what = project.kind === 'stream' ? 'the stream' : 'the project';
+    const notice = [
+      `The manager, not a person: this conversation is a fork. Everything above was said to and by the agent "${source.name}" of "${sourceProject.name}", and it is that agent's conversation as it stood on ${new Date(agent.createdAt).toISOString().slice(0, 16).replace('T', ' ')} UTC. That agent carries on there without you. From here on you are "${agent.name}" in ${what} "${project.name}", and what either of you does from now on the other does not see.`,
+      '',
+      `Where you are now, whatever the notes earlier in your context say of where the other is: ${describeWork(this.harnessContext(agent))} Your working directory is ${cwd}.`,
+      '',
+      'What you remember of the repositories was true at the fork. Your dialog with the person up to the fork is on record as yours too: `am recall` lists it. Nothing is asked of you by this notice.',
+    ].join('\n');
+    this.db
+      .prepare(
+        'INSERT INTO agents (id, project_id, name, profile, cwd, created_at, permissions, model, effort, created_by, host, fork_of, fork_conversation, fork_copy, fork_notice) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)',
+      )
+      .run(
+        agent.id,
+        projectId,
+        agent.name,
+        agent.profile,
+        cwd,
+        agent.createdAt,
+        agent.permissions,
+        agent.model,
+        agent.effort,
+        createdBy,
+        source.id,
+        source.vendorConversationId,
+        copied ? to : null,
+        notice,
+      );
+    const live = this.ensureLive(agent);
+    live.cache.loaded = true; // nothing on disk for a new agent
+    live.loaded = true;
+    try {
+      await this.withLock(live, () => this.startSession(agent, live));
+    } catch (err) {
+      if (err instanceof DaemonError && err.code === 'disconnected')
+        throw asHttp(err);
+      this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
+      this.live.delete(agent.id);
+      if (copied) await fs.rm(to, { force: true });
+      throw asHttp(err);
+    }
+    this.note(
+      agent.id,
+      `forked from ${sourceProject.name}/${source.name}: it begins with that agent's whole conversation as it stood now, and is told so when it starts. What happens there from here on it does not see`,
+    );
+    this.note(
+      source.id,
+      `forked into ${project.name}/${agent.name}: a copy of this conversation as it stands, which goes its own way from here`,
+    );
+    const fresh = this.get(agent.id);
+    this.emit('created', fresh, live.status);
+    return { agent: fresh, status: live.status };
+  }
+
+  /**
+   * What a fork is told when its session starts, once: that it is a
+   * fork, of whom, and where it is now. Asked for by the hook of a
+   * resumed session; null for every agent that is not a fork still to
+   * be told.
+   */
+  takeForkNotice(id: string): string | null {
+    const row = this.db
+      .prepare('SELECT fork_notice FROM agents WHERE id = ?')
+      .get(id) as { fork_notice: string | null } | undefined;
+    if (!row?.fork_notice) return null;
+    this.db
+      .prepare('UPDATE agents SET fork_notice = NULL WHERE id = ?')
+      .run(id);
+    return row.fork_notice;
   }
 
   /**
@@ -1491,7 +1669,9 @@ export class AgentsService
         id,
         profile: agent.profile,
         args: adapter.startArgs({
-          resume: agent.vendorConversationId,
+          // a fork without a conversation of its own yet begins as a copy of the one it was forked from
+          resume: agent.vendorConversationId ?? agent.forkConversation,
+          fork: !agent.vendorConversationId && !!agent.forkConversation,
           extraDirs: this.extraDirs(agent),
           permissions: agent.permissions,
           model: agent.model,
@@ -1643,8 +1823,8 @@ export class AgentsService
     return `http://127.0.0.1:${port}`;
   }
 
-  /** The harness note for this agent, from the operator's template or the built-in one; null when turned off. */
-  private harnessNote(agent: Agent): string | null {
+  /** What the harness note is rendered from for this agent: who it is, where it works, what its project or stream is. */
+  private harnessContext(agent: Agent): HarnessContext {
     let repos: { name: string; path: string }[] = [];
     let project = agent.projectId;
     let delegation: 'free' | 'on-request' = 'free';
@@ -1659,32 +1839,37 @@ export class AgentsService
     } catch {
       /* deleted meanwhile: the note still says who the agent is */
     }
+    return {
+      agent: agent.name,
+      project,
+      host: agent.host ?? this.config.hostName,
+      hub: agent.host ? this.config.hostName : null,
+      profile: agent.profile,
+      cwd: agent.cwd,
+      permissions: agent.permissions,
+      repos,
+      stream,
+      delegation,
+      startedBy: agent.createdBy,
+      hosts: this.daemons.remoteHosts(),
+      // the house view of the models, read the same way as the note
+      // itself: at session start, so an edit reaches an agent at its
+      // next restart and not before
+      models: loadHarnessTemplate(
+        this.config.modelsFile,
+        this.config.shippedModelsFile,
+      ),
+    };
+  }
+
+  /** The harness note for this agent, from the operator's template or the built-in one; null when turned off. */
+  private harnessNote(agent: Agent): string | null {
     return renderHarnessNote(
       loadHarnessTemplate(
         this.config.harnessFile,
         this.config.shippedHarnessFile,
       ),
-      {
-        agent: agent.name,
-        project,
-        host: agent.host ?? this.config.hostName,
-        hub: agent.host ? this.config.hostName : null,
-        profile: agent.profile,
-        cwd: agent.cwd,
-        permissions: agent.permissions,
-        repos,
-        stream,
-        delegation,
-        startedBy: agent.createdBy,
-        hosts: this.daemons.remoteHosts(),
-        // the house view of the models, read the same way as the note
-        // itself: at session start, so an edit reaches an agent at its
-        // next restart and not before
-        models: loadHarnessTemplate(
-          this.config.modelsFile,
-          this.config.shippedModelsFile,
-        ),
-      },
+      this.harnessContext(agent),
     );
   }
 
@@ -1951,6 +2136,22 @@ export class AgentsService
         .prepare('UPDATE agents SET vendor_conversation_id = ? WHERE id = ?')
         .run(ingest.conversationId, agent.id);
       agent.vendorConversationId = ingest.conversationId;
+      // A fork has a conversation of its own from here: it resumes that,
+      // and the copy of the original's file made for it has done its work.
+      if (agent.forkConversation) {
+        const copy = (
+          this.db
+            .prepare('SELECT fork_copy FROM agents WHERE id = ?')
+            .get(agent.id) as { fork_copy: string | null } | undefined
+        )?.fork_copy;
+        this.db
+          .prepare(
+            'UPDATE agents SET fork_conversation = NULL, fork_copy = NULL WHERE id = ?',
+          )
+          .run(agent.id);
+        agent.forkConversation = null;
+        if (copy) void fs.rm(copy, { force: true }).catch(() => undefined);
+      }
     }
     let turnEnded = false;
     for (const op of ingest.ops ?? []) {
@@ -2527,6 +2728,21 @@ export class AgentsService
                 },
               ],
             },
+            // A conversation that is resumed: answered only for a fork that
+            // has yet to be told it is one. Claude Code calls the start of a
+            // forked session `fork` and every later one `resume` (tried
+            // 2026-11-22); the second is there for a fork whose first start
+            // did not get its notice.
+            ...['fork', 'resume'].map((matcher) => ({
+              matcher,
+              hooks: [
+                {
+                  type: 'command',
+                  command: `${handback} --on resume`,
+                  timeout: 30,
+                },
+              ],
+            })),
             {
               // a conversation that begins: answered only when it replaces one the vendor no longer has
               matcher: 'startup',

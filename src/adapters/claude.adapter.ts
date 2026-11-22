@@ -28,6 +28,7 @@ export class ClaudeAdapter implements AgentAdapter {
   /** A process is ready as soon as it runs; Claude says nothing until the first turn. */
   readonly initialState = 'idle' as const;
   readonly compactCommand = '/compact';
+  readonly forks = true;
   conversationFile(cwd: string, conversationId: string): string {
     return conversationFile(cwd, conversationId);
   }
@@ -81,6 +82,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   startArgs({
     resume,
+    fork,
     extraDirs = [],
     permissions = 'bypass',
     model,
@@ -89,6 +91,7 @@ export class ClaudeAdapter implements AgentAdapter {
     settings,
   }: {
     resume?: string | null;
+    fork?: boolean;
     extraDirs?: string[];
     permissions?: Permissions;
     model?: string | null;
@@ -103,6 +106,8 @@ export class ClaudeAdapter implements AgentAdapter {
         ? ['--permission-prompt-tool', 'stdio']
         : ['--dangerously-skip-permissions'];
     if (resume) args.push('--resume', resume);
+    // a fork: a new conversation that begins with all of that one, which is left as it is
+    if (resume && fork) args.push('--fork-session');
     if (model) args.push('--model', model);
     if (effort) args.push('--effort', effort);
     for (const d of extraDirs) args.push('--add-dir', d); // the project's other repositories

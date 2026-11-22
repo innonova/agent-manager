@@ -122,10 +122,76 @@ export class DialogService implements OnModuleInit {
     this.agents.on('removed', (agentId) => {
       this.read.delete(agentId);
       this.armed.delete(agentId);
+      this.inherited.delete(agentId);
       void fs
         .rm(this.dir(agentId), { recursive: true, force: true })
         .catch(() => undefined);
+      void fs
+        .rm(this.inheritedFile(agentId), { force: true })
+        .catch(() => undefined);
     });
+  }
+
+  // ---- a fork's share of another agent's dialog ---------------------------
+
+  private inheritedFile(agentId: string): string {
+    return path.join(
+      this.config.dataDir,
+      'dialog-inherited',
+      `${agentId}.json`,
+    );
+  }
+  private readonly inherited = new Map<string, Exchange[]>();
+
+  /**
+   * A fork begins with another agent's conversation, so that agent's
+   * dialog with the person up to the fork is the fork's too: every
+   * sentence the person read and did not dispute binds the copy as it
+   * binds the original. The manager builds a dialog from an agent's own
+   * transcript, and a fork's begins empty, so the exchanges are copied
+   * as they stand at the fork, with the weights they were given, and
+   * come before the fork's own in its record. A copy, not a reference:
+   * the original may be compacted, archived or deleted afterwards.
+   */
+  async inherit(agentId: string, fromAgentId: string): Promise<number> {
+    const exchanges = await this.exchanges(fromAgentId);
+    const file = this.inheritedFile(agentId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({ from: fromAgentId, exchanges }));
+    this.inherited.set(agentId, exchanges);
+    this.read.delete(agentId);
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO dialog_weights (agent_id, n, kind, weight, in_force, superseded_by, line, classified_at, model) SELECT ?, n, kind, weight, in_force, superseded_by, line, classified_at, model FROM dialog_weights WHERE agent_id = ?',
+      )
+      .run(agentId, fromAgentId);
+    const window = this.db
+      .prepare('SELECT size FROM dialog_windows WHERE agent_id = ?')
+      .get(fromAgentId) as { size: number } | undefined;
+    if (window)
+      this.db
+        .prepare(
+          'INSERT OR REPLACE INTO dialog_windows (agent_id, size) VALUES (?, ?)',
+        )
+        .run(agentId, window.size);
+    return exchanges.length;
+  }
+
+  /** The exchanges an agent has from the one it was forked from; none for an agent that is not a fork. */
+  private async inheritedBy(agentId: string): Promise<Exchange[]> {
+    const have = this.inherited.get(agentId);
+    if (have) return have;
+    let exchanges: Exchange[] = [];
+    try {
+      const parsed = JSON.parse(
+        await fs.readFile(this.inheritedFile(agentId), 'utf8'),
+      ) as { exchanges?: Exchange[] };
+      if (Array.isArray(parsed.exchanges)) exchanges = parsed.exchanges;
+    } catch {
+      /* not a fork, or its file is gone: its own dialog is all there is */
+    }
+    this.inherited.set(agentId, exchanges);
+    return exchanges;
   }
 
   /** Whether this agent is one the dialog is handed back to: a Claude agent on this machine, which is where the hook is. */
@@ -199,7 +265,7 @@ export class DialogService implements OnModuleInit {
           slim.push({ index: s.index, at: s.at, item: it });
       }
     }
-    const exchanges = exchangesOf(
+    const own = exchangesOf(
       slim,
       chat.map((m) => ({
         at: m.at,
@@ -210,6 +276,12 @@ export class DialogService implements OnModuleInit {
         via: m.via,
       })),
     );
+    // a fork's record begins with what it has from the agent it was forked from, numbered as there
+    const before = await this.inheritedBy(agentId);
+    const offset = before.reduce((max, e) => Math.max(max, e.n), 0);
+    const exchanges = before.length
+      ? [...before, ...own.map((e) => ({ ...e, n: e.n + offset }))]
+      : own;
     this.read.set(agentId, { items: total, chat: chat.length, exchanges });
     return exchanges;
   }
@@ -565,6 +637,9 @@ export class DialogService implements OnModuleInit {
     agentId: string,
     on: HandbackOn = 'compact',
   ): Promise<string | null> {
+    // A resumed conversation is whole: nothing to hand back. But a fork
+    // resumes a copy of another agent's, and is told so here, once.
+    if (on === 'resume') return this.agents.takeForkNotice(agentId);
     if (on === 'start') {
       // Every new conversation asks; only one that replaces a lost one is owed anything.
       const owed = this.db

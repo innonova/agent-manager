@@ -248,6 +248,18 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       );
     if (!agentCols.includes('host'))
       this.db.exec('ALTER TABLE agents ADD COLUMN host TEXT');
+    // A fork: the agent it was copied from; the conversation its first
+    // session begins as a copy of (until it has one of its own); the copy
+    // of that conversation's file made for it, to remove then; and whether
+    // it has yet to be told that it is a fork.
+    for (const [name, type] of [
+      ['fork_of', 'TEXT'],
+      ['fork_conversation', 'TEXT'],
+      ['fork_copy', 'TEXT'],
+      ['fork_notice', 'TEXT'],
+    ])
+      if (!agentCols.includes(name!))
+        this.db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);
     // The session in which the agent's hook last asked about its chat: an
     // agent with a hook is told of unread messages there, one without by a steer.
     if (!agentCols.includes('hook_session'))
