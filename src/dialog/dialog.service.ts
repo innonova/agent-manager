@@ -152,46 +152,80 @@ export class DialogService implements OnModuleInit {
    * as they stand at the fork, with the weights they were given, and
    * come before the fork's own in its record. A copy, not a reference:
    * the original may be compacted, archived or deleted afterwards.
+   *
+   * That an agent has such a share, and up to which number, is in the
+   * database (`dialog_inherited`); the exchanges are in a file written
+   * whole. A fork whose file cannot be read has no dialog to give, and
+   * says so: its own exchanges are numbered after the inherited ones,
+   * and numbering them from one instead would put them under the
+   * weights of exchanges they are not.
    */
   async inherit(agentId: string, fromAgentId: string): Promise<number> {
     const exchanges = await this.exchanges(fromAgentId);
     const file = this.inheritedFile(agentId);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, JSON.stringify({ from: fromAgentId, exchanges }));
-    this.inherited.set(agentId, exchanges);
-    this.read.delete(agentId);
-    this.db
-      .prepare(
-        'INSERT OR REPLACE INTO dialog_weights (agent_id, n, kind, weight, in_force, superseded_by, line, classified_at, model) SELECT ?, n, kind, weight, in_force, superseded_by, line, classified_at, model FROM dialog_weights WHERE agent_id = ?',
-      )
-      .run(agentId, fromAgentId);
-    const window = this.db
-      .prepare('SELECT size FROM dialog_windows WHERE agent_id = ?')
-      .get(fromAgentId) as { size: number } | undefined;
-    if (window)
+    const staged = `${file}.writing`;
+    await fs.writeFile(
+      staged,
+      JSON.stringify({ from: fromAgentId, exchanges }),
+    );
+    await fs.rename(staged, file);
+    const upto = exchanges.reduce((max, e) => Math.max(max, e.n), 0);
+    this.db.transaction(() => {
       this.db
         .prepare(
-          'INSERT OR REPLACE INTO dialog_windows (agent_id, size) VALUES (?, ?)',
+          'INSERT OR REPLACE INTO dialog_inherited (agent_id, from_agent, upto, at) VALUES (?, ?, ?, ?)',
         )
-        .run(agentId, window.size);
+        .run(agentId, fromAgentId, upto, Date.now());
+      this.db
+        .prepare(
+          'INSERT OR REPLACE INTO dialog_weights (agent_id, n, kind, weight, in_force, superseded_by, line, classified_at, model) SELECT ?, n, kind, weight, in_force, superseded_by, line, classified_at, model FROM dialog_weights WHERE agent_id = ? AND n <= ?',
+        )
+        .run(agentId, fromAgentId, upto);
+      const window = this.db
+        .prepare('SELECT size FROM dialog_windows WHERE agent_id = ?')
+        .get(fromAgentId) as { size: number } | undefined;
+      if (window)
+        this.db
+          .prepare(
+            'INSERT OR REPLACE INTO dialog_windows (agent_id, size) VALUES (?, ?)',
+          )
+          .run(agentId, window.size);
+    })();
+    this.inherited.set(agentId, exchanges);
+    this.read.delete(agentId);
     return exchanges.length;
   }
 
-  /** The exchanges an agent has from the one it was forked from; none for an agent that is not a fork. */
-  private async inheritedBy(agentId: string): Promise<Exchange[]> {
+  /**
+   * The exchanges an agent has from the one it was forked from, and the
+   * number its own begin after; nothing for an agent that is not a fork.
+   */
+  private async inheritedBy(
+    agentId: string,
+  ): Promise<{ exchanges: Exchange[]; upto: number }> {
+    const row = this.db
+      .prepare('SELECT upto FROM dialog_inherited WHERE agent_id = ?')
+      .get(agentId) as { upto: number } | undefined;
+    if (!row) return { exchanges: [], upto: 0 };
     const have = this.inherited.get(agentId);
-    if (have) return have;
-    let exchanges: Exchange[] = [];
+    if (have) return { exchanges: have, upto: row.upto };
+    let exchanges: Exchange[];
     try {
       const parsed = JSON.parse(
         await fs.readFile(this.inheritedFile(agentId), 'utf8'),
       ) as { exchanges?: Exchange[] };
-      if (Array.isArray(parsed.exchanges)) exchanges = parsed.exchanges;
-    } catch {
-      /* not a fork, or its file is gone: its own dialog is all there is */
+      if (!Array.isArray(parsed.exchanges)) throw new Error('not a dialog');
+      exchanges = parsed.exchanges;
+    } catch (err) {
+      // not kept: the next asking reads again, and a file put back is found
+      throw new ConflictException(
+        `the dialog this agent has from the one it was forked from cannot be read (${(err as Error).message}); its own exchanges are numbered after it, so nothing is given rather than something misnumbered`,
+      );
     }
-    this.inherited.set(agentId, exchanges);
-    return exchanges;
+    // a read begun before `inherit` wrote a newer one must not replace it
+    if (!this.inherited.has(agentId)) this.inherited.set(agentId, exchanges);
+    return { exchanges: this.inherited.get(agentId)!, upto: row.upto };
   }
 
   /** Whether this agent is one the dialog is handed back to: a Claude agent on this machine, which is where the hook is. */
@@ -241,6 +275,8 @@ export class DialogService implements OnModuleInit {
   /** The agent's exchanges, read from its transcript and chat; kept until either grows. */
   async exchanges(agentId: string): Promise<Exchange[]> {
     this.agents.get(agentId); // 404 for an unknown agent
+    // an archived agent's transcript is brought in on demand: before it is counted, or it counts as empty
+    await this.agents.items(agentId, { tail: 1 });
     const total = this.agents.itemCount(agentId);
     const chat = this.chat.all(agentId);
     const have = this.read.get(agentId);
@@ -278,9 +314,11 @@ export class DialogService implements OnModuleInit {
     );
     // a fork's record begins with what it has from the agent it was forked from, numbered as there
     const before = await this.inheritedBy(agentId);
-    const offset = before.reduce((max, e) => Math.max(max, e.n), 0);
-    const exchanges = before.length
-      ? [...before, ...own.map((e) => ({ ...e, n: e.n + offset }))]
+    const exchanges = before.upto
+      ? [
+          ...before.exchanges,
+          ...own.map((e) => ({ ...e, n: e.n + before.upto })),
+        ]
       : own;
     this.read.set(agentId, { items: total, chat: chat.length, exchanges });
     return exchanges;
@@ -637,15 +675,21 @@ export class DialogService implements OnModuleInit {
     agentId: string,
     on: HandbackOn = 'compact',
   ): Promise<string | null> {
-    // A resumed conversation is whole: nothing to hand back. But a fork
-    // resumes a copy of another agent's, and is told so here, once.
-    if (on === 'resume') return this.agents.takeForkNotice(agentId);
+    // A resumed conversation is whole: nothing to hand back, unless one
+    // is still owed from a start whose hand-back did not get through.
+    // And a fork resumes a copy of another agent's, and is told so here.
+    const owed = () =>
+      !!this.db
+        .prepare('SELECT 1 FROM dialog_owed WHERE agent_id = ?')
+        .get(agentId);
+    if (on === 'resume') {
+      const notice = this.agents.takeForkNotice(agentId);
+      if (notice || !owed()) return notice;
+      on = 'start';
+    }
     if (on === 'start') {
       // Every new conversation asks; only one that replaces a lost one is owed anything.
-      const owed = this.db
-        .prepare('DELETE FROM dialog_owed WHERE agent_id = ?')
-        .run(agentId);
-      if (!owed.changes) return null;
+      if (!owed()) return null;
       // An agent that sat unused long enough to lose its conversation was likely never weighed, or long ago.
       if (this.config.dialogClassifier)
         this.start(agentId, { onlyIfStale: true });
@@ -657,7 +701,14 @@ export class DialogService implements OnModuleInit {
         new Promise((r) => setTimeout(r, this.config.dialogWaitMs)),
       ]);
     const { sel, files } = await this.preview(agentId);
-    if (sel.recent.length === 0) return null;
+    if (sel.recent.length === 0) {
+      // nothing was ever said: nothing is owed either
+      if (on === 'start')
+        this.db
+          .prepare('DELETE FROM dialog_owed WHERE agent_id = ?')
+          .run(agentId);
+      return null;
+    }
     const dir = this.dir(agentId);
     await fs.rm(dir, { recursive: true, force: true });
     await fs.mkdir(dir, { recursive: true });
@@ -679,6 +730,13 @@ export class DialogService implements OnModuleInit {
             ? '; not weighed yet'
             : ''),
     );
-    return renderNotice(paths, sel, on);
+    const notice = renderNotice(paths, sel, on);
+    // Owed no longer, now that it is written and about to be answered:
+    // a hand-back that failed on the way here is still owed at the next start.
+    if (on === 'start')
+      this.db
+        .prepare('DELETE FROM dialog_owed WHERE agent_id = ?')
+        .run(agentId);
+    return notice;
   }
 }

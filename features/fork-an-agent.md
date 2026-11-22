@@ -115,3 +115,40 @@ the terminal client, the new UI).
   registered for `fork`, would have got its notice at its next
   restart; that path (`resume`) is in the tests and was not watched
   for real.
+
+## Report (2026-11-22, after a review)
+
+A second reader (Codex, reading only, with fault injection in memory)
+went over the fork, the streams and the conversation keeping. Twelve
+findings, none critical; what concerned the fork, all fixed and
+tested:
+
+- **Two forks into one place deleted each other's copy.** The first to
+  get a conversation of its own removed the file the second still
+  started from. The copy now goes only when no fork needs it, and is
+  replaced whole, never written in place. Tested with two forks made
+  at the same moment, the second restarted before its first turn.
+- **The fork was not one moment of the original.** It did not hold the
+  original's lock, so a turn or a take-back could come between the
+  check and the copy, and the dialog was copied after the fork's
+  session had started. It is now made under the lock, the dialog
+  first, and a failure leaves nothing of the fork.
+- **Forking an archived agent after a manager restart copied no
+  dialog**, with the weights of the missing exchanges landing on the
+  fork's own. The transcript is brought in first; the same fault made
+  a recall or a hand-back of such an agent come back empty, which is
+  fixed with it.
+- **A share that could not be read became "no share" for good**, and
+  the fork's exchanges were numbered from one. That an agent has a
+  share is now in the database; one that cannot be read is said to be
+  that, and is read again next time.
+- **The notice could be lost on its way to the hook** and never given
+  again. It is given at every start until the fork has ended a turn.
+- **The tests could pass over a fork that never found its copy**: the
+  fake agent resumed anything. It now keeps its conversations on disk
+  when a test asks it to, refuses one that is not there, and names a
+  new one at its first turn, as Claude Code does. With that the test
+  failed three times on the way to passing, each time for a reason
+  worth knowing.
+
+Manager 196 unit and 168 end-to-end.

@@ -17,7 +17,7 @@ describe('DialogService: the window the budget is a share of', () => {
   function service() {
     const db = new Database(':memory:');
     db.exec(
-      'CREATE TABLE dialog_windows (agent_id TEXT PRIMARY KEY, size INTEGER NOT NULL); CREATE TABLE dialog_weights (agent_id TEXT, n INTEGER, kind TEXT, weight INTEGER, in_force INTEGER, superseded_by INTEGER, line TEXT, classified_at INTEGER, model TEXT)',
+      'CREATE TABLE dialog_windows (agent_id TEXT PRIMARY KEY, size INTEGER NOT NULL); CREATE TABLE dialog_weights (agent_id TEXT, n INTEGER, kind TEXT, weight INTEGER, in_force INTEGER, superseded_by INTEGER, line TEXT, classified_at INTEGER, model TEXT); CREATE TABLE dialog_inherited (agent_id TEXT PRIMARY KEY, from_agent TEXT, upto INTEGER, at INTEGER)',
     );
     let status: unknown = { usage: null };
     const listeners = new Map<string, (...a: any[]) => void>();

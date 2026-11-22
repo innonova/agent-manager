@@ -64,12 +64,16 @@ export class DialogController {
       throw new ForbiddenException(
         "an agent forks within its own project; into another is a person's to do",
       );
+    let inherited = 0;
     const made = await this.agents.fork(
       id,
       body ?? {},
       req.user?.name ?? null, // an agent's token acts as `agent-<name>`
+      // the dialog is taken at the same moment as the conversation, before the fork exists for anyone
+      async (forkId) => {
+        inherited = await this.dialog.inherit(forkId, id);
+      },
     );
-    const inherited = await this.dialog.inherit(made.agent.id, id);
     return { ...made, inherited };
   }
 

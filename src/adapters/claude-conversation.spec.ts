@@ -239,6 +239,21 @@ describe('keeping a conversation the vendor may delete', () => {
     expect(fs.readdirSync(path.dirname(kept))).toEqual(['abc.jsonl']);
   });
 
+  it('takes only "not there" for absent: a place that cannot be looked into is an error, not a deletion', () => {
+    const { file, kept } = dirs();
+    write(file, 'one\n');
+    keepConversation(file, kept);
+    fs.rmSync(file);
+    // the vendor's directory cannot be read: the conversation may well be in it
+    fs.chmodSync(path.dirname(file), 0o000);
+    try {
+      expect(() => keepConversation(file, kept)).toThrow();
+      expect(fs.existsSync(kept)).toBe(true);
+    } finally {
+      fs.chmodSync(path.dirname(file), 0o755);
+    }
+  });
+
   it('puts the file back when the vendor deleted its name, directory and all', () => {
     const { file, kept } = dirs();
     write(file, 'one\n');

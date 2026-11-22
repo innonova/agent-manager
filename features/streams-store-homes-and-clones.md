@@ -131,3 +131,38 @@ thing`, read the clone's own instruction file, wrote
   repository list, which the manager refuses with a sentence saying
   why.
 - `am use` with a failing setup exits 1 though the clone is there.
+
+## Report (2026-11-22, after a review)
+
+A second reader (Codex, reading only, with fault injection in memory)
+went over the streams, the fork and the conversation keeping. Twelve
+findings, none critical. What concerned streams and the conversations,
+all fixed and tested unless said:
+
+- **A command that hung could wedge a clone or the store.** A setup
+  that ignored being asked to stop, or left something holding its
+  output, never came back. Commands now run in a process group, are
+  stopped and then killed, and the caller is answered regardless.
+- **A manager restarted during a setup found the clone "ready".** A
+  note beside the clone now says its setup was begun, until it
+  succeeds; `am use <repository> --again` (and a button in the new UI)
+  runs it once more, never by itself.
+- **A failed push of the store was not tried again** until another
+  file changed. It is, at every sweep.
+- **A long status was read from its last 8,000 characters**, so a
+  clone with many changed files was undercounted and a sweep of the
+  store could miss a stream. What is parsed is read whole.
+- **An empty directory was enough to call a conversation deleted**
+  where the vendor keeps them elsewhere. Only a conversation found
+  under the same root counts; and only "not there" is absent, a
+  directory that cannot be read is an error.
+- **A hand-back owed to a new conversation could be lost** if writing
+  it failed. It stays owed until it is written, and is given at a
+  resume if the start never got it.
+- **Deleting a project left its agents' kept conversations and
+  inherited dialogs behind.** They go with the agents now.
+
+Not fixed: a clone job that failed stays in the manager's memory after
+its stream is deleted (a few bytes, until the next restart).
+
+Manager 196 unit and 168 end-to-end.

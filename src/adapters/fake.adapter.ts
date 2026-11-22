@@ -66,6 +66,11 @@ export class FakeAdapter implements AgentAdapter {
     return [
       ...(resume ? ['--resume', resume] : []),
       ...(resume && fork ? ['--fork-session'] : []),
+      // a test that wants the fake to keep and require its conversations, as the real CLI does
+      ...(process.env.AGENT_MANAGER_FAKE_CONVERSATIONS_STRICT &&
+      process.env.AGENT_MANAGER_FAKE_CONVERSATIONS
+        ? ['--conversations', process.env.AGENT_MANAGER_FAKE_CONVERSATIONS]
+        : []),
       ...(permissions === 'ask' ? ['--ask'] : []),
       ...(model ? ['--model', model] : []),
       ...(note ? ['--note', note] : []), // a "note" turn repeats it, so tests can see what was told

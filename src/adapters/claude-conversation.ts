@@ -148,12 +148,16 @@ export type Kept =
  * the take-back does, is a new file and needs linking again).
  */
 export function keepConversation(file: string, kept: string): Kept {
+  // Not there is an answer; anything else (a directory that cannot be
+  // read, a disk error) is not, and must not be taken for "deleted".
   const stat = (p: string) => {
     try {
       const s = fs.statSync(p);
       return s.isFile() ? s : null;
-    } catch {
-      return null;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      throw err;
     }
   };
   const theirs = stat(file);

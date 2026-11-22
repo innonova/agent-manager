@@ -11,6 +11,8 @@
 // "permission" (with --ask) -> asks permission and waits for the answer,
 // "commit" -> reports a commit, "linger" -> stays working until interrupted,
 // anything else -> a short streamed answer.
+import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -24,6 +26,43 @@ const forkOf =
     : null;
 const conversationId =
   resumeIdx >= 0 && !forkOf ? process.argv[resumeIdx + 1] : randomUUID();
+/**
+ * With `--conversations <dir>` it keeps its conversations on disk the way
+ * Claude Code does, one file per conversation in a directory per working
+ * directory, written from the first turn on; and like Claude Code it
+ * refuses to resume or fork one whose file is not there. Without it the
+ * fake remembers nothing and resumes anything, which lets a test pass
+ * over a manager that lost a conversation.
+ */
+const convIdx = process.argv.indexOf('--conversations');
+const conversations =
+  convIdx >= 0
+    ? path.join(process.argv[convIdx + 1], path.basename(process.cwd()))
+    : null;
+const fileOf = (id) => path.join(conversations, `${id}.jsonl`);
+if (conversations && resumeIdx >= 0) {
+  const wanted = process.argv[resumeIdx + 1];
+  if (!fs.existsSync(fileOf(wanted))) {
+    process.stderr.write(`No conversation found with session ID: ${wanted}\n`);
+    process.exit(1);
+  }
+}
+// A fork has read the conversation it begins as a copy of by the time it
+// runs, as the real CLI has: the file it was read from may be gone by its
+// first turn.
+const inherited =
+  conversations && forkOf ? fs.readFileSync(fileOf(forkOf), 'utf8') : '';
+/** Its own record: begun as a copy of the one it was forked from, a line per turn after. */
+function record(text) {
+  if (!conversations) return;
+  fs.mkdirSync(conversations, { recursive: true });
+  if (forkOf && !fs.existsSync(fileOf(conversationId)))
+    fs.writeFileSync(fileOf(conversationId), inherited);
+  fs.appendFileSync(
+    fileOf(conversationId),
+    `${JSON.stringify({ user: text })}\n`,
+  );
+}
 let turns = 0;
 let interrupted = false;
 /** The turn's output "tokens" so far: one per word streamed, reset per turn, reported like a vendor's running count. */
@@ -47,7 +86,16 @@ const model = modelIdx >= 0 ? process.argv[modelIdx + 1] : 'fake-1';
 // the harness note, as a real CLI would take a system prompt; "note" repeats it
 const noteIdx = process.argv.indexOf('--note');
 const note = noteIdx >= 0 ? process.argv[noteIdx + 1] : '';
-out({ type: 'init', conversationId, resumed: resumeIdx >= 0, model });
+// Keeping its conversations on disk, it names a new one (a fresh start,
+// a fork) when it is first spoken to and not before, as Claude Code does:
+// until then there is no file, and nothing to resume by that name.
+let named = !conversations || (resumeIdx >= 0 && !forkOf);
+out({
+  type: 'init',
+  ...(named ? { conversationId } : {}),
+  resumed: resumeIdx >= 0,
+  model,
+});
 
 async function stream(text, delay = 15) {
   out({ type: 'text_start', tokens: turnTokens });
@@ -62,6 +110,11 @@ async function stream(text, delay = 15) {
 
 async function handle(text) {
   inFlight = true;
+  record(text);
+  if (!named) {
+    named = true;
+    out({ type: 'init', conversationId, resumed: resumeIdx >= 0, model });
+  }
   try {
     await turn(text);
   } finally {

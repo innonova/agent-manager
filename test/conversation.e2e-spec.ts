@@ -190,28 +190,65 @@ describe('a conversation the vendor deletes', () => {
     ).toEqual({ text: null });
   }, 60000);
 
-  it('leaves an agent whose vendor has kept nothing where the manager looks to its resume', async () => {
-    // a directory that does not exist: nothing shows the vendor keeps conversations there
-    process.env.AGENT_MANAGER_FAKE_CONVERSATIONS = path.join(
-      vendor,
-      'elsewhere',
-    );
+  it('leaves an agent whose vendor has kept nothing where the manager looks to its resume, an empty directory there or not', async () => {
+    // Another place than the one conversations were found in: nothing shows
+    // the vendor keeps them there. An empty directory is no evidence either:
+    // it may be left from before the vendor was set up to keep them elsewhere.
+    const elsewhere = path.join(vendor, 'elsewhere');
+    process.env.AGENT_MANAGER_FAKE_CONVERSATIONS = elsewhere;
     try {
-      const agent = (
-        await api.post(`/api/projects/${project.id}/agents`, {
-          name: 'goldfish',
-        })
-      ).body.agent as { id: string };
-      await idle(agent.id);
-      await turn(agent.id, 'hello');
-      const first = (await agentOf(agent.id)).agent.vendorConversationId;
-      await restart(agent.id);
-      expect((await agentOf(agent.id)).agent.vendorConversationId).toBe(first);
-      expect((await system(agent.id)).join('\n')).not.toMatch(
-        /a new conversation begins/,
-      );
+      for (const [name, emptyDirectory] of [
+        ['goldfish', false],
+        ['minnow', true],
+      ] as const) {
+        const agent = (
+          await api.post(`/api/projects/${project.id}/agents`, { name })
+        ).body.agent as { id: string };
+        await idle(agent.id);
+        await turn(agent.id, 'hello');
+        const first = (await agentOf(agent.id)).agent.vendorConversationId;
+        if (emptyDirectory)
+          fs.mkdirSync(path.join(elsewhere, path.basename(repo)), {
+            recursive: true,
+          });
+        await restart(agent.id);
+        expect((await agentOf(agent.id)).agent.vendorConversationId).toBe(
+          first,
+        );
+        expect((await system(agent.id)).join('\n')).not.toMatch(
+          /a new conversation begins/,
+        );
+      }
     } finally {
       process.env.AGENT_MANAGER_FAKE_CONVERSATIONS = vendor;
     }
+  }, 60000);
+
+  it('removes what it kept of an agent when the whole project is deleted', async () => {
+    const agent = (
+      await api.post(`/api/projects/${project.id}/agents`, { name: 'leaving' })
+    ).body.agent as { id: string };
+    await idle(agent.id);
+    await turn(agent.id, 'hello');
+    const conversation = (await agentOf(agent.id)).agent.vendorConversationId!;
+    const theirs = path.join(
+      vendor,
+      path.basename(repo),
+      `${conversation}.jsonl`,
+    );
+    fs.mkdirSync(path.dirname(theirs), { recursive: true });
+    fs.writeFileSync(theirs, 'one\n');
+    await turn(agent.id, 'thanks');
+    const kept = path.join(m.dataDir, 'conversations', agent.id);
+    expect(fs.existsSync(kept)).toBe(true);
+    expect(
+      (await api.call('DELETE', `/api/projects/${project.id}`)).status,
+    ).toBe(200);
+    await until(
+      'the kept conversation to go',
+      async () => !fs.existsSync(kept),
+    );
+    // the vendor's own file is the vendor's
+    expect(fs.existsSync(theirs)).toBe(true);
   }, 60000);
 });

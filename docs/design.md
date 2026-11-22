@@ -1045,9 +1045,17 @@ start`), which is answered like the one after a compaction, with a
   assumes the vendor's default location, as the take-back does, and a
   session set up to keep them elsewhere must not lose a conversation
   to that assumption; without the evidence the resume is tried as
-  before. (The first version asked for the project's own directory to
-  exist, and Claude Code removes that directory with its last
-  conversation: two agents here were exactly that case.)
+  before. The directory the file would be in is no evidence either
+  way: Claude Code removes it with its last conversation (two agents
+  here were exactly that case, and the first rule, which asked for it,
+  left them failing), and an empty one may be left from before the
+  vendor kept them elsewhere (a reviewer's case, and the second rule,
+  which accepted it, would have forgotten a conversation that was
+  there). And only "not there" counts as absent: a directory that
+  cannot be read is an error, not a deletion. A hand-back that is owed
+  stays owed until its files are written and the answer is on its
+  way: one that fails before that is asked for again at the next
+  start, and at a resume if the start never got it.
   What the new conversation lacks is the vendor's summary of the work
   itself; the agent's reports in the dialog and the repositories carry
   most of it, and a summary rebuilt from the daemon's log is possible
@@ -1073,8 +1081,20 @@ knows nothing, which is the hard part of every hand-over.
 - Refused while the source is in a turn (the copy would be of half a
   turn), before it has a conversation on disk, for an agent on another
   machine, and for a vendor that cannot fork.
-- **The fork is told what it is**, once, when its session starts: its
+- **The fork is one moment of the original.** It is made under the
+  original's lock: no turn, take-back or restart of it comes between
+  the look at it, the copy of its conversation and the copy of its
+  dialog, and the dialog is taken before the fork's session starts. If
+  any of it fails, nothing of the fork is left.
+- Several forks of one agent into one place start from the same
+  copied file. It is replaced whole and never written in place, and
+  removed only when no fork still needs it (one that has not taken a
+  turn has no conversation of its own to restart from).
+- **The fork is told what it is** when its session starts: its
   context says it is the original, in the original's place. The
+  notice is given at every start until the fork has ended a turn in a
+  session that asked for it: an answer can be lost on its way to the
+  hook. The
   session-start hook asks with `on: 'resume'` (Claude Code reports a
   forked session's start as source `fork`, later ones as `resume`; the
   hook is registered for both) and is answered with the notice
@@ -1089,7 +1109,15 @@ knows nothing, which is the hard part of every hand-over.
   the exchanges as they stood at the fork are copied to
   `<dataDir>/dialog-inherited/<agent>.json` with their weights, and the
   fork's own follow, numbered after them. A copy and not a reference:
-  the original may be compacted, archived or deleted afterwards.
+  the original may be compacted, archived or deleted afterwards. That
+  an agent has such a share, and up to which number, is in the
+  database (`dialog_inherited`), and a fork whose file cannot be read
+  has no dialog to give and says so: numbering its own exchanges from
+  one would put them under the weights of exchanges they are not.
+- An archived agent can be forked: what it knew is not lost with it.
+  Its transcript is brought in first (it is loaded on demand, and
+  counted as empty until then, which made a hand-back or a recall of
+  an archived agent after a manager restart come back empty too).
 - An agent's own token forks within its project; into another is a
   person's.
 
@@ -1661,7 +1689,17 @@ under its own name, then pushes when the store has a remote. Agents and
 people write files; many agents committing into one repository sweep
 each other's folders into their commits and race on the push, which is
 why notes left the repositories. Who caused a change is not in the
-commit yet (the manager does not know which turn wrote a file).
+commit yet (the manager does not know which turn wrote a file). A
+push that fails is tried again at every sweep until one succeeds,
+whether or not anything changed since.
+
+A command the manager runs for streams (git, a setup) has a time
+limit that holds whatever the command does: it runs in a process
+group of its own, the group is asked to stop and then killed, and the
+caller is answered even if something it started holds the pipes open,
+so a hung command cannot wedge a clone or the store. What is parsed
+(a status, a count) is read whole, not from the tail kept for a
+person to read.
 
 **The registry** (`repositories` table): a name, what `git clone` is
 given, and a setup command; plus a seed directory under the data
@@ -1673,8 +1711,13 @@ clone needs, taken from a checkout by path (`PUT
 runs the setup with a login shell; it answers at once and `GET
 …/clones` says how far it is. The clone appears whole or not at all; a
 setup that fails leaves the clone, with what the command said, for
-whoever works there to finish. A clone's state is in memory only: what
-succeeded is on the disk. For a clone that is there, `GET …/clones`
+whoever works there to finish. A clone's state is in memory only, with
+one exception: that a setup was begun is noted in a file beside the
+clone (`.<name>.setup-pending`) until it succeeds, so a manager
+restarted while a setup ran does not find a clone that looks whole and
+call it ready. A setup is run again on request (`again: true`, `am use
+<repository> --again`) and never by itself: it need not be safe to
+repeat. For a clone that is there, `GET …/clones`
 also says what of it is not landed (`landing`): the commits on its
 branches that the repository's main does not have, how far its
 checked-out branch is behind main, and the files not committed, all
@@ -2024,7 +2067,7 @@ PUT    /api/repositories/:name      { source?, setup? }          -> { repository
 PUT    /api/repositories/:name/seed { from, files: [path] }      -> { repository }; takes untracked files from a checkout on this machine into the seed copied into every new clone
 DELETE /api/repositories/:name                                  a person only; clones of it stay
 GET    /api/projects/:id/clones                                 -> { clones: [{ name, path, state: cloning|setting up|ready|failed, branch, message, landing: { main, unlanded, behind, uncommitted } | null }] }; a stream only
-POST   /api/projects/:id/clones     { repository }               -> 202 { clone }; clones a registered repository into the stream's home and sets it up, in the background
+POST   /api/projects/:id/clones     { repository, again? }       -> 202 { clone }; clones a registered repository into the stream's home and sets it up, in the background; `again` runs the setup of a clone that is there once more
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.kind is `project` or `stream`; project.host names the machine, project.sshHost how to reach it over SSH, project.workspace its VS Code workspace file; as a hub, the spokes' projects too, ids `<host>:<id>`
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, delegation?, host? }   (`path` alone is accepted as a one-repo shorthand; `delegation` is `free` (default) or `on-request`; `host` creates on that spoke)
 GET    /api/projects/:id/profiles                               -> { profiles } of the machine the project is on

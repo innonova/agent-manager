@@ -86,13 +86,15 @@ export class StreamsController {
     return { clones: await this.streams.clones(id) };
   }
 
-  /** Starts a clone and answers at once; `GET …/clones` says how far it is. */
+  /** Starts a clone and answers at once; `GET …/clones` says how far it is. With `again`, runs the setup of a clone that is there once more. */
   @Post('projects/:id/clones')
   @HttpCode(202)
   use(
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ): { clone: Clone } {
-    return { clone: this.streams.use(id, body?.repository) };
+    return {
+      clone: this.streams.use(id, body?.repository, body?.again === true),
+    };
   }
 }

@@ -7,9 +7,10 @@ import type { TestDaemon, TestManager } from './helpers.js';
 /**
  * Forking an agent: a new one, in another project or stream, that
  * begins with the first one's whole conversation and its dialog with
- * the person, and is told that it is a copy. The fake agent keeps no
- * conversation on disk: the test plays the vendor, in a directory the
- * fake adapter is told of.
+ * the person, and is told that it is a copy. The fake agent keeps its
+ * conversations on disk here, a file per conversation from its first
+ * turn, and refuses to resume or fork one that is not there, so a fork
+ * that could not find its copy fails as it would with the real CLI.
  */
 let daemon: TestDaemon;
 let m: TestManager;
@@ -70,6 +71,8 @@ beforeAll(async () => {
   daemon = await startDaemon();
   vendor = fs.mkdtempSync(path.join(os.tmpdir(), 'am-fork-vendor-'));
   process.env.AGENT_MANAGER_FAKE_CONVERSATIONS = vendor;
+  // the fake keeps its conversations on disk and refuses to resume one that is not there, as Claude Code does
+  process.env.AGENT_MANAGER_FAKE_CONVERSATIONS_STRICT = '1';
   m = await startManager(daemon.url);
   api = new Api(m.url);
   await api.login();
@@ -85,6 +88,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   delete process.env.AGENT_MANAGER_FAKE_CONVERSATIONS;
+  delete process.env.AGENT_MANAGER_FAKE_CONVERSATIONS_STRICT;
   await m?.stop();
   await daemon?.stop();
 });
@@ -104,6 +108,7 @@ describe('forking an agent', () => {
       409,
       'the agent has no conversation to copy yet: fork it once it has been spoken to',
     ]);
+    // (the agent exists, and has said nothing: the vendor has written no conversation yet)
     await turn(source.id, 'the logo is teal, never blue');
     await turn(source.id, 'we ship on Fridays');
     const conversation = (await agentOf(source.id)).agent.vendorConversationId!;
@@ -112,8 +117,6 @@ describe('forking an agent', () => {
       path.basename(origin.path),
       `${conversation}.jsonl`,
     );
-    fs.mkdirSync(path.dirname(theirs), { recursive: true });
-    fs.writeFileSync(theirs, 'the conversation so far\n');
 
     // not in the middle of a turn: the copy is of a finished one
     await api.post(`/api/agents/${source.id}/turn`, { text: 'linger' });
@@ -130,6 +133,10 @@ describe('forking an agent', () => {
       400,
     );
 
+    // what the vendor has written of the conversation by the moment of the fork
+    const soFar = fs.readFileSync(theirs, 'utf8');
+    expect(soFar).toContain('we ship on Fridays');
+
     // into a stream: a new agent there, starting in its home
     const stream = (await api.post('/api/streams', { name: 'offshoot' })).body
       .project as { id: string; path: string };
@@ -145,16 +152,14 @@ describe('forking an agent', () => {
       cwd: stream.path,
       profile: 'fake',
       forkOf: source.id,
-      forkConversation: conversation,
-      vendorConversationId: null,
     });
-    // the vendor looks a conversation up where the agent works: the file was copied there for it
+    // The vendor looks a conversation up where the agent works: the file
+    // was copied there for it, or its session could not have started.
     const copy = path.join(
       vendor,
       path.basename(stream.path),
       `${conversation}.jsonl`,
     );
-    expect(fs.readFileSync(copy, 'utf8')).toBe('the conversation so far\n');
     await idle(fork.id);
 
     // its session began as a copy: a conversation of its own that knows where it came from
@@ -163,9 +168,27 @@ describe('forking an agent', () => {
     expect(mine.vendorConversationId).not.toBe(conversation);
     expect(mine.vendorConversationId).toBeTruthy();
     expect(mine.forkConversation).toBeNull(); // from here it resumes its own
+    // which the vendor wrote, beginning with everything the original's held at the fork
+    const own = fs.readFileSync(
+      path.join(
+        vendor,
+        path.basename(stream.path),
+        `${mine.vendorConversationId}.jsonl`,
+      ),
+      'utf8',
+    );
+    expect(own.startsWith(soFar)).toBe(true);
+    expect(own).toContain('whence');
     await until('the copy to be removed', async () => !fs.existsSync(copy));
+    // a restart resumes its own conversation, with the copy gone
+    await api.post(`/api/agents/${fork.id}/restart`);
+    await idle(fork.id);
+    expect(await turn(fork.id, 'whence')).toBe('Not a fork.');
+    expect((await agentOf(fork.id)).agent.vendorConversationId).toBe(
+      mine.vendorConversationId,
+    );
     // the original is as it was, and both flows say what happened
-    expect(fs.readFileSync(theirs, 'utf8')).toBe('the conversation so far\n');
+    expect(fs.readFileSync(theirs, 'utf8')).toBe(soFar);
     expect((await agentOf(source.id)).agent.vendorConversationId).toBe(
       conversation,
     );
@@ -178,11 +201,11 @@ describe('forking an agent', () => {
       /forked into offshoot\/younger: a copy of this conversation as it stands/,
     );
 
-    // it is told what it is, once, by the hook of its resumed session
+    // it is told what it is by the hook of its resumed session
     const said = await turn(fork.id, 'token');
-    const own = new Api(m.url);
-    own.bearer = /token ([0-9a-f]{64})/.exec(said)![1]!;
-    const notice = (await own.post('/api/dialog/handback', { on: 'resume' }))
+    const hook = new Api(m.url);
+    hook.bearer = /token ([0-9a-f]{64})/.exec(said)![1]!;
+    const notice = (await hook.post('/api/dialog/handback', { on: 'resume' }))
       .body.text as string;
     expect(notice).toContain(
       'The manager, not a person: this conversation is a fork. Everything above was said to and by the agent "elder" of "origin"',
@@ -194,8 +217,14 @@ describe('forking an agent', () => {
       `The work is the stream "offshoot": a unit of work that is not tied to a repository. Its agents start in its home, ${stream.path}`,
     );
     expect(notice.length).toBeLessThan(10_000); // a hook's text is capped there
+    // an answer can be lost on its way to the hook: asked again before it has taken a turn, it is told again
     expect(
-      (await own.post('/api/dialog/handback', { on: 'resume' })).body,
+      (await hook.post('/api/dialog/handback', { on: 'resume' })).body.text,
+    ).toBe(notice);
+    // and once it has taken a turn with the notice in hand, never again
+    await turn(fork.id, 'understood');
+    expect(
+      (await hook.post('/api/dialog/handback', { on: 'resume' })).body,
     ).toEqual({ text: null });
     // an agent that is not a fork asks the same on every resume, and is told nothing
     const elderSaid = await turn(source.id, 'token');
@@ -216,7 +245,7 @@ describe('forking an agent', () => {
     );
     expect(record[0]!.line).toContain('the logo is teal, never blue');
     const last = record[record.length - 1]!;
-    expect(last.line).toContain('token');
+    expect(last.line).toContain('understood');
     expect(last.n).toBeGreaterThan(made.body.inherited);
     // what the original says afterwards is not the fork's
     expect(record.map((e) => e.line).join('\n')).not.toContain(
@@ -241,6 +270,38 @@ describe('forking an agent', () => {
       `Forked from ${conversation}.`,
     );
     expect(fs.existsSync(theirs)).toBe(true);
+
+    // Two forks into one place at the same moment share the copied file:
+    // neither may take it from under the other.
+    const [a, b] = await Promise.all(
+      ['first-twin', 'second-twin'].map((name) =>
+        api.post(`/api/agents/${source.id}/fork`, {
+          name,
+          projectId: stream.id,
+        }),
+      ),
+    );
+    expect([a.status, b.status]).toEqual([201, 201]);
+    await idle(a.body.agent.id);
+    await idle(b.body.agent.id);
+    expect(await turn(a.body.agent.id, 'whence')).toMatch(/^Forked from /);
+    // the first has its own conversation now; the second has not taken a turn, and can still be restarted
+    expect(fs.existsSync(copy)).toBe(true);
+    await api.post(`/api/agents/${b.body.agent.id}/restart`);
+    await idle(b.body.agent.id);
+    expect(await turn(b.body.agent.id, 'whence')).toMatch(/^Forked from /);
+    await until(
+      'the shared copy to be removed',
+      async () => !fs.existsSync(copy),
+    );
+
+    // an archived agent can be forked: what it knew is not lost with it
+    await api.post(`/api/agents/${twin.body.agent.id}/archive`);
+    const revived = await api.post(`/api/agents/${twin.body.agent.id}/fork`, {
+      name: 'from-the-archive',
+    });
+    expect([revived.status, revived.body.message]).toEqual([201, undefined]);
+    expect(revived.body.inherited).toBeGreaterThanOrEqual(3);
 
     // an agent forks within its own project; into another is a person's to do
     expect(

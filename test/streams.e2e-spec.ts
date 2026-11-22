@@ -375,9 +375,65 @@ describe('a stream', () => {
     expect(ghost.state).toBe('failed');
     expect(ghost.message).toContain('git clone');
     expect(fs.existsSync(path.join(tidy.path, 'ghost'))).toBe(false);
+    // what is left beside the clones is only the note that brittle's setup is not done
+    expect(fs.readdirSync(tidy.path).filter((n) => n.startsWith('.'))).toEqual([
+      '.brittle.setup-pending',
+    ]);
+    // its setup is run again on request, once the command is right, and never by itself
+    const refused = await api.post(`/api/projects/${tidy.id}/clones`, {
+      repository: 'brittle',
+    });
+    expect([refused.status, refused.body.message]).toEqual([
+      409,
+      expect.stringContaining('its setup did not finish'),
+    ]);
+    await api.call('PUT', '/api/repositories/brittle', {
+      setup: 'echo mended > .setup-ran',
+    });
+    const again = await api.post(`/api/projects/${tidy.id}/clones`, {
+      repository: 'brittle',
+      again: true,
+    });
+    expect([again.status, again.body.clone.state]).toEqual([202, 'setting up']);
+    expect((await settled(tidy.id, 'brittle')).state).toBe('ready');
+    expect(
+      fs.readFileSync(path.join(tidy.path, 'brittle', '.setup-ran'), 'utf8'),
+    ).toBe('mended\n');
     expect(fs.readdirSync(tidy.path).filter((n) => n.startsWith('.'))).toEqual(
       [],
     );
+    // A manager restarted while a setup ran finds a clone that looks whole:
+    // the note left beside it says it is not, until the setup is run again.
+    fs.writeFileSync(path.join(tidy.path, '.thing.setup-pending'), 'npm ci');
+    const interrupted = (await clonesOf(tidy.id)).find(
+      (c) => c.name === 'thing',
+    )!;
+    expect(interrupted.state).toBe('failed');
+    expect(interrupted.message).toContain(
+      'its setup did not finish (the manager was restarted while it ran)',
+    );
+    await api.post(`/api/projects/${tidy.id}/clones`, {
+      repository: 'thing',
+      again: true,
+    });
+    expect((await settled(tidy.id, 'thing')).state).toBe('ready');
+    expect(fs.existsSync(path.join(tidy.path, '.thing.setup-pending'))).toBe(
+      false,
+    );
+    // nothing to run again for a repository without a setup
+    await api.call('PUT', '/api/repositories/plainrepo', { source });
+    await api.post(`/api/projects/${tidy.id}/clones`, {
+      repository: 'plainrepo',
+    });
+    expect((await settled(tidy.id, 'plainrepo')).state).toBe('ready');
+    expect(
+      (
+        await api.post(`/api/projects/${tidy.id}/clones`, {
+          repository: 'plainrepo',
+          again: true,
+        })
+      ).status,
+    ).toBe(400);
   }, 60000);
 
   it("keeps its features in its own folder, and leaves a clone's features to the work they belong to", async () => {
@@ -468,6 +524,23 @@ describe('a stream', () => {
       for (const f of c.files)
         expect(c.subject).toContain(f.slice(stream.length + 1));
     }
+    // The store's remote: a push that fails is tried again at the next
+    // sweep, without waiting for another edit to bring it about.
+    const remote = path.join(m.dataDir, 'store-remote.git');
+    git(store, 'remote', 'add', 'origin', remote); // not there yet: the push fails
+    fs.writeFileSync(path.join(other.path, 'stream', 'later.md'), 'c\n');
+    await committed('other: later.md');
+    await sleep(600); // a few sweeps with nothing new and no remote to reach
+    git(m.dataDir, 'init', '-q', '--bare', '-b', 'main', remote);
+    await until('the store to reach its remote', async () => {
+      try {
+        return git(remote, 'log', '--format=%s', 'main').includes(
+          'other: later.md',
+        );
+      } catch {
+        return false;
+      }
+    });
     // a clone is not in the store, whatever happens in it
     fs.writeFileSync(path.join(tidy.path, 'thing', 'scratch.txt'), 'x\n');
     await sleep(500);

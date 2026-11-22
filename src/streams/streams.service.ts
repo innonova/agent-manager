@@ -82,12 +82,26 @@ interface RepositoryRow {
   created_at: number;
 }
 
-/** A command of the manager's own: none of an agent's identity goes with it, and it does not outlive its time. */
-function run(
+/** What a machine-readable result may grow to before it is refused rather than parsed in part. */
+const FULL_LIMIT = 32 * 1024 * 1024;
+
+/**
+ * A command of the manager's own: none of an agent's identity goes with
+ * it, and it does not outlive its time. `out` is the end of what it
+ * said on either stream, for a person to read when it fails; `stdout`
+ * is all of its standard output, for a result that is parsed (a status,
+ * a count), which a tail would silently cut.
+ *
+ * The time limit is kept whatever the command does: it runs in a
+ * process group of its own, the group is asked to stop, then killed,
+ * and the promise settles even if something it started holds the pipes
+ * open. A command that hangs must not wedge a clone or the store.
+ */
+export function run(
   command: string,
   args: string[],
-  opts: { cwd: string; timeoutMs: number },
-): Promise<{ code: number | null; out: string }> {
+  opts: { cwd: string; timeoutMs: number; graceMs?: number },
+): Promise<{ code: number | null; out: string; stdout: string }> {
   return new Promise((resolve) => {
     const env = { ...process.env };
     for (const k of Object.keys(env))
@@ -95,6 +109,8 @@ function run(
         delete env[k];
     env.GIT_TERMINAL_PROMPT = '0'; // a clone that wants a password fails; it does not wait
     let out = '';
+    let stdout = '';
+    let overflow = false;
     const keep = (d: string) => {
       out = (out + d).slice(-8000);
     };
@@ -104,24 +120,61 @@ function run(
         cwd: opts.cwd,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true, // its own process group, so what it starts can be stopped with it
       });
     } catch (err) {
-      return resolve({ code: null, out: (err as Error).message });
+      return resolve({ code: null, out: (err as Error).message, stdout: '' });
     }
-    const timer = setTimeout(() => {
-      keep('\n(took too long; stopped)');
-      child.kill('SIGTERM');
-    }, opts.timeoutMs);
-    child.stdout.setEncoding('utf8').on('data', keep);
+    let settled = false;
+    const timers: NodeJS.Timeout[] = [];
+    const settle = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      resolve(
+        overflow
+          ? {
+              code: null,
+              out: `${out}\n(its output is too large to read)`,
+              stdout: '',
+            }
+          : { code, out, stdout },
+      );
+    };
+    const signal = (sig: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, sig);
+      } catch {
+        /* gone already */
+      }
+    };
+    timers.push(
+      setTimeout(() => {
+        keep('\n(took too long; stopped)');
+        signal('SIGTERM');
+        const grace = opts.graceMs ?? 5000;
+        timers.push(setTimeout(() => signal('SIGKILL'), grace));
+        // whatever still holds its pipes, the caller is answered
+        timers.push(
+          setTimeout(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            settle(null);
+          }, grace + 3000),
+        );
+      }, opts.timeoutMs),
+    );
+    child.stdout.setEncoding('utf8').on('data', (d: string) => {
+      keep(d);
+      if (stdout.length + d.length > FULL_LIMIT) overflow = true;
+      else stdout += d;
+    });
     child.stderr.setEncoding('utf8').on('data', keep);
     child.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: null, out: e.message });
+      keep(e.message);
+      settle(null);
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, out });
-    });
+    child.on('close', (code) => settle(code));
   });
 }
 
@@ -139,6 +192,8 @@ const tail = (text: string, lines = 12) =>
 export class StreamsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StreamsService.name);
   private sweep: NodeJS.Timeout | null = null;
+  /** Whether the store may hold commits its remote does not: true until a push has succeeded. */
+  private pushOwed = true;
   /** One thing at a time in the store's repository. */
   private storeQueue: Promise<unknown> = Promise.resolve();
   /** Clones being made or that failed: `<project id>/<name>`. What succeeded is on the disk and needs no record. */
@@ -251,7 +306,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       }
       // `XY path\0`, and for a rename the old path follows as an entry of its own
       const changed = new Map<string, string[]>();
-      const entries = status.out.split('\0').filter(Boolean);
+      const entries = status.stdout.split('\0').filter(Boolean);
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i]!;
         const file = e.slice(3);
@@ -286,14 +341,19 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
             `the store: ${top || 'its own files'} not committed: ${tail(commit.out, 3)}`,
           );
       }
-      if (commits) {
+      // A push that failed is tried again at the next sweep, whether or
+      // not anything changed since: the remote must not stay behind for
+      // want of another edit. Unknown at start, so the first sweep tries.
+      if (commits) this.pushOwed = true;
+      if (this.pushOwed) {
         const remote = await this.git(['remote']);
-        if (remote.code === 0 && remote.out.trim()) {
-          const push = await this.git(
-            ['push', '-q', remote.out.trim().split('\n')[0]!, 'HEAD'],
-            120_000,
-          );
-          if (push.code !== 0)
+        const name =
+          remote.code === 0 ? remote.stdout.trim().split('\n')[0] : '';
+        if (!name) this.pushOwed = false;
+        else {
+          const push = await this.git(['push', '-q', name, 'HEAD'], 120_000);
+          if (push.code === 0) this.pushOwed = false;
+          else if (commits)
             this.logger.warn(`the store: not pushed: ${tail(push.out, 3)}`);
         }
       }
@@ -525,7 +585,14 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
     const p = this.stream(projectId);
     const out: Clone[] = [];
     for (const c of clonesIn(p.path)) {
-      const job = this.jobs.get(`${p.id}/${c.name}`);
+      let job = this.jobs.get(`${p.id}/${c.name}`);
+      // A clone whose setup was begun and not seen to finish: the manager
+      // was restarted while it ran. It is there, and it is not ready.
+      if (!job && fs.existsSync(this.setupPending(p.path, c.name)))
+        job = {
+          state: 'failed',
+          message: `the clone is there; its setup did not finish (the manager was restarted while it ran). \`am use ${c.name} --again\` runs it again`,
+        };
       const b = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: c.path,
         timeoutMs: 10_000,
@@ -534,7 +601,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
         name: c.name,
         path: c.path,
         state: job?.state ?? 'ready',
-        branch: b.code === 0 ? b.out.trim() : null,
+        branch: b.code === 0 ? b.stdout.trim() : null,
         message: job?.message ?? null,
         landing: await this.landing(c.path),
       });
@@ -559,7 +626,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
   private async landing(cwd: string): Promise<Clone['landing']> {
     const git = async (...args: string[]) => {
       const r = await run('git', args, { cwd, timeoutMs: 10_000 });
-      return r.code === 0 ? r.out.trim() : null;
+      return r.code === 0 ? r.stdout.trim() : null;
     };
     // what the remote calls its main branch, as the clone was told when it was made
     let main = await git(
@@ -601,7 +668,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
    * beside it and moved in); a setup that fails leaves the clone there
    * for whoever works in it to finish.
    */
-  use(projectId: string, repositoryName: unknown): Clone {
+  use(projectId: string, repositoryName: unknown, again = false): Clone {
     const p = this.stream(projectId);
     if (typeof repositoryName !== 'string')
       throw new BadRequestException('"repository" names one in the registry');
@@ -611,10 +678,40 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
     const going = this.jobs.get(key);
     if (going && (going.state === 'cloning' || going.state === 'setting up'))
       throw new ConflictException(`${repo.name} is being cloned already`);
-    if (fs.existsSync(dest))
-      throw new ConflictException(
-        `${dest} is already there; a stream has one clone of a repository`,
-      );
+    if (fs.existsSync(dest)) {
+      // A clone that is there is not made again. Its setup can be run
+      // again, on request and never by itself: a setup need not be safe
+      // to repeat, and whoever asks knows what state the clone is in.
+      if (!again)
+        throw new ConflictException(
+          `${dest} is already there; a stream has one clone of a repository` +
+            (fs.existsSync(this.setupPending(p.path, repo.name)) ||
+            going?.state === 'failed'
+              ? ` (its setup did not finish: \`am use ${repo.name} --again\` runs it again)`
+              : ''),
+        );
+      if (!repo.setup)
+        throw new BadRequestException(
+          `${repo.name} has no setup command to run again`,
+        );
+      const job: { state: Clone['state']; message: string | null } = {
+        state: 'setting up',
+        message: null,
+      };
+      this.jobs.set(key, job);
+      void this.setUp(p, repo, dest, job).catch((err: Error) => {
+        job.state = 'failed';
+        job.message = err.message;
+      });
+      return {
+        name: repo.name,
+        path: dest,
+        state: 'setting up',
+        branch: null,
+        message: null,
+        landing: null,
+      };
+    }
     const job: { state: Clone['state']; message: string | null } = {
       state: 'cloning',
       message: null,
@@ -656,21 +753,42 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
     const seed = this.seedDir(repo.name);
     if (fs.existsSync(seed))
       await fsp.cp(seed, making, { recursive: true, force: false });
+    // Marked before the clone is in place: a manager restarted from here
+    // on finds a clone that looks whole and must not call it ready.
+    if (repo.setup)
+      await fsp.writeFile(this.setupPending(p.path, repo.name), repo.setup);
     await fsp.rename(making, dest);
-    if (repo.setup) {
-      job.state = 'setting up';
-      const setup = await run('bash', ['-lc', repo.setup], {
-        cwd: dest,
-        timeoutMs: 30 * 60_000,
-      });
-      if (setup.code !== 0) {
-        job.state = 'failed';
-        job.message = `the clone is there; its setup (${repo.setup}) failed: ${tail(setup.out)}`;
-        this.logger.warn(`stream ${p.name}: ${repo.name}: setup failed`);
-        return;
-      }
+    if (repo.setup) await this.setUp(p, repo, dest, job);
+    else this.jobs.delete(`${p.id}/${repo.name}`);
+    if (job.state !== 'failed')
+      this.logger.log(`stream ${p.name}: cloned ${repo.name}`);
+  }
+
+  /** Where it is noted that a clone's setup was begun and not seen to finish: beside the clone, out of its way. */
+  private setupPending(home: string, name: string): string {
+    return path.join(home, `.${name}.setup-pending`);
+  }
+
+  /** Runs a clone's setup command; the note that it is pending goes when it succeeds. */
+  private async setUp(
+    p: Project,
+    repo: Repository,
+    dest: string,
+    job: { state: Clone['state']; message: string | null },
+  ): Promise<void> {
+    job.state = 'setting up';
+    await fsp.writeFile(this.setupPending(p.path, repo.name), repo.setup ?? '');
+    const setup = await run('bash', ['-lc', repo.setup ?? 'true'], {
+      cwd: dest,
+      timeoutMs: 30 * 60_000,
+    });
+    if (setup.code !== 0) {
+      job.state = 'failed';
+      job.message = `the clone is there; its setup (${repo.setup}) failed: ${tail(setup.out)}`;
+      this.logger.warn(`stream ${p.name}: ${repo.name}: setup failed`);
+      return;
     }
+    await fsp.rm(this.setupPending(p.path, repo.name), { force: true });
     this.jobs.delete(`${p.id}/${repo.name}`);
-    this.logger.log(`stream ${p.name}: cloned ${repo.name}`);
   }
 }
