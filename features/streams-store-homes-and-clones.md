@@ -166,3 +166,21 @@ Not fixed: a clone job that failed stays in the manager's memory after
 its stream is deleted (a few bytes, until the next restart).
 
 Manager 184 unit and 167 end-to-end.
+
+## Report (2026-11-22, the follow-up round)
+
+The reviewer's second pass found, for streams:
+
+- **A setup that ran past its time and then exited politely was taken
+  for a success**, and the note that it was pending was removed. Past
+  its time is failed now, whatever it exits with.
+- **Something a timed-out setup had started could go on running** in
+  the clone after the failure was reported, if it had let go of the
+  output. The whole process group is killed after the grace,
+  whether or not the command itself has gone.
+- **The hook of a resumed session gave up after 30 seconds** while a
+  hand-back it had to deliver could take minutes to weigh, and the
+  hand-back was then marked delivered to nobody. It waits as long as
+  the other hooks.
+
+Manager 186 unit and 167 end-to-end.

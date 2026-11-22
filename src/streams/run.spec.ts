@@ -44,6 +44,34 @@ describe("a command of the manager's own", () => {
     expect(Date.now() - t0).toBeLessThan(5000);
   });
 
+  it('does not call a command that ran past its time a success, however politely it then exits', async () => {
+    const r = await run('bash', ['-c', "trap 'exit 0' TERM; sleep 60 & wait"], {
+      cwd,
+      timeoutMs: 200,
+      graceMs: 300,
+    });
+    expect(r.code).toBeNull();
+    expect(r.out).toContain('took too long');
+  });
+
+  it('stops what the command started too, even when that has let go of the output', async () => {
+    const mark = `am-run-spec-${process.pid}-${Date.now()}`;
+    // the shell goes at once when asked; what it started ignores the asking and writes nowhere
+    await run(
+      'bash',
+      ['-c', `(trap '' TERM; exec -a ${mark} sleep 60) >/dev/null 2>&1 & wait`],
+      { cwd, timeoutMs: 200, graceMs: 300 },
+    );
+    const alive = async () =>
+      (
+        await run('pgrep', ['-f', mark], { cwd, timeoutMs: 5000 })
+      ).stdout.trim() !== '';
+    const t0 = Date.now();
+    while ((await alive()) && Date.now() - t0 < 4000)
+      await new Promise((r) => setTimeout(r, 100));
+    expect(await alive()).toBe(false);
+  });
+
   it('is not held open by something the command left running with its pipes', async () => {
     const t0 = Date.now();
     // the shell exits at once; what it started keeps the output open for a minute

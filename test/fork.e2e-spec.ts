@@ -221,10 +221,21 @@ describe('forking an agent', () => {
     expect(
       (await hook.post('/api/dialog/handback', { on: 'resume' })).body.text,
     ).toBe(notice);
-    // and once it has taken a turn with the notice in hand, never again
+    // A session that asked and ended without a turn proves nothing about
+    // the next: one that takes a turn without having asked is still owed it.
+    await api.post(`/api/agents/${fork.id}/restart`);
+    await idle(fork.id);
+    const next = new Api(m.url);
+    next.bearer = /token ([0-9a-f]{64})/.exec(
+      await turn(fork.id, 'token'),
+    )![1]!;
+    expect(
+      (await next.post('/api/dialog/handback', { on: 'resume' })).body.text,
+    ).toBe(notice);
+    // and once it has taken a turn in a session that was handed the notice, never again
     await turn(fork.id, 'understood');
     expect(
-      (await hook.post('/api/dialog/handback', { on: 'resume' })).body,
+      (await next.post('/api/dialog/handback', { on: 'resume' })).body,
     ).toEqual({ text: null });
     // an agent that is not a fork asks the same on every resume, and is told nothing
     const elderSaid = await turn(source.id, 'token');
@@ -271,9 +282,11 @@ describe('forking an agent', () => {
     );
     expect(fs.existsSync(theirs)).toBe(true);
 
-    // Two forks into one place at the same moment share the copied file:
-    // neither may take it from under the other.
-    const [a, b] = await Promise.all(
+    // Two forks into one place would start from one copied file, and a
+    // fork that has not been spoken to starts from it again if it is
+    // restarted. So there is one such fork at a time: of two asked for at
+    // the same moment one is made, and the other is told why not yet.
+    const both = await Promise.all(
       ['first-twin', 'second-twin'].map((name) =>
         api.post(`/api/agents/${source.id}/fork`, {
           name,
@@ -281,19 +294,29 @@ describe('forking an agent', () => {
         }),
       ),
     );
-    expect([a.status, b.status]).toEqual([201, 201]);
-    await idle(a.body.agent.id);
-    await idle(b.body.agent.id);
-    expect(await turn(a.body.agent.id, 'whence')).toMatch(/^Forked from /);
-    // the first has its own conversation now; the second has not taken a turn, and can still be restarted
-    expect(fs.existsSync(copy)).toBe(true);
-    await api.post(`/api/agents/${b.body.agent.id}/restart`);
-    await idle(b.body.agent.id);
-    expect(await turn(b.body.agent.id, 'whence')).toMatch(/^Forked from /);
-    await until(
-      'the shared copy to be removed',
-      async () => !fs.existsSync(copy),
+    expect(both.map((r) => r.status).sort()).toEqual([201, 409]);
+    const won = both.find((r) => r.status === 201)!.body.agent as {
+      id: string;
+      name: string;
+    };
+    expect(both.find((r) => r.status === 409)!.body.message).toContain(
+      `"${won.name}" was forked from this agent into the same place and has not been spoken to yet`,
     );
+    await idle(won.id);
+    // restarted before its first turn, it still finds the conversation it begins as
+    await api.post(`/api/agents/${won.id}/restart`);
+    await idle(won.id);
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(await turn(won.id, 'whence')).toMatch(/^Forked from /);
+    await until('the copy to be removed', async () => !fs.existsSync(copy));
+    // and now that it has a conversation of its own, the other can be made
+    const later = await api.post(`/api/agents/${source.id}/fork`, {
+      name: 'the-other-twin',
+      projectId: stream.id,
+    });
+    expect([later.status, later.body.message]).toEqual([201, undefined]);
+    await idle(later.body.agent.id);
+    expect(await turn(later.body.agent.id, 'whence')).toMatch(/^Forked from /);
 
     // an archived agent can be forked: what it knew is not lost with it
     await api.post(`/api/agents/${twin.body.agent.id}/archive`);
@@ -302,6 +325,7 @@ describe('forking an agent', () => {
     });
     expect([revived.status, revived.body.message]).toEqual([201, undefined]);
     expect(revived.body.inherited).toBeGreaterThanOrEqual(3);
+    await idle(revived.body.agent.id);
 
     // an agent forks within its own project; into another is a person's to do
     expect(
@@ -312,5 +336,23 @@ describe('forking an agent', () => {
         })
       ).status,
     ).toBe(403);
+
+    // And after a restart of the manager, when an archived agent's
+    // transcript is not in memory until something asks for it: its dialog
+    // is brought in for the fork all the same.
+    const dataDir = m.dataDir;
+    await m.stop();
+    m = await startManager(daemon.url, dataDir);
+    api = new Api(m.url);
+    await api.login();
+    const cold = await api.post(`/api/agents/${twin.body.agent.id}/fork`, {
+      name: 'from-the-cold',
+    });
+    expect([cold.status, cold.body.message]).toEqual([201, undefined]);
+    expect(cold.body.inherited).toBe(revived.body.inherited);
+    const coldRecord = (
+      await api.get(`/api/agents/${cold.body.agent.id}/dialog`)
+    ).body.exchanges as { n: number; line: string }[];
+    expect(coldRecord[0]!.line).toContain('the logo is teal, never blue');
   }, 90000);
 });

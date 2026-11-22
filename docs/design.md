@@ -1086,15 +1086,21 @@ knows nothing, which is the hard part of every hand-over.
   the look at it, the copy of its conversation and the copy of its
   dialog, and the dialog is taken before the fork's session starts. If
   any of it fails, nothing of the fork is left.
-- Several forks of one agent into one place start from the same
-  copied file. It is replaced whole and never written in place, and
-  removed only when no fork still needs it (one that has not taken a
-  turn has no conversation of its own to restart from).
+- Two forks of one agent into one place would start from one copied
+  file (the vendor finds it by the conversation's name), and a fork
+  that has not been spoken to has no conversation of its own: it
+  starts from that file again if it is restarted. A second fork would
+  replace it with a later moment of the original. So there is one
+  such fork at a time: the second is refused, with the name of the
+  first, until the first has been spoken to. (The first version let
+  them share the file and counted references; a reviewer showed the
+  earlier fork then restarting into the later one's snapshot.)
 - **The fork is told what it is** when its session starts: its
   context says it is the original, in the original's place. The
-  notice is given at every start until the fork has ended a turn in a
-  session that asked for it: an answer can be lost on its way to the
-  hook. The
+  notice is given at every start until the fork has ended a turn in
+  the session that asked for it: an answer can be lost on its way to
+  the hook, and a session that asked and ended without a turn proves
+  nothing about the next. The
   session-start hook asks with `on: 'resume'` (Claude Code reports a
   forked session's start as source `fork`, later ones as `resume`; the
   hook is registered for both) and is answered with the notice
@@ -1695,9 +1701,11 @@ whether or not anything changed since.
 
 A command the manager runs for streams (git, a setup) has a time
 limit that holds whatever the command does: it runs in a process
-group of its own, the group is asked to stop and then killed, and the
-caller is answered even if something it started holds the pipes open,
-so a hung command cannot wedge a clone or the store. What is parsed
+group of its own, the group is asked to stop and then killed (also
+when the command itself has gone by then: what it started may have
+outlived it), and the caller is answered even if something holds the
+pipes open, so a hung command cannot wedge a clone or the store. One
+that ran past its time has failed, whatever it then exits with. What is parsed
 (a status, a count) is read whole, not from the tail kept for a
 person to read.
 

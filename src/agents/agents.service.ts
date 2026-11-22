@@ -983,6 +983,12 @@ export class AgentsService
     // lock: before this takes that lock, or what is copied from the
     // transcript (the dialog) would be read as empty, or never return.
     await this.items(sourceId, { tail: 1 });
+    // If that did not bring it in (the daemon went away meanwhile), the
+    // dialog would be asked for under the lock and wait for it for ever.
+    if (this.get(sourceId).archivedAt && !sourceLive.loaded)
+      throw unavailable(
+        "the archived agent's transcript could not be brought in just now; try the fork again",
+      );
     // Under the source's lock: no turn, take-back or restart of it can
     // come between the look at it and the copy, so the copy, the record
     // of where it was copied from and the dialog are of one moment.
@@ -1021,15 +1027,29 @@ export class AgentsService
       const sourceProject = this.projects.get(source.projectId);
       const cwd = project.path;
       // Where the fork works is where the vendor will look for the
-      // conversation. Several forks of one agent into one place share
-      // that file: it is replaced whole, never written in place, and
-      // goes only when no fork still needs it (see the ingest path).
+      // conversation, under the name it has: so two forks of one agent
+      // into one place would start from one file. A fork that has not
+      // been spoken to has no conversation of its own yet and starts
+      // from that file again if it is restarted; a second fork would
+      // replace it with a later moment of the original. So there is
+      // one at a time: the second waits until the first has its own.
       const to = this.adapters.conversationFile(
         source.profile,
         cwd,
         conversation,
       )!;
       const copied = to !== from;
+      if (copied) {
+        const waiting = this.db
+          .prepare(
+            'SELECT name FROM agents WHERE fork_copy = ? AND fork_conversation IS NOT NULL',
+          )
+          .get(to) as { name: string } | undefined;
+        if (waiting)
+          throw new ConflictException(
+            `"${waiting.name}" was forked from this agent into the same place and has not been spoken to yet: it still starts from the copied conversation, which another fork would replace with a later one. Speak to it first, or fork into another place`,
+          );
+      }
       if (copied) {
         await fs.mkdir(path.dirname(to), { recursive: true });
         const staged = `${to}.${randomUUID()}.copying`;
@@ -1091,6 +1111,8 @@ export class AgentsService
         this.db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
         this.live.delete(agent.id);
         await this.dropForkCopy(copied ? to : null);
+        // what others keep about an agent (the dialog it inherited) goes as for any agent removed
+        this.emit('removed', agent.id, projectId);
       };
       try {
         await beforeStart?.(agent.id);
@@ -1155,11 +1177,12 @@ export class AgentsService
     // Handed over, not yet known to have arrived: the answer may be lost
     // on its way to the hook. It is given again at every start until the
     // agent has ended a turn in a session that asked (see the ingest path).
-    this.forkNoticeAsked.add(id);
+    const session = this.get(id).currentSessionId;
+    if (session) this.forkNoticeAsked.set(id, session);
     return row.fork_notice;
   }
   /** Forks whose notice was asked for by a session of theirs since the manager started. */
-  private readonly forkNoticeAsked = new Set<string>();
+  private readonly forkNoticeAsked = new Map<string, string>();
 
   /**
    * Sends a user turn. Waits for a pending resync, refuses while a turn is
@@ -2261,10 +2284,13 @@ export class AgentsService
     if (turnEnded && !sl.attaching && sl.id === agent.currentSessionId) {
       this.keepConversation(agent);
       // a fork that was handed its notice and has now taken a turn has it in its conversation
-      if (this.forkNoticeAsked.delete(agent.id))
+      // (in the session that asked: one that asked and ended without a turn proves nothing about the next)
+      if (this.forkNoticeAsked.get(agent.id) === sl.id) {
+        this.forkNoticeAsked.delete(agent.id);
         this.db
           .prepare('UPDATE agents SET fork_notice = NULL WHERE id = ?')
           .run(agent.id);
+      }
     }
     // State from a session that is no longer current is history, not now;
     // state from a replay in flight is applied but announced only at its end.
@@ -2812,7 +2838,8 @@ export class AgentsService
                 {
                   type: 'command',
                   command: `${handback} --on resume`,
-                  timeout: 30,
+                  // as long as the others: it may have a hand-back to deliver that is still being weighed
+                  timeout: Math.ceil(this.config.dialogWaitMs / 1000) + 30,
                 },
               ],
             })),

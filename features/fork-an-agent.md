@@ -152,3 +152,31 @@ tested:
   worth knowing.
 
 Manager 184 unit and 167 end-to-end.
+
+## Report (2026-11-22, the follow-up round)
+
+The reviewer verified seven of its twelve earlier findings as fixed and
+found eight more things, all small, in what the fixes had left or
+made. For the fork:
+
+- **Sharing the copied file between two forks was the wrong fix.** An
+  earlier fork, restarted before it was first spoken to, would begin
+  as the later fork's snapshot; and a copy could be removed between
+  being put in place and its fork being recorded. There is now one
+  fork that has not been spoken to per place at a time: a second is
+  refused, naming the first, until the first has a conversation of
+  its own. Decided for the person: forking twice into one stream in a
+  row means speaking to the first in between.
+- **A fork of an archived agent could wait for ever** if the daemon
+  went away while its transcript was being brought in. It is refused
+  then, to be tried again.
+- **The notice's "has arrived" belonged to the agent, not the
+  session**: a session that asked and ended without a turn let the
+  next one's first turn mark it delivered. It is the asking session's
+  turn that counts now.
+- A failed start left the copied dialog behind. It goes with the rest.
+
+The end-to-end test now also forks an archived agent after a restart
+of the manager, which the first version of it did not do. Manager 186
+unit and 167 end-to-end. I stopped the review loop here: nothing in
+the second round lost data or wedged an agent in ordinary use.

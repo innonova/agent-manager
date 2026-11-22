@@ -126,11 +126,13 @@ export function run(
       return resolve({ code: null, out: (err as Error).message, stdout: '' });
     }
     let settled = false;
-    const timers: NodeJS.Timeout[] = [];
+    /** Past its time: whatever it exits with from here on, it did not succeed. */
+    let timedOut = false;
+    let deadline: NodeJS.Timeout | null = null;
     const settle = (code: number | null) => {
       if (settled) return;
       settled = true;
-      for (const t of timers) clearTimeout(t);
+      if (deadline) clearTimeout(deadline);
       resolve(
         overflow
           ? {
@@ -138,7 +140,7 @@ export function run(
               out: `${out}\n(its output is too large to read)`,
               stdout: '',
             }
-          : { code, out, stdout },
+          : { code: timedOut ? null : code, out, stdout },
       );
     };
     const signal = (sig: NodeJS.Signals) => {
@@ -148,22 +150,23 @@ export function run(
         /* gone already */
       }
     };
-    timers.push(
+    deadline = setTimeout(() => {
+      timedOut = true;
+      keep('\n(took too long; stopped)');
+      signal('SIGTERM');
+      const grace = opts.graceMs ?? 5000;
+      // The group is killed after the grace whether or not the command
+      // itself has gone by then: what it started may have outlived it,
+      // with its output pointed elsewhere, and would go on working in a
+      // clone whose setup has been reported as failed.
+      setTimeout(() => signal('SIGKILL'), grace).unref();
+      // whatever still holds its pipes, the caller is answered
       setTimeout(() => {
-        keep('\n(took too long; stopped)');
-        signal('SIGTERM');
-        const grace = opts.graceMs ?? 5000;
-        timers.push(setTimeout(() => signal('SIGKILL'), grace));
-        // whatever still holds its pipes, the caller is answered
-        timers.push(
-          setTimeout(() => {
-            child.stdout.destroy();
-            child.stderr.destroy();
-            settle(null);
-          }, grace + 3000),
-        );
-      }, opts.timeoutMs),
-    );
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(null);
+      }, grace + 3000).unref();
+    }, opts.timeoutMs);
     child.stdout.setEncoding('utf8').on('data', (d: string) => {
       keep(d);
       if (stdout.length + d.length > FULL_LIMIT) overflow = true;
