@@ -1,6 +1,6 @@
 ---
 title: ask an agent that stopped whether it can go on
-status: in-progress
+status: review
 priority: 5
 dependsOn: []
 ---
@@ -122,3 +122,88 @@ These are requirements; the reasoning stands beside each.
 - Agents on another machine, if anything about them differs.
 - A report of how nudges went (taken up, declined) beyond what the
   flow and the statistics show.
+
+## Report (2026-11-22)
+
+Built and deployed, gated alone. Off for every agent until a person
+turns it on, in the agent's edit form or with `am set <agent> --nudge`.
+
+### What changed
+
+- **agent-manager.** `src/nudge/`: what is read off the end of a
+  transcript, the reader's instructions and the reading of its answer,
+  the rule, the words of the nudge (`nudge.ts`, pure), and the service
+  that listens for a turn's end, reads, pages, waits, asks
+  (`nudge.service.ts`). The agent has `nudge`, the status has `nudge:
+  { state, at }`, `POST /api/agents/:id/nudge/hold` calls a pending
+  question off. Five `AGENT_MANAGER_NUDGE_*` settings. The model call
+  shared with the dialog's classifier moved to `src/util/run-model.ts`.
+  The statistics give the rule its "work since" (`StatsService.since`).
+- **agent-manager-ui.** A checkbox in the edit form; `NudgeNotice`
+  over the flow's input while the manager reads or waits, with the one
+  button that calls it off; the input under it disabled.
+- **agent-manager-cli.** `am set --nudge / --no-nudge`; the agent's
+  facts say when it is on.
+
+### Which model reads the last message
+
+Tried on 58 real last messages (28 of this project's agent, 30 of the
+xcom agent), with Fable's verdict as the reference: Sonnet 5.5 agreed
+on 56, Haiku 5.5 on 53. Haiku's misses were mostly "done" read as
+"paused", which only costs a question; one was a blocker it imagined,
+which would page for nothing. Sonnet is the default. All 30 of the
+xcom agent's stops were read as paused with work left: the agent this
+feature is for.
+
+### What was verified
+
+- Unit: 8 tests of the pure part. Manager 169 unit and 157
+  end-to-end; four new end-to-end tests with the fake agent and a
+  script for a reader: off means nothing is read; the wait, the
+  question, and no second question after a short answer; a person's
+  message makes the next stop askable again; paging and "done"; the
+  hold, a message while waiting, and a turn the person stopped.
+- UI: Playwright 42. A new test turns the setting on in the form,
+  sees the notice over the input (also at phone width), calls it off
+  and types.
+- CLI: 22 and 10.
+- **A real Claude agent in a separate instance** (Haiku, the real
+  Sonnet reader, the wait set to 20 s). Given a job in three parts and
+  told to stop after the first, it stopped; the reader took two
+  seconds ("Part 1 done; parts 2 and 3 remain…"); twenty seconds later
+  the manager asked; the agent wrote parts 2 and 3 without answering
+  the question first and said the job was finished; that stop was read
+  as done and it was left alone. Then a job it could not finish
+  without a decision: its stop was read as needing a person ("It needs
+  the person to choose the logo colour…") and nothing was asked.
+
+### Decided for the person
+
+- The wait is five minutes, the reader Sonnet 5.5, the cap twenty in
+  a row.
+- "Thirty minutes since the last nudge" is thirty minutes of the
+  agent's work, not of the clock: by the clock an agent that declined
+  would be asked again every half hour.
+- A message from a person makes the next stop askable again whatever
+  came before.
+- A reading that fails asks nothing.
+- The notice's button reads "I'll write instead".
+
+### Left open
+
+- **Not seen for real: being asked a second time** after thirty
+  minutes of work, and the cap. Both are in the tests with the script.
+- **Push delivery was not watched.** The page goes through the call
+  the chat's questions use; the separate instance had no phone
+  subscribed.
+- **A restart of the manager drops a waiting question.** The agent's
+  next stop is read afresh; one that was waiting when the manager
+  restarted stays idle until then.
+- **A turn begun by anything calls the question off silently**, the
+  background poke included.
+- Agents on another machine were not tried.
+
+### Noticed and left alone
+
+- The harness note says nothing about this. An agent learns of it
+  from the question itself.
