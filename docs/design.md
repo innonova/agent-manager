@@ -1927,12 +1927,42 @@ route's own words make no difference). `ArchiveService`
 error, done }, record }`) and a `project.archive` frame at every
   step.
 
-Not built: changes and the run log by stream (the changes view shows a
-clone's whole history), the store's commits naming who caused them,
-compressing what a stream that is away keeps, putting a single clone
-away, streams on another machine. The current UI shows a stream as a
-project whose repositories are its folder and its clones, and no
-longer lists one that is put away.
+**What a stream changed.** A stream's clones are whole repositories,
+with everybody's history in them, so the commit list of a stream
+(`GET /api/projects/:id/commits`) is the stream's own commits, newest
+first across its clones. A commit is the stream's when it is on one of
+the clone's branches and not on the repository's main as the clone
+knows it (work that has not landed, whoever made it); or a turn of one
+of the stream's agents is recorded as having made it; or its message
+names a feature of the stream in a trailer (`Feature:
+<stream>/<slug>`). The last two are what survives landing: a stream
+lands by rebasing, which gives the commit another hash, so a turn's
+record also keeps when the work was first committed and its subject
+(`commit_attributions.author_at`, `subject`), which a rebase keeps,
+and the trailer travels with the message into any clone. Everything
+else a clone holds is the repository's, listed with
+`?scope=repository`. A commit's feature is the one its trailer names,
+else the run in whose window in that clone it falls. Unread is by
+time (made after the reader last marked the clone as read), since a
+stream's work sits on several branches and a rebase reorders nothing
+that a hash could say. A commit an agent makes from the stream's home
+(`git -C clone commit`: the vendor reports the home, which is no
+repository) is recorded for whichever clone got a commit in the last
+two minutes that no turn is recorded for yet; one made from a
+directory inside a clone, for that clone.
+
+A run of a stream's feature records where each clone stood when it
+began and when it ended (`run.clones: [{ name, base, end }]`,
+`run_clones`): the feature is in the stream's folder, which is what a
+run's own `repo`, `baseCommit` and `endCommit` are about, and the work
+is in the clones.
+
+Not built: the store's commits naming who caused a file to change
+(the manager's own acts do), compressing what a stream that is away
+keeps, putting a single clone away, a view across streams of who
+touched a repository, streams on another machine. The current UI shows
+a stream as a project whose repositories are its folder and its
+clones, and no longer lists one that is put away.
 
 ## Runs
 
@@ -2294,6 +2324,7 @@ GET    /api/projects/:id/changes?base=<spec>                    -> { base, repos
 GET    /api/projects/:id/changes/file?path=<repo/path>&base=<spec> -> { path, base, before, after, binary, truncated }; before is the file at the base (null if absent there), after the working file (null if gone)
 POST   /api/projects/:id/changes/read { repo? }                 -> sets the caller's read cursor to HEAD in one or every repository (moved by the changes view on leaving it, and by marking a feature done)
 GET    /api/projects/:id/commits?repo=&feature=&agent=&since=&limit=&count= -> { commits: [{ repo, hash, shortHash, subject, author, at, agent, agentId, feature, sessionId, item, unread }], working: [{ repo, agent, files }], sinceCount }; the project's commits across its repositories, newest first; `agent`/`agentId` from the recorded turn that made it, else a run window, else null (the git author is then who); `feature` from the run window; `sessionId`/`item` (the transcript item index) when a turn made it and it was recorded; `unread` is after the caller's read cursor; `working` is the repos with uncommitted work and the agent of a run still open there; `sinceCount` is the unread commit count; `count=1` returns only that count; nothing is cached, so a rebase or amend shows at once
+GET    /api/projects/:id/commits?scope=repository               a stream's list is its own commits (on its branches and not on main, made by its agents' turns, or naming one of its features in a `Feature:` trailer); `scope=repository` lists everything its clones hold, as for a project
 GET    /api/projects/:id/commits/:repo/:hash[?path=<repo-relative>] -> without `path`, { repo, hash, subject, author, at, files: [{ path, status, oldPath? }] } (the commit against its first parent; a root commit's files are all added); with `path`, a FileDiff { path, base, before, after, binary, truncated } of that file (before its parent, after the commit); a hash that no longer exists is 404
 GET    /api/projects/:id/features                               -> { features: [...] } sorted in-progress, review, blocked, planned, done; within a status by priority then slug, except done which is newest first (file mtime, i.e. when it was marked done)
 POST   /api/projects/:id/features   { slug, title, body?, priority?, dependsOn?, repo? } -> creates <repo>/features/<slug>.md as planned; repo defaults to the primary

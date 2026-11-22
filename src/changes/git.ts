@@ -133,8 +133,10 @@ export interface CommitInfo {
   subject: string;
   /** The git author name recorded on the commit. */
   author: string;
-  /** Author time in milliseconds. */
+  /** When the commit was made as it stands (its committer time), in milliseconds: a rebase makes it anew. */
   at: number;
+  /** When the work was first committed (its author time), in milliseconds, which a rebase keeps; where the caller asked for it. */
+  authorAt?: number;
 }
 
 /**
@@ -169,6 +171,80 @@ export async function log(
     });
   }
   return commits;
+}
+
+/** A commit with the features its message names in `Feature:` trailers. */
+export interface TrailedCommit extends CommitInfo {
+  features: string[];
+}
+
+/**
+ * The most recent commits reachable from any of `revs` (branches, a
+ * remote's main, HEAD), newest first, each with its `Feature:` trailers.
+ * Null on git failure.
+ */
+export async function logOf(
+  cwd: string,
+  revs: string[],
+  limit: number,
+): Promise<TrailedCommit[] | null> {
+  const out = await git(cwd, [
+    '--no-optional-locks',
+    'log',
+    `--max-count=${limit}`,
+    '--format=%H%x1f%s%x1f%an%x1f%ct%x1f%(trailers:key=Feature,valueonly,separator=%x1e)%x1f%at',
+    '-z',
+    ...revs,
+    '--',
+  ]);
+  if (out === null) return null;
+  const commits: TrailedCommit[] = [];
+  for (const rec of out.split('\0')) {
+    if (!rec) continue;
+    const [hash, subject, author, ct, trailers, at] = rec.split('\x1f');
+    commits.push({
+      hash: hash!,
+      subject: subject ?? '',
+      author: author ?? '',
+      at: Number(ct) * 1000,
+      authorAt: Number(at) * 1000,
+      features: (trailers ?? '')
+        .split('\x1e')
+        .map((t) => t.trim())
+        .filter(Boolean),
+    });
+  }
+  return commits;
+}
+
+/** The commits `git rev-list` gives for these arguments, as a set; null on git failure. */
+export async function revSet(
+  cwd: string,
+  args: string[],
+): Promise<Set<string> | null> {
+  const out = await git(cwd, ['--no-optional-locks', 'rev-list', ...args]);
+  if (out === null) return null;
+  return new Set(
+    out
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+/** The branch things land on, as this clone knows it (`origin/main`); null without a remote that has one. */
+export async function mainRef(cwd: string): Promise<string | null> {
+  const sym = await git(cwd, [
+    'symbolic-ref',
+    '--quiet',
+    '--short',
+    'refs/remotes/origin/HEAD',
+  ]);
+  if (sym?.trim()) return sym.trim();
+  for (const guess of ['origin/main', 'origin/master'])
+    if (await git(cwd, ['rev-parse', '--verify', '--quiet', guess]))
+      return guess;
+  return null;
 }
 
 /** The set of commit hashes in `base..end` (end defaults to HEAD); null on git failure. */
@@ -243,17 +319,18 @@ export async function commitMeta(
     '--no-optional-locks',
     'show',
     '-s',
-    '--format=%H%x1f%s%x1f%an%x1f%ct',
+    '--format=%H%x1f%s%x1f%an%x1f%ct%x1f%at',
     hash,
   ]);
   if (out === null) return null;
-  const [h, subject, author, ct] = out.replace(/\0$/, '').split('\x1f');
+  const [h, subject, author, ct, at] = out.replace(/\0$/, '').split('\x1f');
   if (!h) return null;
   return {
     hash: h.trim(),
     subject: subject ?? '',
     author: author ?? '',
     at: Number(ct) * 1000,
+    authorAt: Number(at) * 1000,
   };
 }
 

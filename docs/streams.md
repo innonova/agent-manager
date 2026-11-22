@@ -325,5 +325,6 @@ Still to be found by running:
    `am use`; a stream's agents start in its home.
 2. Features from the store; the store's commits.
 3. The fresh UI, as the first stream, built on 1 and 2.
-4. Changes by stream, the run log per clone.
+4. Changes by stream, the run log per clone. (Built: `design.md`,
+   "What a stream changed".)
 5. Archive and revive, once a stream has finished. (Built ahead of 4.)

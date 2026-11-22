@@ -57,8 +57,9 @@ import type { Kept } from '../adapters/claude-conversation.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { DbService } from '../db/db.service.js';
-import { ProjectsService } from '../projects/projects.service.js';
-import { head } from '../changes/git.js';
+import { codeRepos, ProjectsService } from '../projects/projects.service.js';
+import type { Project } from '../projects/projects.service.js';
+import { commitMeta, head } from '../changes/git.js';
 import { spendOnlyUsage } from './usage.js';
 
 export interface Agent {
@@ -2442,9 +2443,21 @@ export class AgentsService
       const cwd = committed.cwd ?? agent.cwd;
       const repo =
         project.repos.find((r) => r.path === cwd) ??
+        // a directory inside one (never a stream's folder: its commits are the store's, made by the manager)
+        project.repos.find(
+          (r) => !r.folder && cwd.startsWith(r.path + path.sep),
+        ) ??
         project.repos.find((r) => r.path === agent.cwd);
       repoName = repo?.name;
       repoPath = repo?.path;
+      if (repo?.folder) repoName = repoPath = undefined;
+      // A stream's agent works from its home, which is no repository:
+      // `git -C clone commit` reports the home. The commit is then the
+      // newest one in whichever clone has just got one.
+      if (!repoName && project.kind === 'stream') {
+        void this.recordStreamCommit(agent, project, sessionId, itemIndex, at);
+        return;
+      }
     } catch {
       /* project gone: nothing to attribute to */
     }
@@ -2454,21 +2467,24 @@ export class AgentsService
       );
       return;
     }
-    void head(repoPath).then((hash) => {
+    const where = repoPath;
+    void head(where).then(async (hash) => {
       if (!hash) {
         this.logger.warn(
           `commit by ${agent.name} in ${repoName}: HEAD did not resolve; not attributed`,
         );
         return;
       }
+      const meta = await commitMeta(where, hash);
       this.db
         .prepare(
           `INSERT INTO commit_attributions
-             (project_id, repo, hash, agent_id, agent_name, session_id, item_index, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             (project_id, repo, hash, agent_id, agent_name, session_id, item_index, at, author_at, subject)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(project_id, repo, hash) DO UPDATE SET
              agent_id = excluded.agent_id, agent_name = excluded.agent_name,
-             session_id = excluded.session_id, item_index = excluded.item_index, at = excluded.at`,
+             session_id = excluded.session_id, item_index = excluded.item_index, at = excluded.at,
+             author_at = excluded.author_at, subject = excluded.subject`,
         )
         .run(
           agent.projectId,
@@ -2479,8 +2495,54 @@ export class AgentsService
           sessionId,
           itemIndex,
           at,
+          meta?.authorAt ?? null,
+          meta?.subject ?? null,
         );
     });
+  }
+
+  /** For a commit reported from a stream's home: the head of each clone that was committed within the last two minutes and that no turn is recorded for yet. */
+  private async recordStreamCommit(
+    agent: Agent,
+    project: Project,
+    sessionId: string,
+    itemIndex: number,
+    at: number,
+  ): Promise<void> {
+    let found = false;
+    for (const clone of codeRepos(project)) {
+      const meta = await commitMeta(clone.path, 'HEAD');
+      if (!meta || Math.abs(Date.now() - meta.at) > 120_000) continue;
+      const known = this.db
+        .prepare(
+          'SELECT 1 FROM commit_attributions WHERE project_id = ? AND repo = ? AND hash = ?',
+        )
+        .get(agent.projectId, clone.name, meta.hash);
+      if (known) continue;
+      found = true;
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO commit_attributions
+             (project_id, repo, hash, agent_id, agent_name, session_id, item_index, at, author_at, subject)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          agent.projectId,
+          clone.name,
+          meta.hash,
+          agent.id,
+          agent.name,
+          sessionId,
+          itemIndex,
+          at,
+          meta.authorAt ?? null,
+          meta.subject,
+        );
+    }
+    if (!found)
+      this.logger.warn(
+        `commit by ${agent.name} in the stream ${project.name}: no clone has a commit of the last two minutes that is not recorded; not attributed`,
+      );
   }
 
   /**

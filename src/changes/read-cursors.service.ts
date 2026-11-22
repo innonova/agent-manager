@@ -24,6 +24,16 @@ export class ReadCursorsService {
     return row?.commit_hash ?? null;
   }
 
+  /** When the user last marked the repository as read (unix ms); null when never. */
+  readAt(userId: string, projectId: string, repo: string): number | null {
+    const row = this.dbs.db
+      .prepare(
+        'SELECT read_at FROM read_cursors WHERE user_id = ? AND project_id = ? AND repo = ?',
+      )
+      .get(userId, projectId, repo) as { read_at: number } | undefined;
+    return row?.read_at ?? null;
+  }
+
   /** Moves the cursor to HEAD in the given repositories (all of the project's by default). */
   async markRead(
     userId: string,

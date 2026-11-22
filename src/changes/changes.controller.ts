@@ -55,6 +55,7 @@ export class CommitsController {
     @Query('since') since?: string,
     @Query('limit') limit?: string,
     @Query('count') count?: string,
+    @Query('scope') scope?: string,
   ) {
     if (count)
       return this.changes
@@ -66,6 +67,7 @@ export class CommitsController {
       agent,
       since,
       limit: limit ? Number(limit) : undefined,
+      scope,
     });
   }
 

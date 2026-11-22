@@ -18,7 +18,11 @@ import { DbService } from '../db/db.service.js';
 import { FeaturesService } from '../features/features.service.js';
 import { lastReport, readFeature } from '../features/feature-file.js';
 import type { FeatureStatus } from '../features/feature-file.js';
-import { ProjectsService, type Repo } from '../projects/projects.service.js';
+import {
+  codeRepos,
+  ProjectsService,
+  type Repo,
+} from '../projects/projects.service.js';
 import type { Project } from '../projects/projects.service.js';
 import { lastOwnActivity } from './run-activity.js';
 import { NO_SPEND, runSpend, snapshotOf, type RunSpend } from './run-spend.js';
@@ -60,6 +64,14 @@ export interface Run extends RunSpend {
   outcome: RunOutcome | null;
   baseCommit: string | null;
   endCommit: string | null;
+  /**
+   * For a stream's feature: where each of the stream's clones stood when
+   * the run began and when it ended (`base` null for a clone made during
+   * the run, `end` null while it is open). The feature itself is in the
+   * stream's folder, which is what `repo`, `baseCommit` and `endCommit`
+   * are about; the work is here. Empty for a project.
+   */
+  clones: { name: string; base: string | null; end: string | null }[];
   /** The agent's transcript indexes the run spans; `itemTo` is null while it is open. */
   itemFrom: number;
   itemTo: number | null;
@@ -231,13 +243,27 @@ export class RunsService
         `SELECT * FROM runs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY started_at DESC LIMIT ?`,
       )
       .all(...args, Math.min(filter.limit ?? 200, 1000)) as RunRow[];
-    return rows.map(toRun);
+    return rows.map((r) => toRun(r, this.clonesOf(r.id)));
+  }
+
+  private clonesOf(runId: string): Run['clones'] {
+    return (
+      this.db
+        .prepare(
+          'SELECT clone, base_commit, end_commit FROM run_clones WHERE run_id = ? ORDER BY clone',
+        )
+        .all(runId) as {
+        clone: string;
+        base_commit: string | null;
+        end_commit: string | null;
+      }[]
+    ).map((c) => ({ name: c.clone, base: c.base_commit, end: c.end_commit }));
   }
 
   get(id: string): Run | null {
     const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as
       RunRow | undefined;
-    return row ? toRun(row) : null;
+    return row ? toRun(row, this.clonesOf(row.id)) : null;
   }
 
   /** The run's transcript, as exported when it closed; empty when there is no file (an open or abandoned run). */
@@ -354,6 +380,14 @@ export class RunsService
         this.agents.itemCount(agent.id),
         JSON.stringify(snapshotOf(status.usage, agent.currentSessionId)),
       );
+    // a stream's work is in its clones: where each stands as the run begins
+    if (project.kind === 'stream')
+      for (const clone of codeRepos(project))
+        this.db
+          .prepare(
+            'INSERT OR IGNORE INTO run_clones (run_id, clone, base_commit) VALUES (?, ?, ?)',
+          )
+          .run(id, clone.name, await head(clone.path));
     this.announce(id);
   }
 
@@ -481,6 +515,15 @@ export class RunsService
             report = lastReport(file.body);
           }
         }
+        // and where each clone stands as it ends; one made during the run has no base
+        if (project.kind === 'stream')
+          for (const clone of codeRepos(project))
+            this.db
+              .prepare(
+                `INSERT INTO run_clones (run_id, clone, base_commit, end_commit) VALUES (?, ?, NULL, ?)
+                 ON CONFLICT(run_id, clone) DO UPDATE SET end_commit = excluded.end_commit`,
+              )
+              .run(row.id, clone.name, await head(clone.path));
       } catch {
         // the project is gone; the run keeps what it recorded at its start
       }
@@ -687,8 +730,12 @@ export class RunsService
   }
 }
 
-function toRun(r: RunRow): Run {
+function toRun(
+  r: RunRow,
+  clones: { name: string; base: string | null; end: string | null }[] = [],
+): Run {
   return {
+    clones,
     id: r.id,
     projectId: r.project_id,
     projectName: r.project_name,

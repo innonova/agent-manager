@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS turn_authors (
   user_id TEXT NOT NULL,
   PRIMARY KEY (daemon_session_id, seq)
 );
+-- Where each clone of a stream stood when a run began and when it ended:
+-- a stream's feature is in its folder, and its work is in its clones.
+CREATE TABLE IF NOT EXISTS run_clones (
+  run_id TEXT NOT NULL,
+  clone TEXT NOT NULL,
+  base_commit TEXT,
+  end_commit TEXT,
+  PRIMARY KEY (run_id, clone)
+);
 CREATE TABLE IF NOT EXISTS read_cursors (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -268,6 +277,20 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     ])
       if (!agentCols.includes(name!))
         this.db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);
+    // What a rebase keeps of a commit (when its work was first committed,
+    // and its subject), so that the turn that made it is still known once
+    // landing has given it another hash.
+    const attributionCols = (
+      this.db.prepare('PRAGMA table_info(commit_attributions)').all() as {
+        name: string;
+      }[]
+    ).map((c) => c.name);
+    if (!attributionCols.includes('author_at')) {
+      this.db.exec(
+        'ALTER TABLE commit_attributions ADD COLUMN author_at INTEGER',
+      );
+      this.db.exec('ALTER TABLE commit_attributions ADD COLUMN subject TEXT');
+    }
     // The session in which the agent's hook last asked about its chat: an
     // agent with a hook is told of unread messages there, one without by a steer.
     if (!agentCols.includes('hook_session'))
