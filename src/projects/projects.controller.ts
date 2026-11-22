@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -27,23 +28,34 @@ export class ProjectsController {
     private readonly hub: HubService,
   ) {}
 
-  /** This machine's projects, each with `host`, and (as a hub) the spokes' projects with prefixed ids. */
+  /**
+   * This machine's projects, each with `host`, and (as a hub) the spokes'
+   * projects with prefixed ids. Streams that are put away are not among
+   * them; `?archived=1` lists those instead, and nothing else.
+   */
   @Get()
-  async list(@Req() req: Request & { user?: User }): Promise<
+  async list(
+    @Req() req: Request & { user?: User },
+    @Query('archived') archived?: string,
+  ): Promise<
     {
       project: Project & { host: string; sshHost: string };
       agentCounts: AgentCounts;
     }[]
   > {
-    const local = this.projects.list().map((project) => ({
-      project: {
-        ...project,
-        host: this.config.hostName,
-        sshHost: this.config.sshHost,
-      },
-      agentCounts: this.agents.counts(project.id),
-    }));
-    if (!this.hub.enabled) return local;
+    const away = archived !== undefined && archived !== '0' && archived !== '';
+    const local = this.projects
+      .list()
+      .filter((p) => (p.archive?.state === 'archived') === away)
+      .map((project) => ({
+        project: {
+          ...project,
+          host: this.config.hostName,
+          sshHost: this.config.sshHost,
+        },
+        agentCounts: this.agents.counts(project.id),
+      }));
+    if (!this.hub.enabled || away) return local;
     const remote = (await this.hub.listRemoteProjects(
       req.user?.name ?? 'hub',
     )) as {

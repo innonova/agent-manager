@@ -46,6 +46,15 @@ export interface ManagerConfig {
   storeDir: string;
   /** How often the manager commits what changed in the store (ms); 0 never. */
   storeCommitMs: number;
+  /**
+   * Putting a stream away compacts an agent first when it was last
+   * active less than this long ago (its context is then still in the
+   * vendor's prompt cache, and compacting is cheap; later it costs what
+   * the revival's first turn would) and its context holds at least
+   * `archiveCompactMinTokens`.
+   */
+  archiveCompactWithinMs: number;
+  archiveCompactMinTokens: number;
   /** The address an agent on another machine reaches this manager at (its `AGENT_MANAGER_URL`); null means the listening address, which is right for local agents only. */
   agentUrl: string | null;
   /** How often, at most, a Claude agent is told the time beside a tool result (ms); 0 never. */
@@ -274,6 +283,12 @@ export function loadConfig(
     streamsDir,
     storeDir: env.AGENT_MANAGER_STORE_DIR || path.join(streamsDir, '.store'),
     storeCommitMs: Number(env.AGENT_MANAGER_STORE_COMMIT_MS ?? 30_000),
+    archiveCompactWithinMs: Number(
+      env.AGENT_MANAGER_ARCHIVE_COMPACT_WITHIN_MS ?? 50 * 60_000,
+    ),
+    archiveCompactMinTokens: Number(
+      env.AGENT_MANAGER_ARCHIVE_COMPACT_MIN_TOKENS ?? 50_000,
+    ),
     agentUrl: env.AGENT_MANAGER_AGENT_URL?.replace(/\/$/, '') || null,
     clockMs: Number(env.AGENT_MANAGER_CLOCK_MS ?? 10 * 60_000),
     clockHook: path.resolve(

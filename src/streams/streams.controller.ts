@@ -17,6 +17,12 @@ import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import type { Project } from '../projects/projects.service.js';
 import { Clone, Repository, StreamsService } from './streams.service.js';
+import {
+  ArchivePlan,
+  ArchiveProgress,
+  ArchiveRecord,
+  ArchiveService,
+} from './archive.service.js';
 
 /**
  * Streams (`docs/streams.md`). A stream is listed, read, changed and
@@ -30,6 +36,7 @@ export class StreamsController {
     @Inject(MANAGER_CONFIG) private readonly config: ManagerConfig,
     private readonly streams: StreamsService,
     private readonly agents: AgentsService,
+    private readonly archive: ArchiveService,
   ) {}
 
   @Post('streams')
@@ -96,5 +103,55 @@ export class StreamsController {
     return {
       clone: this.streams.use(id, body?.repository, body?.again === true),
     };
+  }
+
+  /** Where a stream is (put away, on its way, or simply there) and how the last attempt to move it went. */
+  @Get('projects/:id/archive')
+  archiveStatus(@Param('id') id: string): {
+    archive: Project['archive'];
+    progress: ArchiveProgress;
+    record: ArchiveRecord | null;
+  } {
+    return this.archive.status(id);
+  }
+
+  /** What putting the stream away would do and what stands in its way. Asks the clones' remotes: seconds. */
+  @Get('projects/:id/archive/plan')
+  async archivePlan(@Param('id') id: string): Promise<{ plan: ArchivePlan }> {
+    return { plan: await this.archive.plan(id) };
+  }
+
+  /**
+   * Puts a stream away: a person's to do. `discard: true` lets files
+   * that are not committed go with the clones; `compact: false` leaves
+   * the agents' contexts as they are. Refused (409, with the plan) when
+   * something stands in the way; otherwise answers at once and goes on
+   * in the background.
+   */
+  @Post('projects/:id/archive')
+  @HttpCode(202)
+  async putAway(
+    @Req() req: Request & { user?: User },
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ): Promise<{ project: Project }> {
+    return {
+      project: await this.archive.archive(
+        id,
+        body ?? {},
+        req.user?.name ?? 'someone',
+        req.user?.id,
+      ),
+    };
+  }
+
+  /** Brings a stream back: its clones made again, its agents told what landed meanwhile. Answers at once. */
+  @Post('projects/:id/revive')
+  @HttpCode(202)
+  revive(
+    @Req() req: Request & { user?: User },
+    @Param('id') id: string,
+  ): { project: Project } {
+    return { project: this.archive.revive(id, req.user?.name ?? 'someone') };
   }
 }

@@ -826,6 +826,8 @@ export class AgentsService
     const project = this.projects.get(projectId);
     if (this.deleting.has(projectId))
       throw new ConflictException('project is being deleted');
+    const away = this.projects.away(projectId);
+    if (away) throw new ConflictException(away);
     const profile = input.profile ?? project.defaultProfile;
     if (typeof input.name !== 'string' || input.name.trim() === '')
       throw new BadRequestException('"name" is required');
@@ -1024,6 +1026,8 @@ export class AgentsService
           ? source.projectId
           : String(input.projectId);
       const project = this.projects.get(projectId);
+      const away = this.projects.away(projectId);
+      if (away) throw new ConflictException(away);
       const sourceProject = this.projects.get(source.projectId);
       const cwd = project.path;
       // Where the fork works is where the vendor will look for the
@@ -1174,6 +1178,7 @@ export class AgentsService
       .prepare('SELECT fork_notice FROM agents WHERE id = ?')
       .get(id) as { fork_notice: string | null } | undefined;
     if (!row?.fork_notice) return null;
+    if (!this.hooked(this.get(id))) return null; // told with its first turn instead
     // Handed over, not yet known to have arrived: the answer may be lost
     // on its way to the hook. It is given again at every start until the
     // agent has ended a turn in a session that asked (see the ingest path).
@@ -1183,6 +1188,34 @@ export class AgentsService
   }
   /** Forks whose notice was asked for by a session of theirs since the manager started. */
   private readonly forkNoticeAsked = new Map<string, string>();
+
+  /**
+   * Something the agent is to be told when it next starts, after what
+   * it is already owed: that it was away with its stream, for how long,
+   * and what changed meanwhile. It travels the way a fork's notice does
+   * (the column is named for that first use): through the hook of the
+   * session that starts, until a turn has ended in a session that asked;
+   * or, for an agent the manager has no such hook in, ahead of the
+   * first message sent to it.
+   */
+  tellAtStart(id: string, text: string): void {
+    const waiting = this.startNotice(id);
+    this.db
+      .prepare('UPDATE agents SET fork_notice = ? WHERE id = ?')
+      .run(waiting ? `${waiting}\n\n${text}` : text, id);
+  }
+
+  private startNotice(id: string): string | null {
+    const row = this.db
+      .prepare('SELECT fork_notice FROM agents WHERE id = ?')
+      .get(id) as { fork_notice: string | null } | undefined;
+    return row?.fork_notice || null;
+  }
+
+  /** Whether the agent's sessions start with the manager's hooks: a vendor that has them, on this machine (the hook file is on this disk). */
+  private hooked(agent: Pick<Agent, 'profile' | 'host'>): boolean {
+    return !agent.host && this.adapters.forks(agent.profile);
+  }
 
   /**
    * Sends a user turn. Waits for a pending resync, refuses while a turn is
@@ -1206,6 +1239,8 @@ export class AgentsService
       images?: unknown;
       /** `false`: a steer the vendor cannot take now is not held in memory; the answer is `unsteerable` and the caller keeps the message (the chat does, durably). */
       hold?: boolean;
+      /** The manager's own turn while it puts the agent's stream away (the compaction): the one turn taken then. */
+      archiving?: boolean;
     } = {},
   ): Promise<'sent' | 'steered' | 'queued' | 'dropped' | 'unsteerable'> {
     if (typeof text !== 'string' || text.length === 0)
@@ -1218,6 +1253,15 @@ export class AgentsService
       if (agent.archivedAt) throw new ConflictException('agent is archived');
       if (this.deleting.has(agent.projectId))
         throw new ConflictException('project is being deleted');
+      const away = this.projects.away(agent.projectId);
+      if (
+        away &&
+        !(
+          opts.archiving &&
+          this.projects.get(agent.projectId).archive?.state === 'archiving'
+        )
+      )
+        throw new ConflictException(away);
       if (live.takingBack)
         throw new ConflictException(
           'a message is being taken back; send again in a moment',
@@ -1304,9 +1348,16 @@ export class AgentsService
         }
         return 'steered';
       }
+      // An agent with something to be told at its next start (it was away
+      // with its stream) and no hook to tell it through hears it ahead of
+      // the first thing said to it: in the message, where the person sees it too.
+      const told = this.hooked(agent) ? null : this.startNotice(agent.id);
+      const say = told
+        ? `[From the manager, not from a person]\n${told}\n\n${text}`
+        : text;
       // Working from the moment we commit to sending; the logged input
       // confirms it and a fast result may already move on to idle.
-      const lines = sl.adapter.turn(text, images);
+      const lines = sl.adapter.turn(say, images);
       if (lines.length === 0)
         throw unavailable('the session is not ready for a turn yet');
       const before = live.status;
@@ -1328,6 +1379,10 @@ export class AgentsService
           this.setState(agent, live, before.state, before.error);
         throw asHttp(err);
       }
+      if (told)
+        this.db
+          .prepare('UPDATE agents SET fork_notice = NULL WHERE id = ?')
+          .run(agent.id);
       return 'sent';
     });
   }

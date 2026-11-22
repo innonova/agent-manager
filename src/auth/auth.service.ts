@@ -391,6 +391,10 @@ export class AuthService
       const rest = p.slice(`/api/projects/${scope.projectId}`.length);
       if (rest === '' || rest === '/') return method === 'GET';
       if (rest === '/agents/restart') return false;
+      // putting its stream away and bringing it back are a person's to do; where it stands, anyone may ask
+      if (rest === '/archive' || rest === '/archive/plan')
+        return method === 'GET';
+      if (rest === '/revive') return false;
       return true; // agents, features, files, profiles, uploads of its own project
     }
     // Other projects: ask, do not touch. An agent may list another

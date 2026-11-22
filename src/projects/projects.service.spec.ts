@@ -46,4 +46,44 @@ describe('ProjectsService', () => {
       svc.create({ name: 'x', path: dir, defaultProfile: 1 }),
     ).toThrow('"defaultProfile"');
   });
+
+  it('finds a stream that was on its way when the manager stopped where it set out from', () => {
+    const home = (n: string) => path.join(dir, n);
+    const a = svc.createStream({
+      name: 'going',
+      home: home('going'),
+      defaultProfile: null,
+      delegation: 'free',
+      group: null,
+    });
+    const b = svc.createStream({
+      name: 'coming',
+      home: home('coming'),
+      defaultProfile: null,
+      delegation: 'free',
+      group: null,
+    });
+    const c = svc.createStream({
+      name: 'away',
+      home: home('away'),
+      defaultProfile: null,
+      delegation: 'free',
+      group: null,
+    });
+    expect(svc.away(a.id)).toBeNull();
+    svc.setArchive(a.id, 'archiving');
+    expect(svc.away(a.id)).toBe('the stream "going" is being put away');
+    svc.setArchive(b.id, 'archived');
+    const since = svc.get(b.id).archive!.at;
+    expect(svc.setArchive(b.id, 'reviving').archive).toEqual({
+      state: 'reviving',
+      at: since, // away since it was put away
+    });
+    svc.setArchive(c.id, 'archived');
+    svc.onModuleInit(); // the manager starts again
+    expect(svc.get(a.id).archive).toBeNull(); // nothing is removed before a stream is away: it is there
+    expect(svc.get(b.id).archive).toEqual({ state: 'archived', at: since }); // to be brought back again
+    expect(svc.get(c.id).archive?.state).toBe('archived');
+    expect(svc.away(c.id)).toContain('is put away; bring it back first');
+  });
 });

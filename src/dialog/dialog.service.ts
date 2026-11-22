@@ -558,6 +558,41 @@ export class DialogService implements OnModuleInit {
    * that starts from a fresh summary and its dialog word for word.
    */
   compact(agentId: string, userId?: string): void {
+    void this.beginCompact(agentId, userId, {}).catch(() => undefined);
+  }
+
+  /**
+   * The same, for a caller that waits: resolves when the compaction's
+   * turn has ended, rejects when it could not be asked for or did not
+   * end in its time. `archiving` is for the manager putting the agent's
+   * stream away, when no one else's turn is taken.
+   */
+  async compactNow(
+    agentId: string,
+    userId: string | undefined,
+    opts: { archiving?: boolean; timeoutMs?: number } = {},
+  ): Promise<void> {
+    if (!(await this.beginCompact(agentId, userId, opts)))
+      throw new ConflictException(
+        'the agent was given work while its dialog was being weighed',
+      );
+    // the command is a turn like any other: over when the agent is no longer in it
+    const until = Date.now() + (opts.timeoutMs ?? 15 * 60_000);
+    while (
+      ['working', 'starting'].includes(this.agents.status(agentId).state)
+    ) {
+      if (Date.now() > until)
+        throw new ConflictException('the compaction did not end in time');
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+
+  /** Refuses at once what cannot be asked for; otherwise weighs if need be and sends the command, and says whether it was sent. */
+  private beginCompact(
+    agentId: string,
+    userId: string | undefined,
+    opts: { archiving?: boolean },
+  ): Promise<boolean> {
     const agent = this.agents.get(agentId);
     const command = this.adapters.compactCommand(agent.profile);
     if (!command)
@@ -572,18 +607,8 @@ export class DialogService implements OnModuleInit {
       );
     if (this.compacting.has(agentId))
       throw new ConflictException('a compaction was already asked for');
-    const send = async () => {
-      if (!idle()) {
-        this.agents.note(
-          agentId,
-          'not compacted: the agent was given work while its dialog was being weighed',
-        );
-        return;
-      }
-      await this.agents.turn(agentId, command, userId);
-    };
     this.compacting.add(agentId);
-    void (async () => {
+    return (async () => {
       try {
         // A failed weighing does not stop the compaction that was asked for.
         if (this.config.dialogClassifier && !(await this.fresh(agentId))) {
@@ -593,12 +618,23 @@ export class DialogService implements OnModuleInit {
           );
           await this.classify(agentId).catch(() => undefined);
         }
-        await send();
+        if (!idle()) {
+          this.agents.note(
+            agentId,
+            'not compacted: the agent was given work while its dialog was being weighed',
+          );
+          return false;
+        }
+        await this.agents.turn(agentId, command, userId, {
+          archiving: opts.archiving,
+        });
+        return true;
       } catch (err) {
         this.logger.warn(
           `agent ${agentId}: compaction on request failed: ${(err as Error).message}`,
         );
         this.agents.note(agentId, `not compacted: ${(err as Error).message}`);
+        throw err;
       } finally {
         this.compacting.delete(agentId);
       }
@@ -682,14 +718,21 @@ export class DialogService implements OnModuleInit {
       !!this.db
         .prepare('SELECT 1 FROM dialog_owed WHERE agent_id = ?')
         .get(agentId);
+    // What a starting session is to be told besides (it is a fork; it was
+    // away with its stream): ahead of anything handed back.
+    const told =
+      on === 'resume' || on === 'start'
+        ? this.agents.takeForkNotice(agentId)
+        : null;
+    const with_ = (text: string | null) =>
+      told && text ? `${told}\n\n${text}` : (told ?? text);
     if (on === 'resume') {
-      const notice = this.agents.takeForkNotice(agentId);
-      if (notice || !owed()) return notice;
+      if (!owed()) return told;
       on = 'start';
     }
     if (on === 'start') {
       // Every new conversation asks; only one that replaces a lost one is owed anything.
-      if (!owed()) return null;
+      if (!owed()) return told;
       // An agent that sat unused long enough to lose its conversation was likely never weighed, or long ago.
       if (this.config.dialogClassifier)
         this.start(agentId, { onlyIfStale: true });
@@ -707,7 +750,7 @@ export class DialogService implements OnModuleInit {
         this.db
           .prepare('DELETE FROM dialog_owed WHERE agent_id = ?')
           .run(agentId);
-      return null;
+      return told;
     }
     const dir = this.dir(agentId);
     await fs.rm(dir, { recursive: true, force: true });
@@ -737,6 +780,6 @@ export class DialogService implements OnModuleInit {
       this.db
         .prepare('DELETE FROM dialog_owed WHERE agent_id = ?')
         .run(agentId);
-    return notice;
+    return with_(notice);
   }
 }

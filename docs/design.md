@@ -1768,11 +1768,95 @@ announced apart from the first UI's (`uiNextBuild` in `hello`, a
 `ui-next.build` frame when it changes), so a page of one never offers
 a reload for the other's deploy.
 
+**A stream put away.** A stream is meant to be something one starts,
+finishes and moves on from, and its clones are the bulk of what it
+leaves on the disk. Putting it away (`POST /api/projects/:id/archive`,
+`am stream archive`) keeps its folder in the store, its home, its
+agents and everything the manager holds of them (transcripts, chats,
+the dialog record, the link to each conversation), and removes its
+clones. Bringing it back (`POST …/revive`, `am stream revive`) makes
+the clones again. Both are a person's to do: an agent's token is
+refused. `ArchiveService` (`src/streams/archive.service.ts`).
+
+- **Nothing that exists only in a clone goes with it.** Before
+  anything is done the clones are looked at, each remote asked first
+  (`git fetch --prune`: a branch somebody deleted there is no longer a
+  place the commits are; a remote that cannot be reached is said, and
+  the clone judged by what it last knew). A branch with commits no
+  remote branch has is pushed, under its own name, which for a
+  stream's branches (`<stream>/<topic>`) is what its agents would
+  have done. Three things are not the manager's to settle and refuse
+  the whole request, each named: commits on the local branch that is
+  main's (pushing them would be landing without the gate: land them,
+  or move them to a branch), commits on a detached HEAD, and a clone
+  with commits and no remote. Files that are changed or new and not
+  committed, and stashes, are listed and go only with `discard: true`,
+  the person's word; ignored files are not counted, since dependencies
+  and build output are what is being reclaimed. An agent in a turn or
+  with a background job, and a clone still being made, refuse it too.
+  The refusal is one 409 (`archive-refused`) with every reason and the
+  plan; `GET …/archive/plan` gives the same without asking for
+  anything.
+- **The order makes it safe to fail.** The stream is marked
+  `archiving` (from here no person's turn is taken, no agent started,
+  no clone made); branches are pushed; agents are compacted and
+  stopped; the clones are looked at again, since minutes may have
+  passed; the record is written and committed in the store; the
+  stream is marked `archived`; and only then are the clones removed.
+  A failure before the mark leaves the stream where it was, with the
+  reason in `progress.error`. A manager restarted on the way finds an
+  `archiving` stream simply there and a `reviving` one `archived`
+  again (the clones it made are kept, and a second revival goes on
+  from them).
+- **The record is in the stream's folder**, `archived.json`: when, by
+  whom, each clone's source, branch, head and where main stood, the
+  branches that were pushed, and which agents were compacted. It
+  travels with the store and is readable without the manager; it is
+  removed when the stream is back, and the store's history keeps it.
+- **An agent is compacted first when that is cheap**, with the dialog
+  handed back as after any compaction: when it was active within
+  `AGENT_MANAGER_ARCHIVE_COMPACT_WITHIN_MS` (50 minutes: its context
+  is then still in the vendor's prompt cache) and its context holds at
+  least `AGENT_MANAGER_ARCHIVE_COMPACT_MIN_TOKENS`. Later than that a
+  compaction reads the whole context at full price, which is what the
+  first turn after a revival costs anyway, and a revival may never
+  come; so an agent that has been idle is stopped as it is, and the
+  plan says so for each. `compact: false` skips it for all. A
+  compaction that fails is an economy missed: the stream is put away
+  all the same, and the record says which were compacted. The
+  agents are not archived themselves: they are stopped, and the
+  stream's state is what keeps turns from them, so the ones a person
+  had archived before stay archived and the rest come back as they
+  were.
+- **Away, it is out of the list.** `GET /api/projects` leaves out
+  streams that are `archived` (`?archived=1` lists those and nothing
+  else), so every client that shows projects shows what is there. A
+  turn to one of its agents, a new agent, a fork into it and a clone
+  are refused with the reason and the command that brings it back.
+- **Back, each agent knows what it missed.** A revival clones each
+  repository in the record again (as the registry describes it now:
+  source, seed, setup; one the registry does not know, from where the
+  clone came, with no setup), checks out the branch the clone was on,
+  and gives each agent a notice for its next start: how long the
+  stream was away, and for each clone where it stood, where it is,
+  and what landed on main between (the count and the newest fifteen
+  subjects). The notice travels as a fork's does (the hook of the
+  starting session, until a turn has ended in a session that asked
+  for it); an agent the manager has no hook in (Codex, Copilot, one
+  on another machine) gets it ahead of the first message sent to it,
+  marked as the manager's, where the person sees it too. A clone that
+  cannot be made does not keep the stream away: it is back without
+  it, and the notice and the result say so.
+- **How far it is** is `GET …/archive` (`{ archive, progress: { step,
+error, done }, record }`) and a `project.archive` frame at every
+  step.
+
 Not built: changes and the run log by stream (the changes view shows a
 clone's whole history), the store's commits naming who caused them,
-archive and revive, streams on another machine, the fresh UI. The
-current UI shows a stream as a project whose repositories are its
-folder and its clones, which is enough to work in one.
+compressing what a stream that is away keeps, putting a single clone
+away, streams on another machine. The current UI shows a stream as a
+project whose repositories are its folder and its clones, and no
+longer lists one that is put away.
 
 ## Runs
 
@@ -2074,6 +2158,10 @@ GET    /api/repositories                                        -> { repositorie
 PUT    /api/repositories/:name      { source?, setup? }          -> { repository }; adds one or changes what is said about it
 PUT    /api/repositories/:name/seed { from, files: [path] }      -> { repository }; takes untracked files from a checkout on this machine into the seed copied into every new clone
 DELETE /api/repositories/:name                                  a person only; clones of it stay
+GET    /api/projects/:id/archive                                -> { archive: { state: archiving|archived|reviving, at } | null, progress: { step, error, done }, record }; where a stream is, how the last attempt to move it went, and (away) what it had cloned
+GET    /api/projects/:id/archive/plan                           -> { plan: { blocked: [reason], uncommitted: [{ clone, count, files, stashes }], pushes: [{ clone, branch, commits }], unreachable: [clone], clones, agents: [{ id, name, state, compact, why }], reclaimKb } }; what putting the stream away would do; asks the clones' remotes
+POST   /api/projects/:id/archive    { discard?, compact? }       -> 202 { project }; puts a stream away, in the background; 409 `archive-refused` with every reason and the plan; a person only
+POST   /api/projects/:id/revive                                 -> 202 { project }; brings it back, in the background; a person only
 GET    /api/projects/:id/clones                                 -> { clones: [{ name, path, state: cloning|setting up|ready|failed, branch, message, landing: { main, unlanded, behind, uncommitted } | null }] }; a stream only
 POST   /api/projects/:id/clones     { repository, again? }       -> 202 { clone }; clones a registered repository into the stream's home and sets it up, in the background; `again` runs the setup of a clone that is there once more
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.kind is `project` or `stream`; project.host names the machine, project.sshHost how to reach it over SSH, project.workspace its VS Code workspace file; as a hub, the spokes' projects too, ids `<host>:<id>`
@@ -2202,6 +2290,7 @@ ui.build         { id }                            // the served UI build change
 presence         { agents: { [agentId]: [{ userId, name, typing }] } }
 users.changed    { users }                         // an account was created, renamed, reset or removed
 project.counts   { projectId, counts }
+project.archive  { projectId, archive, progress }  // a stream put away, on its way there or back (a frame per step), or back (`archive` null)
 run.changed      { projectId, run }                 // a run opened, ended or was reviewed; the run as it now stands
 agent.state      { agentId, projectId, status }    // status = { state, error, lastActivityAt, background, model, queued, activity }
 agent.item       { agentId, item }                 // item = StoredItem { index, sessionId, seqFrom, seqTo, item }; same index again means an update
@@ -2274,50 +2363,52 @@ swept once a minute.
 
 ## Configuration
 
-| Variable                                  | Default                              | Meaning                                                                                                                                                                                                                          |
-| ----------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AGENT_MANAGER_LISTEN`                    | `0.0.0.0:4268`                       | bind address; behind haproxy for TLS                                                                                                                                                                                             |
-| `AGENT_MANAGER_DAEMON_URL`                | `ws://127.0.0.1:4267/`               | the daemon                                                                                                                                                                                                                       |
-| `AGENT_MANAGER_DATA_DIR`                  | `~/.local/state/agent-manager`       | `manager.db` and the `transcripts/` cache                                                                                                                                                                                        |
-| `AGENT_MANAGER_UI_DIR`                    | `<install>/ui` (next to `dist/`)     | built UI to serve at `/`; empty string disables                                                                                                                                                                                  |
-| `AGENT_MANAGER_PUBLIC_ORIGIN`             | unset                                | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies                                                                                                                             |
-| `AGENT_MANAGER_SECURE_COOKIE`             | `0`                                  | force Secure cookies                                                                                                                                                                                                             |
-| `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE` | `10`                                 | login throttle                                                                                                                                                                                                                   |
-| `AGENT_MANAGER_SESSION_TTL_MS`            | `2592000000` (30 days)               | how long a login (browser cookie or `am login`) lasts                                                                                                                                                                            |
-| `AGENT_MANAGER_TRUSTED_PROXIES`           | unset                                | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle                                                                                        |
-| `AGENT_MANAGER_BACKGROUND_POKE_MS`        | `1800000`                            | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables                                                                         |
-| `AGENT_MANAGER_RUN_IDLE_MS`               | `7200000` (2 h)                      | an open run whose agent has done nothing **of its own** for this long is closed as `abandoned` (see Runs: the manager's own poke does not count, and the clock stops while the agent works or waits on a permission); 0 disables |
-| `AGENT_MANAGER_RESIDENT_ITEMS`            | `500`                                | transcript items kept in memory per agent beyond what the transcript cache holds                                                                                                                                                 |
-| `AGENT_MANAGER_EVENTS_PING_MS`            | `25000`                              | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients                                                       |
-| `AGENT_MANAGER_ADMIN_PASSWORD`            | unset                                | creates the first admin on first start                                                                                                                                                                                           |
-| `AGENT_MANAGER_HOST_NAME`                 | the short hostname                   | how this machine is named in `project.host` and to a hub                                                                                                                                                                         |
-| `AGENT_MANAGER_SSH_HOST`                  | `AGENT_MANAGER_HOST_NAME`            | how a person's own machine reaches this one over SSH (`host` or `user@host`), reported as `project.sshHost` for the links that open a project in VS Code                                                                         |
-| `AGENT_MANAGER_AGENT_URL`                 | unset                                | the address an agent on another machine reaches this manager at, as its `AGENT_MANAGER_URL` (the listening address otherwise, which only local agents can use)                                                                   |
-| `AGENT_MANAGER_CLOCK_MS`                  | `600000` (10 min)                    | how often, at most, a Claude agent started here is told the time beside a tool result (see Agents: the clock); 0 never                                                                                                           |
-| `AGENT_MANAGER_CHAT_REPEAT_MS`            | `300000` (5 min)                     | how long after telling a working agent of unread chat messages it is told again, while they stay unread (see Chat)                                                                                                               |
-| `AGENT_MANAGER_CHAT_SWEEP_MS`             | `15000`                              | how often unread chat messages are looked over: delivered to an agent that is idle, said again to a working one without a hook; 0 leaves it to the events                                                                        |
-| `AGENT_MANAGER_NUDGE_MODEL`               | `claude-sonnet-5-5`                  | the model that reads a stopped agent's last message, for agents with `nudge` on (see Nudge); `off`: nobody is asked                                                                                                              |
-| `AGENT_MANAGER_NUDGE_READER`              | unset                                | the whole command instead, a JSON array: the instructions and the message on stdin, one line of JSON back; `off` as above                                                                                                        |
-| `AGENT_MANAGER_NUDGE_DELAY_MS`            | `300000` (5 min)                     | how long after a stop the question goes, the time a person has to say something first                                                                                                                                            |
-| `AGENT_MANAGER_NUDGE_WORK_MS`             | `1800000` (30 min)                   | an agent is asked again only after this much work since it was last asked                                                                                                                                                        |
-| `AGENT_MANAGER_NUDGE_MAX`                 | `20`                                 | no more than this many questions in a row without a word from a person                                                                                                                                                           |
-| `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL`   | `fable[1m]`                          | the model that weighs an agent's dialog, in the default command (see The dialog after a compaction); `off`: nothing is weighed, and only the recent exchanges are handed back whole                                              |
-| `AGENT_MANAGER_DIALOG_CLASSIFIER`         | unset                                | the whole command instead, a JSON array of program and arguments: it gets the instructions and the dialog on stdin and answers on stdout; `off` as above                                                                         |
-| `AGENT_MANAGER_DIALOG_BUDGET`             | `0.1`                                | the share of an agent's context window the handed-back dialog may take                                                                                                                                                           |
-| `AGENT_MANAGER_DIALOG_CLASSIFY_AT`        | `0.7`                                | the share of its window at which an agent's dialog is weighed, ahead of the compaction                                                                                                                                           |
-| `AGENT_MANAGER_DIALOG_WAIT_MS`            | `150000`                             | how long the hand-back waits for a weighing under way                                                                                                                                                                            |
-| `AGENT_MANAGER_DIALOG_CLASSIFIER_MS`      | `900000` (15 min)                    | how long one weighing may take                                                                                                                                                                                                   |
-| `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
-| `AGENT_MANAGER_UI_NEXT_DIR`               | `<install>/ui-next`                  | a second built UI, served under `/next/` beside the first; empty serves none                                                                                                                                                     |
-| `AGENT_MANAGER_STREAMS_DIR`               | `~/streams`                          | where streams live: each stream's home is a directory here. Nothing is made until the first stream. Every test harness sets it to a temp dir                                                                                     |
-| `AGENT_MANAGER_STORE_DIR`                 | `<streams>/.store`                   | the store: one git repository with a folder per stream, committed by the manager                                                                                                                                                 |
-| `AGENT_MANAGER_STORE_COMMIT_MS`           | `30000`                              | how often the manager commits what changed in the store; 0 never                                                                                                                                                                 |
-| `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
-| `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |
-| `AGENT_MANAGER_HARNESS_FILE`              | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none                                                  |
-| `AGENT_MANAGER_METHOD_FILE`               | `~/.config/agent-manager/method.md`  | how work is run here, for every project on the machine (see the method paragraph under Features); seeded from the shipped `method.md`, absent falls back to it                                                                   |
-| `AGENT_MANAGER_FRAMING_FILE`              | `~/.config/agent-manager/framing.md` | how a feature and a brief are written, the method's companion; seeded from the shipped `framing.md`, absent falls back to it                                                                                                     |
-| `AGENT_MANAGER_MODELS_FILE`               | `~/.config/agent-manager/models.md`  | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section                                             |
+| Variable                                   | Default                              | Meaning                                                                                                                                                                                                                          |
+| ------------------------------------------ | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_MANAGER_LISTEN`                     | `0.0.0.0:4268`                       | bind address; behind haproxy for TLS                                                                                                                                                                                             |
+| `AGENT_MANAGER_DAEMON_URL`                 | `ws://127.0.0.1:4267/`               | the daemon                                                                                                                                                                                                                       |
+| `AGENT_MANAGER_DATA_DIR`                   | `~/.local/state/agent-manager`       | `manager.db` and the `transcripts/` cache                                                                                                                                                                                        |
+| `AGENT_MANAGER_UI_DIR`                     | `<install>/ui` (next to `dist/`)     | built UI to serve at `/`; empty string disables                                                                                                                                                                                  |
+| `AGENT_MANAGER_PUBLIC_ORIGIN`              | unset                                | e.g. `https://agents.example`; accepted by the origin check and, when https, turns on Secure cookies                                                                                                                             |
+| `AGENT_MANAGER_SECURE_COOKIE`              | `0`                                  | force Secure cookies                                                                                                                                                                                                             |
+| `AGENT_MANAGER_LOGIN_ATTEMPTS_PER_MINUTE`  | `10`                                 | login throttle                                                                                                                                                                                                                   |
+| `AGENT_MANAGER_SESSION_TTL_MS`             | `2592000000` (30 days)               | how long a login (browser cookie or `am login`) lasts                                                                                                                                                                            |
+| `AGENT_MANAGER_TRUSTED_PROXIES`            | unset                                | comma-separated proxy addresses whose `X-Forwarded-For` gives the client address; set it behind HAProxy or every user shares one throttle                                                                                        |
+| `AGENT_MANAGER_BACKGROUND_POKE_MS`         | `1800000`                            | an agent idle with background jobs and no activity for this long is sent a short turn asking it to check on them (at most once per interval); 0 disables                                                                         |
+| `AGENT_MANAGER_RUN_IDLE_MS`                | `7200000` (2 h)                      | an open run whose agent has done nothing **of its own** for this long is closed as `abandoned` (see Runs: the manager's own poke does not count, and the clock stops while the agent works or waits on a permission); 0 disables |
+| `AGENT_MANAGER_RESIDENT_ITEMS`             | `500`                                | transcript items kept in memory per agent beyond what the transcript cache holds                                                                                                                                                 |
+| `AGENT_MANAGER_EVENTS_PING_MS`             | `25000`                              | interval of websocket pings on `/api/events`; keeps idle sockets alive through reverse proxies (haproxy drops idle tunnels after 50 s by default) and detects dead clients                                                       |
+| `AGENT_MANAGER_ADMIN_PASSWORD`             | unset                                | creates the first admin on first start                                                                                                                                                                                           |
+| `AGENT_MANAGER_HOST_NAME`                  | the short hostname                   | how this machine is named in `project.host` and to a hub                                                                                                                                                                         |
+| `AGENT_MANAGER_SSH_HOST`                   | `AGENT_MANAGER_HOST_NAME`            | how a person's own machine reaches this one over SSH (`host` or `user@host`), reported as `project.sshHost` for the links that open a project in VS Code                                                                         |
+| `AGENT_MANAGER_AGENT_URL`                  | unset                                | the address an agent on another machine reaches this manager at, as its `AGENT_MANAGER_URL` (the listening address otherwise, which only local agents can use)                                                                   |
+| `AGENT_MANAGER_CLOCK_MS`                   | `600000` (10 min)                    | how often, at most, a Claude agent started here is told the time beside a tool result (see Agents: the clock); 0 never                                                                                                           |
+| `AGENT_MANAGER_CHAT_REPEAT_MS`             | `300000` (5 min)                     | how long after telling a working agent of unread chat messages it is told again, while they stay unread (see Chat)                                                                                                               |
+| `AGENT_MANAGER_CHAT_SWEEP_MS`              | `15000`                              | how often unread chat messages are looked over: delivered to an agent that is idle, said again to a working one without a hook; 0 leaves it to the events                                                                        |
+| `AGENT_MANAGER_NUDGE_MODEL`                | `claude-sonnet-5-5`                  | the model that reads a stopped agent's last message, for agents with `nudge` on (see Nudge); `off`: nobody is asked                                                                                                              |
+| `AGENT_MANAGER_NUDGE_READER`               | unset                                | the whole command instead, a JSON array: the instructions and the message on stdin, one line of JSON back; `off` as above                                                                                                        |
+| `AGENT_MANAGER_NUDGE_DELAY_MS`             | `300000` (5 min)                     | how long after a stop the question goes, the time a person has to say something first                                                                                                                                            |
+| `AGENT_MANAGER_NUDGE_WORK_MS`              | `1800000` (30 min)                   | an agent is asked again only after this much work since it was last asked                                                                                                                                                        |
+| `AGENT_MANAGER_NUDGE_MAX`                  | `20`                                 | no more than this many questions in a row without a word from a person                                                                                                                                                           |
+| `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL`    | `fable[1m]`                          | the model that weighs an agent's dialog, in the default command (see The dialog after a compaction); `off`: nothing is weighed, and only the recent exchanges are handed back whole                                              |
+| `AGENT_MANAGER_DIALOG_CLASSIFIER`          | unset                                | the whole command instead, a JSON array of program and arguments: it gets the instructions and the dialog on stdin and answers on stdout; `off` as above                                                                         |
+| `AGENT_MANAGER_DIALOG_BUDGET`              | `0.1`                                | the share of an agent's context window the handed-back dialog may take                                                                                                                                                           |
+| `AGENT_MANAGER_DIALOG_CLASSIFY_AT`         | `0.7`                                | the share of its window at which an agent's dialog is weighed, ahead of the compaction                                                                                                                                           |
+| `AGENT_MANAGER_DIALOG_WAIT_MS`             | `150000`                             | how long the hand-back waits for a weighing under way                                                                                                                                                                            |
+| `AGENT_MANAGER_DIALOG_CLASSIFIER_MS`       | `900000` (15 min)                    | how long one weighing may take                                                                                                                                                                                                   |
+| `AGENT_MANAGER_WORKSPACES_DIR`             | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
+| `AGENT_MANAGER_UI_NEXT_DIR`                | `<install>/ui-next`                  | a second built UI, served under `/next/` beside the first; empty serves none                                                                                                                                                     |
+| `AGENT_MANAGER_STREAMS_DIR`                | `~/streams`                          | where streams live: each stream's home is a directory here. Nothing is made until the first stream. Every test harness sets it to a temp dir                                                                                     |
+| `AGENT_MANAGER_STORE_DIR`                  | `<streams>/.store`                   | the store: one git repository with a folder per stream, committed by the manager                                                                                                                                                 |
+| `AGENT_MANAGER_STORE_COMMIT_MS`            | `30000`                              | how often the manager commits what changed in the store; 0 never                                                                                                                                                                 |
+| `AGENT_MANAGER_ARCHIVE_COMPACT_WITHIN_MS`  | `3000000`                            | putting a stream away compacts an agent first when it was active less than this long ago (its context is still cached then)                                                                                                      |
+| `AGENT_MANAGER_ARCHIVE_COMPACT_MIN_TOKENS` | `50000`                              | and its context holds at least this much                                                                                                                                                                                         |
+| `AGENT_MANAGER_HUB_TOKEN`                  | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
+| `AGENT_MANAGER_SPOKES_FILE`                | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |
+| `AGENT_MANAGER_HARNESS_FILE`               | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none                                                  |
+| `AGENT_MANAGER_METHOD_FILE`                | `~/.config/agent-manager/method.md`  | how work is run here, for every project on the machine (see the method paragraph under Features); seeded from the shipped `method.md`, absent falls back to it                                                                   |
+| `AGENT_MANAGER_FRAMING_FILE`               | `~/.config/agent-manager/framing.md` | how a feature and a brief are written, the method's companion; seeded from the shipped `framing.md`, absent falls back to it                                                                                                     |
+| `AGENT_MANAGER_MODELS_FILE`                | `~/.config/agent-manager/models.md`  | the house view of the models, rendered into every note at `{{models}}`; seeded from the shipped `models.md` by the installer, absent falls back to it, empty means no Models section                                             |
 
 The built UI's static assets and the SPA fallback are served without
 authentication: the login page must load. Everything under `/api` except

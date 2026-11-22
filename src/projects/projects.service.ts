@@ -71,7 +71,17 @@ export interface Project {
   createdAt: number;
   /** The VS Code workspace file the manager keeps beside the repositories (see `workspace.ts`). */
   workspace: string;
+  /**
+   * A stream that is put away, or on its way there or back (see
+   * `ArchiveService`); null for everything that is simply there. While
+   * it is set, the stream's agents take no turns and it gets no new
+   * agents or clones.
+   */
+  archive: { state: ArchiveState; at: number } | null;
 }
+
+/** `archiving`: being put away; `archived`: put away, its clones off the disk; `reviving`: being brought back. */
+export type ArchiveState = 'archiving' | 'archived' | 'reviving';
 
 interface Row {
   id: string;
@@ -82,6 +92,8 @@ interface Row {
   default_profile: string | null;
   delegation: string | null;
   created_at: number;
+  archive_state?: string | null;
+  archive_at?: number | null;
 }
 
 /** A group from a request: a short label, or null (also for an empty one) to ungroup; undefined when the request does not say. */
@@ -122,7 +134,53 @@ export class ProjectsService implements OnModuleInit {
 
   /** Every project's workspace file is brought up to date at start: projects from before the file existed get one. */
   onModuleInit(): void {
+    // A stream that was on its way when the manager stopped is where it
+    // set out from: nothing is removed before it is `archived`, and a
+    // revival that did not finish is asked for again (the clones that
+    // were made are kept).
+    this.db
+      .prepare(
+        "UPDATE projects SET archive_state = NULL, archive_at = NULL WHERE archive_state = 'archiving'",
+      )
+      .run();
+    this.db
+      .prepare(
+        "UPDATE projects SET archive_state = 'archived' WHERE archive_state = 'reviving'",
+      )
+      .run();
     for (const p of this.list()) this.keepWorkspace(p);
+  }
+
+  /** Marks a stream as put away, on its way, or (null) simply there. */
+  setArchive(id: string, state: ArchiveState | null): Project {
+    const current = this.get(id);
+    this.db
+      .prepare(
+        'UPDATE projects SET archive_state = ?, archive_at = ? WHERE id = ?',
+      )
+      .run(
+        state,
+        state === null
+          ? null
+          : state === 'reviving' && current.archive
+            ? current.archive.at // away since it was put away, not since it began to come back
+            : Date.now(),
+        id,
+      );
+    return this.get(id);
+  }
+
+  /** Why nothing can be started or said in the project just now: it is a stream put away, or on its way there or back. Null when it is simply there. */
+  away(id: string): string | null {
+    const row = this.db
+      .prepare('SELECT name, archive_state FROM projects WHERE id = ?')
+      .get(id) as { name: string; archive_state: string | null } | undefined;
+    if (!row?.archive_state) return null;
+    return row.archive_state === 'archived'
+      ? `the stream "${row.name}" is put away; bring it back first (\`am stream revive ${row.name}\`)`
+      : row.archive_state === 'archiving'
+        ? `the stream "${row.name}" is being put away`
+        : `the stream "${row.name}" is being brought back; its clones are being made`;
   }
 
   /** Best effort: a directory the manager cannot write to, or a file it cannot parse, is logged, not an error. */
@@ -183,6 +241,7 @@ export class ProjectsService implements OnModuleInit {
         repos.length ? repos : [{ name: '', path: r.path }],
         this.config.workspacesDir,
       ),
+      archive: null,
     };
   }
 
@@ -211,6 +270,12 @@ export class ProjectsService implements OnModuleInit {
         [{ name: '', path: r.path }],
         this.config.workspacesDir,
       ),
+      archive:
+        r.archive_state === 'archiving' ||
+        r.archive_state === 'archived' ||
+        r.archive_state === 'reviving'
+          ? { state: r.archive_state, at: r.archive_at ?? r.created_at }
+          : null,
     };
   }
 

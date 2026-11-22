@@ -82,6 +82,29 @@ interface RepositoryRow {
   created_at: number;
 }
 
+/** What of a clone is nowhere else, and what it is: asked before a stream is put away. */
+export interface Unsaved {
+  name: string;
+  path: string;
+  /** Where it was cloned from; null for a repository made in place, with no remote. */
+  source: string | null;
+  /** Whether the remote could be asked just now. */
+  fetched: boolean;
+  /** The branch checked out; null when none is (a detached HEAD). */
+  branch: string | null;
+  head: string | null;
+  /** The branch things land on, and where the remote has it. */
+  main: { ref: string; sha: string } | null;
+  /** Branches with commits no remote branch has. `main`: the local branch that is main's, whose commits are unlanded work and not a branch to push. */
+  unpushed: { branch: string; commits: number; main: boolean }[];
+  /** Commits on a detached HEAD that no branch has. */
+  detached: number;
+  stashes: number;
+  /** Files changed or new and not committed (ignored files are not counted: dependencies and build output are what is being reclaimed). The first few by name. */
+  uncommitted: { count: number; files: string[] };
+  sizeKb: number;
+}
+
 /** What a machine-readable result may grow to before it is refused rather than parsed in part. */
 const FULL_LIMIT = 32 * 1024 * 1024;
 
@@ -432,7 +455,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
     return project;
   }
 
-  private stream(projectId: string): Project {
+  stream(projectId: string): Project {
     const p = this.projects.get(projectId);
     if (p.kind !== 'stream')
       throw new BadRequestException(
@@ -673,6 +696,8 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
    */
   use(projectId: string, repositoryName: unknown, again = false): Clone {
     const p = this.stream(projectId);
+    const away = this.projects.away(p.id);
+    if (away) throw new ConflictException(away);
     if (typeof repositoryName !== 'string')
       throw new BadRequestException('"repository" names one in the registry');
     const repo = this.repository(repositoryName);
@@ -736,9 +761,11 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
 
   private async makeClone(
     p: Project,
-    repo: Repository,
+    repo: Pick<Repository, 'name' | 'source' | 'setup'>,
     dest: string,
     job: { state: Clone['state']; message: string | null },
+    /** The branch to be on, when it is not the one a clone starts on and the remote has it. */
+    branch?: string | null,
   ): Promise<void> {
     const making = path.join(p.path, `.${repo.name}.cloning`);
     await fsp.rm(making, { recursive: true, force: true });
@@ -753,6 +780,12 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`stream ${p.name}: ${job.message}`);
       return;
     }
+    // before the setup, which may depend on what is checked out
+    if (branch)
+      await run('git', ['checkout', '-q', branch, '--'], {
+        cwd: making,
+        timeoutMs: 60_000,
+      });
     const seed = this.seedDir(repo.name);
     if (fs.existsSync(seed))
       await fsp.cp(seed, making, { recursive: true, force: false });
@@ -767,6 +800,175 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`stream ${p.name}: cloned ${repo.name}`);
   }
 
+  // ---- putting a stream away, and bringing it back ----------------------
+
+  /** Whether a clone is being made or set up in the stream right now. */
+  busy(projectId: string): string[] {
+    const out: string[] = [];
+    for (const [key, job] of this.jobs)
+      if (
+        key.startsWith(`${projectId}/`) &&
+        (job.state === 'cloning' || job.state === 'setting up')
+      )
+        out.push(key.slice(projectId.length + 1));
+    return out;
+  }
+
+  /**
+   * What of a clone is nowhere else: the question before it is removed.
+   * The remote is asked first (a branch somebody deleted there is no
+   * longer a place the commits are), and when it cannot be reached the
+   * answer is by what the clone last knew, and says so.
+   */
+  async unsaved(clone: { name: string; path: string }): Promise<Unsaved> {
+    const cwd = clone.path;
+    const git = async (...args: string[]) => {
+      const r = await run('git', args, { cwd, timeoutMs: 20_000 });
+      return r.code === 0 ? r.stdout.trim() : null;
+    };
+    const source = await git('remote', 'get-url', 'origin');
+    let fetched = false;
+    if (source) {
+      const f = await run('git', ['fetch', '--quiet', '--prune', 'origin'], {
+        cwd,
+        timeoutMs: 120_000,
+      });
+      fetched = f.code === 0;
+    }
+    const landing = await this.landing(cwd);
+    const branch = await git('rev-parse', '--abbrev-ref', 'HEAD');
+    const head = await git('rev-parse', 'HEAD');
+    const mainSha = landing ? await git('rev-parse', landing.main) : null;
+    // the local branch that is main's: what is ahead on it is unlanded work, not a branch to push
+    const mainLocal = landing ? landing.main.replace(/^[^/]+\//, '') : null;
+    const unpushed: Unsaved['unpushed'] = [];
+    for (const b of (
+      (await git('for-each-ref', '--format=%(refname:short)', 'refs/heads')) ??
+      ''
+    )
+      .split('\n')
+      .filter(Boolean)) {
+      const n = Number(
+        (await git('rev-list', '--count', b, '--not', '--remotes')) ?? 0,
+      );
+      if (n) unpushed.push({ branch: b, commits: n, main: b === mainLocal });
+    }
+    const detached =
+      branch === 'HEAD'
+        ? Number(
+            (await git(
+              'rev-list',
+              '--count',
+              'HEAD',
+              '--not',
+              '--remotes',
+              '--branches',
+            )) ?? 0,
+          )
+        : 0;
+    const stashes = ((await git('stash', 'list')) ?? '')
+      .split('\n')
+      .filter(Boolean).length;
+    const status = await run(
+      'git',
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      { cwd, timeoutMs: 60_000 },
+    );
+    const files: string[] = [];
+    if (status.code === 0) {
+      const entries = status.stdout.split('\0').filter(Boolean);
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i]!;
+        files.push(e.slice(3));
+        if (e[0] === 'R' || e[0] === 'C') i++;
+      }
+    }
+    const du = await run('du', ['-sk', cwd], { cwd, timeoutMs: 120_000 });
+    return {
+      name: clone.name,
+      path: clone.path,
+      source,
+      fetched,
+      branch: branch === 'HEAD' ? null : branch,
+      head,
+      main: landing && mainSha ? { ref: landing.main, sha: mainSha } : null,
+      unpushed,
+      detached,
+      stashes,
+      uncommitted: { count: files.length, files: files.slice(0, 40) },
+      sizeKb: du.code === 0 ? Number(du.stdout.split(/\s/)[0]) || 0 : 0,
+    };
+  }
+
+  /** Pushes a branch of a clone to its remote under its own name; null when that went, else what git said. */
+  async pushBranch(
+    clone: { path: string },
+    branch: string,
+  ): Promise<string | null> {
+    const r = await run(
+      'git',
+      [
+        'push',
+        '--quiet',
+        'origin',
+        `refs/heads/${branch}:refs/heads/${branch}`,
+      ],
+      { cwd: clone.path, timeoutMs: 5 * 60_000 },
+    );
+    return r.code === 0 ? null : tail(r.out, 6);
+  }
+
+  /** Takes a clone off the disk, with the notes beside it. */
+  async removeClone(home: string, name: string): Promise<void> {
+    await fsp.rm(path.join(home, name), { recursive: true, force: true });
+    await fsp.rm(this.setupPending(home, name), { force: true });
+    await fsp.rm(path.join(home, `.${name}.cloning`), {
+      recursive: true,
+      force: true,
+    });
+  }
+
+  /**
+   * Makes a clone the stream had before it was put away, and waits for
+   * it: as the registry describes the repository now, or from where the
+   * clone came when the registry does not know it (one made by hand: no
+   * setup is known for it). One that is there already is left as it is.
+   * Null when it is there and ready; otherwise what went wrong.
+   */
+  async bringBack(
+    projectId: string,
+    clone: { name: string; source: string | null; branch: string | null },
+  ): Promise<string | null> {
+    const p = this.stream(projectId);
+    const dest = path.join(p.path, clone.name);
+    if (fs.existsSync(dest)) return null;
+    const row = this.db
+      .prepare('SELECT * FROM repositories WHERE name = ?')
+      .get(clone.name) as RepositoryRow | undefined;
+    const source = row?.source ?? clone.source;
+    if (!source)
+      return 'it had no remote, and the registry does not know it: nowhere to clone it from';
+    const key = `${p.id}/${clone.name}`;
+    const job: { state: Clone['state']; message: string | null } = {
+      state: 'cloning',
+      message: null,
+    };
+    this.jobs.set(key, job);
+    try {
+      await this.makeClone(
+        p,
+        { name: clone.name, source, setup: row?.setup ?? null },
+        dest,
+        job,
+        clone.branch,
+      );
+    } catch (err) {
+      job.state = 'failed';
+      job.message = (err as Error).message;
+    }
+    return job.state === 'failed' ? job.message : null;
+  }
+
   /** Where it is noted that a clone's setup was begun and not seen to finish: beside the clone, out of its way. */
   private setupPending(home: string, name: string): string {
     return path.join(home, `.${name}.setup-pending`);
@@ -775,7 +977,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
   /** Runs a clone's setup command; the note that it is pending goes when it succeeds. */
   private async setUp(
     p: Project,
-    repo: Repository,
+    repo: Pick<Repository, 'name' | 'setup'>,
     dest: string,
     job: { state: Clone['state']; message: string | null },
   ): Promise<void> {

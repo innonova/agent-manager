@@ -23,7 +23,8 @@ type PermissionItem = Extract<Item, { kind: 'permission' }>;
 export class FakeAdapter implements AgentAdapter {
   /** As Claude's: the fake agent answers it like any message, which is enough to see it was sent. */
   readonly compactCommand = '/compact';
-  readonly forks = true;
+  /** As Claude: unless a test wants to see an agent the manager has no hooks in (`AGENT_MANAGER_FAKE_NO_HOOKS`), as Codex and Copilot are. */
+  readonly forks = !process.env.AGENT_MANAGER_FAKE_NO_HOOKS;
   /**
    * The fake agent keeps no conversation on disk. A test that wants to
    * see the manager keep one, put one back or find one gone names a

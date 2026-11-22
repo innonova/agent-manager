@@ -1,9 +1,10 @@
 # Streams: work detached from what it works on
 
 A proposal, written down on 2026-11-22 from the conversation of that
-day. The first step is built (the store, homes, clones, the registry,
-`am use`; an agent of a stream starts in its home): what exists is
-described in `design.md`, "Streams". The rest of this document is
+day. Most of it is built (the store, homes, clones, the registry, `am use`;
+an agent of a stream starts in its home; forking an agent into one;
+putting a stream away and bringing it back; the fresh UI): what exists
+is described in `design.md`, "Streams". The rest of this document is
 still the plan. It sits beside
 `design.md`, which describes the manager as it is; when a part of this
 is built, its description moves there.
@@ -196,6 +197,13 @@ commit in these repositories".
 
 ## Archive and revive
 
+Built 2026-11-22 (`design.md`, "A stream put away"; `am stream
+archive`, `am stream revive`). What follows is the plan it was built
+from; where the build differs, `design.md` says how: an agent is
+compacted only while its context is still cached, and uncommitted
+files go on the person's word rather than being asked about one by
+one.
+
 **Decided.** A stream can be put away and brought back, to fix a bug
 say. Archiving keeps the stream's folder, its agents and their
 context, and removes the clones, which are the bulk and can be made
@@ -318,4 +326,4 @@ Still to be found by running:
 2. Features from the store; the store's commits.
 3. The fresh UI, as the first stream, built on 1 and 2.
 4. Changes by stream, the run log per clone.
-5. Archive and revive, once a stream has finished.
+5. Archive and revive, once a stream has finished. (Built ahead of 4.)

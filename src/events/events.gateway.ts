@@ -18,6 +18,7 @@ import { DaemonClients } from '../daemon/daemon-clients.js';
 import { FeaturesService } from '../features/features.service.js';
 import { NotesService } from '../notes/notes.service.js';
 import { RunsService } from '../runs/runs.service.js';
+import { ArchiveService } from '../streams/archive.service.js';
 import { HubService } from '../hub/hub.service.js';
 import { originAllowed } from '../origin.js';
 
@@ -67,6 +68,7 @@ export class EventsGateway
     private readonly chat: ChatService,
     private readonly runs: RunsService,
     private readonly hub: HubService,
+    private readonly archive: ArchiveService,
   ) {}
 
   afterInit(): void {
@@ -116,6 +118,10 @@ export class EventsGateway
     );
     this.agents.on('counts', (projectId, counts) =>
       this.broadcast({ type: 'project.counts', projectId, counts }),
+    );
+    // a stream put away, on its way there or back, or back: clients drop it from what they show, or take it up again
+    this.archive.on('changed', (projectId, archive, progress) =>
+      this.broadcast({ type: 'project.archive', projectId, archive, progress }),
     );
     this.daemons.local.on('connected', () =>
       this.broadcast({ type: 'daemon', connected: true }),

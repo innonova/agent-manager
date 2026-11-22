@@ -306,6 +306,11 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     // A label the tree groups projects and streams under; null is ungrouped.
     if (!projectCols.includes('group_name'))
       this.db.exec('ALTER TABLE projects ADD COLUMN group_name TEXT');
+    // A stream put away: `archiving`, `archived` or `reviving`, and since when.
+    if (!projectCols.includes('archive_state')) {
+      this.db.exec('ALTER TABLE projects ADD COLUMN archive_state TEXT');
+      this.db.exec('ALTER TABLE projects ADD COLUMN archive_at INTEGER');
+    }
     // Projects created before repos existed: their path becomes the single
     // repo. Not a stream's: its path is its home, and it has no such list.
     const legacy = this.db
