@@ -1630,7 +1630,13 @@ runs the setup with a login shell; it answers at once and `GET
 …/clones` says how far it is. The clone appears whole or not at all; a
 setup that fails leaves the clone, with what the command said, for
 whoever works there to finish. A clone's state is in memory only: what
-succeeded is on the disk.
+succeeded is on the disk. For a clone that is there, `GET …/clones`
+also says what of it is not landed (`landing`): the commits on its
+branches that the repository's main does not have, how far its
+checked-out branch is behind main, and the files not committed, all
+against main as the clone last fetched it (nothing is fetched to
+answer). That is the question a clone of one's own raises: what is
+still only here.
 
 **What an agent of a stream is told**: the harness note's `{{work}}`,
 `{{featureFiles}}` and `{{featureStart}}` render for a stream or for a
@@ -1973,7 +1979,7 @@ GET    /api/repositories                                        -> { repositorie
 PUT    /api/repositories/:name      { source?, setup? }          -> { repository }; adds one or changes what is said about it
 PUT    /api/repositories/:name/seed { from, files: [path] }      -> { repository }; takes untracked files from a checkout on this machine into the seed copied into every new clone
 DELETE /api/repositories/:name                                  a person only; clones of it stay
-GET    /api/projects/:id/clones                                 -> { clones: [{ name, path, state: cloning|setting up|ready|failed, branch, message }] }; a stream only
+GET    /api/projects/:id/clones                                 -> { clones: [{ name, path, state: cloning|setting up|ready|failed, branch, message, landing: { main, unlanded, behind, uncommitted } | null }] }; a stream only
 POST   /api/projects/:id/clones     { repository }               -> 202 { clone }; clones a registered repository into the stream's home and sets it up, in the background
 GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.kind is `project` or `stream`; project.host names the machine, project.sshHost how to reach it over SSH, project.workspace its VS Code workspace file; as a hub, the spokes' projects too, ids `<host>:<id>`
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, delegation?, host? }   (`path` alone is accepted as a one-repo shorthand; `delegation` is `free` (default) or `on-request`; `host` creates on that spoke)

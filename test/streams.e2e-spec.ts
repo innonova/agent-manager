@@ -314,6 +314,36 @@ describe('a stream', () => {
     expect(
       (await api.get('/api/repositories')).body.repositories[0].usedBy,
     ).toEqual(['tidy']);
+    // nothing of it is unlanded yet; then a branch with a commit, a changed file, and main moving on
+    const landingOf = async () =>
+      (
+        (await api.get(`/api/projects/${tidy.id}/clones`)).body.clones as any[]
+      ).find((c) => c.name === 'thing').landing;
+    expect(await landingOf()).toEqual({
+      main: 'origin/main',
+      unlanded: 0,
+      behind: 0,
+      uncommitted: 0,
+    });
+    git(at, 'checkout', '-q', '-b', 'tidy/shelves');
+    fs.writeFileSync(path.join(at, 'shelves.txt'), 'three\n');
+    git(at, 'add', '-A');
+    git(at, 'commit', '-qm', 'shelves');
+    fs.writeFileSync(path.join(at, 'scratch.txt'), 'x\n');
+    fs.appendFileSync(path.join(at, 'CLAUDE.md'), 'more\n');
+    fs.writeFileSync(path.join(source, 'elsewhere.txt'), 'someone else\n');
+    git(source, 'add', 'elsewhere.txt');
+    git(source, 'commit', '-qm', 'someone else landed');
+    git(at, 'fetch', '-q');
+    expect(await landingOf()).toEqual({
+      main: 'origin/main',
+      unlanded: 1,
+      behind: 1,
+      uncommitted: 2,
+    });
+    git(at, 'checkout', '-q', '--', 'CLAUDE.md');
+    fs.rmSync(path.join(at, 'scratch.txt'));
+    git(at, 'checkout', '-q', 'main');
     // one clone of a repository per stream
     expect(
       (

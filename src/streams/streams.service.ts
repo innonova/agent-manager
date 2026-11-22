@@ -57,6 +57,22 @@ export interface Clone {
   branch: string | null;
   /** The end of what the failing command said. */
   message: string | null;
+  /**
+   * What of it is not landed, for a clone that is there: against the
+   * repository's main as the clone last fetched it (nothing is fetched
+   * to answer this). Null when it cannot be told: no remote, or a
+   * remote without a main branch the clone knows of.
+   */
+  landing: {
+    /** The branch things land on, as the clone knows it (`origin/main`). */
+    main: string;
+    /** Commits on the clone's branches that main does not have. */
+    unlanded: number;
+    /** Commits main has that the checked-out branch does not. */
+    behind: number;
+    /** Files changed or new in the working tree and not committed. */
+    uncommitted: number;
+  } | null;
 }
 
 interface RepositoryRow {
@@ -520,6 +536,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
         state: job?.state ?? 'ready',
         branch: b.code === 0 ? b.out.trim() : null,
         message: job?.message ?? null,
+        landing: await this.landing(c.path),
       });
     }
     for (const [key, job] of this.jobs) {
@@ -532,9 +549,48 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
         state: job.state,
         branch: null,
         message: job.message,
+        landing: null,
       });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** What of a clone is not on its repository's main: see `Clone.landing`. */
+  private async landing(cwd: string): Promise<Clone['landing']> {
+    const git = async (...args: string[]) => {
+      const r = await run('git', args, { cwd, timeoutMs: 10_000 });
+      return r.code === 0 ? r.out.trim() : null;
+    };
+    // what the remote calls its main branch, as the clone was told when it was made
+    let main = await git(
+      'symbolic-ref',
+      '--quiet',
+      '--short',
+      'refs/remotes/origin/HEAD',
+    );
+    if (!main)
+      for (const guess of ['origin/main', 'origin/master'])
+        if ((await git('rev-parse', '--verify', '--quiet', guess)) !== null) {
+          main = guess;
+          break;
+        }
+    if (!main) return null;
+    const unlanded = await git(
+      'rev-list',
+      '--count',
+      '--branches',
+      '--not',
+      main,
+    );
+    const behind = await git('rev-list', '--count', `HEAD..${main}`);
+    const status = await git('status', '--porcelain');
+    if (unlanded === null || behind === null || status === null) return null;
+    return {
+      main,
+      unlanded: Number(unlanded),
+      behind: Number(behind),
+      uncommitted: status ? status.split('\n').length : 0,
+    };
   }
 
   /**
@@ -574,6 +630,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       state: 'cloning',
       branch: null,
       message: null,
+      landing: null,
     };
   }
 
