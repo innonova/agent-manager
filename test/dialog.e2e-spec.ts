@@ -279,7 +279,7 @@ describe('the dialog handed back after a compaction', () => {
       .map((i) => i.text as string);
     expect(lines.pop()).toMatch(/^dialog handed back on request: /);
     expect(lines.pop()).toMatch(
-      /^dialog handed back: 3 exchanges word for word \(2 recent, 1 earlier\), 3 as index lines, about \d+ tokens; weighed by /,
+      /^dialog handed back: 3 exchanges word for word \(2 recent, 1 earlier\), 3 as index lines, about \d+ tokens in 1 file it reads when it next acts; weighed by /,
     );
   }, 60000);
 });

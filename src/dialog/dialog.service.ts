@@ -583,6 +583,7 @@ export class DialogService implements OnModuleInit {
     this.agents.note(
       agentId,
       `dialog handed back${onRequest ? ' on request' : ''}: ${whole} exchange${whole === 1 ? '' : 's'} word for word (${sel.recent.length} recent, ${sel.kept.length} earlier), ${sel.indexed.length} as index lines, about ${sel.tokens < 1000 ? sel.tokens : `${Math.round(sel.tokens / 1000)}k`} tokens` +
+        ` in ${paths.length} file${paths.length === 1 ? '' : 's'} it reads when it next acts` +
         (last
           ? `; weighed by ${last.model}`
           : sel.indexed.length

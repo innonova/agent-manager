@@ -455,7 +455,7 @@ export function renderNotice(
       ? 'The manager keeps your dialog with the person outside your context, word for word, and this copy of it was asked for now, without a compaction. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. What your context holds of earlier conversations has been through one or more summaries; where it and these files differ, the files are what was said.'
       : 'Your context was just replaced by a summary of itself. The manager keeps your dialog with the person outside your context, word for word, and hands it back in the files below. It is both sides: what you wrote to the person and they did not dispute is as settled as what they wrote, including reasons, caveats and offers of yours they have not answered. Where the summary and these files differ, the files are what was said.',
     '',
-    `Read ${paths.length === 1 ? 'this file' : 'these files'} in full, in order, before you do anything else:`,
+    `Read ${paths.length === 1 ? 'this file' : 'these files'} in full, in order, before you do anything else, with your file-reading tool (each fits one read; a shell's \`cat\` cuts them short):`,
     ...paths,
     '',
     `${whole} exchange${whole === 1 ? '' : 's'} are there word for word: the most recent ones, and earlier ones that still govern the work. A very long one comes with your latest texts only and says so. ${sel.indexed.length ? `The other ${sel.indexed.length} are listed one line each; \`am recall <number>\` prints any of them in full, and \`am recall\` the whole list.` : ''} They are in the order they happened: where two disagree, the later one stands.`,

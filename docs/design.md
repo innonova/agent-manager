@@ -963,8 +963,10 @@ that `am recall <n>` prints them all. (Whole or not at all meant not
 at all there, and one such exchange stopped the recent ones before it
 from being handed back.) The flow gets a line of
 the manager's own ("dialog handed back: 43 exchanges word for word (12
-recent, 31 earlier), 230 as index lines, about 84k tokens; weighed by
-fable[1m]"), so what the manager did, and which model it spent on, is
+recent, 31 earlier), 230 as index lines, about 84k tokens in 5 files
+it reads when it next acts; weighed by fable[1m]": the files are not
+in its context until it reads them, which the first wording did not
+say, and the header's figure right after a compaction looked wrong), so what the manager did, and which model it spent on, is
 on the record. The agent reads the files with its own tools: in the
 checks a Haiku agent did so unasked at its next message, before
 anything else. `am recall <n>` prints any exchange
