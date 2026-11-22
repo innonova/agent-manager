@@ -1,7 +1,10 @@
 # Streams: work detached from what it works on
 
 A proposal, written down on 2026-11-22 from the conversation of that
-day. Nothing in it is built except where it says so. It sits beside
+day. The first step is built (the store, homes, clones, the registry,
+`am use`; an agent of a stream starts in its home): what exists is
+described in `design.md`, "Streams". The rest of this document is
+still the plan. It sits beside
 `design.md`, which describes the manager as it is; when a part of this
 is built, its description moves there.
 
@@ -46,11 +49,10 @@ checks repositories out as it needs them, each into a copy of its own,
 so that two units can work on one repository at the same time. It may
 live for years (the estate's) or be started, finished and put away.
 
-**Proposed: the name is "stream"**, at least while both kinds live in
+**Decided: the name is "stream"**, at least while both kinds live in
 one manager: "project" keeps meaning a list of repositories, and a
-second word keeps conversations and code unambiguous. The person
-offered both words; if in the end there is only one kind, it can take
-either.
+second word keeps conversations and code unambiguous. If in the end
+there is only one kind, it can take either word.
 
 A stream is:
 
@@ -267,16 +269,14 @@ done by building something to look at.
 
 ## Open
 
-For the person:
+Answered by the person on 2026-11-22: the name is "stream"; one store
+will do, with a private remote, and a stream whose folder must be kept
+apart is a problem for the day it arises; the first stream is the
+fresh UI.
 
-1. **The name.** "Stream" here; say if it should be otherwise.
-2. **One store for everything?** It means one remote and one set of
-   readers for every stream's instructions and features. A stream
-   whose folder must be kept apart (a client's, an employer's) would
-   need a second store, which this proposal does not have.
-3. **The first stream.** Proposed: the fresh UI itself. It needs a new
-   repository and changes the manager's, so it exercises clones,
-   landing on a shared main and features in the store on real work.
+Still to be said by the person:
+
+- whether an agent may start a stream. Today only a person can.
 
 To be found by running, not by deciding:
 

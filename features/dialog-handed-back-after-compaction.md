@@ -1,8 +1,7 @@
 ---
 title: the dialog handed back after a compaction
-status: review
+status: done
 priority: 5
-dependsOn: []
 ---
 
 ## Purpose

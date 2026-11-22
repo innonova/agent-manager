@@ -9,7 +9,11 @@ import {
 } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { DbService } from '../db/db.service.js';
-import { ProjectsService, Repo } from '../projects/projects.service.js';
+import {
+  featureRepos,
+  ProjectsService,
+  Repo,
+} from '../projects/projects.service.js';
 import { head } from '../changes/git.js';
 import { ReadCursorsService } from '../changes/read-cursors.service.js';
 import {
@@ -190,7 +194,7 @@ export class FeaturesService
 
   async list(projectId: string): Promise<Feature[]> {
     const project = this.projects.get(projectId);
-    const features = (await this.readAll(project.repos)).map((f) =>
+    const features = (await this.readAll(featureRepos(project))).map((f) =>
       this.decorate(projectId, f),
     );
     const order: Record<FeatureStatus, number> = {
@@ -214,7 +218,7 @@ export class FeaturesService
 
   async get(projectId: string, slug: string): Promise<Feature> {
     const project = this.projects.get(projectId);
-    const found = await this.readOne(project.repos, slug);
+    const found = await this.readOne(featureRepos(project), slug);
     if (!found) throw new NotFoundException(`no feature ${slug}`);
     return this.decorate(projectId, found.file);
   }
@@ -253,7 +257,7 @@ export class FeaturesService
   ): Promise<void> {
     const project = this.projects.get(projectId);
     const have = this.range(projectId, slug);
-    for (const repo of project.repos) {
+    for (const repo of featureRepos(project)) {
       if (Object.hasOwn(have, repo.name)) continue;
       const h = await head(repo.path);
       if (!h) continue;
@@ -279,7 +283,7 @@ export class FeaturesService
   ): Promise<void> {
     if (status !== 'in-progress' && status !== 'done') return;
     const project = this.projects.get(projectId);
-    for (const repo of project.repos) {
+    for (const repo of featureRepos(project)) {
       const h = await head(repo.path);
       if (!h) continue;
       if (status === 'in-progress')
@@ -319,7 +323,7 @@ export class FeaturesService
       for (const project of this.projects.list()) {
         projectIds.add(project.id);
         const known = this.seen.get(project.id);
-        const files = await this.readAll(project.repos);
+        const files = await this.readAll(featureRepos(project));
         const next = new Map<string, number>();
         for (const f of files) {
           next.set(f.slug, f.mtime);
@@ -418,16 +422,22 @@ export class FeaturesService
       throw new BadRequestException('"dependsOn" must be a list of slugs');
     const repo =
       input.repo === undefined || input.repo === null || input.repo === ''
-        ? project.repos[0]
-        : this.projects.repoOf(project, String(input.repo));
+        ? featureRepos(project)[0]
+        : featureRepos(project).find(
+            (r) =>
+              r.path ===
+              this.projects.repoOf(project, String(input.repo))?.path,
+          );
     if (!repo)
       throw new BadRequestException(
-        `"repo" must name one of the project's repos: ${project.repos.map((r) => r.name).join(', ')}`,
+        `"repo" must name one of the project's repos: ${featureRepos(project)
+          .map((r) => r.name)
+          .join(', ')}`,
       );
     const slug = input.slug;
     const title = input.title.trim();
     return this.serialised(`${projectId}/${slug}`, async () => {
-      if (await this.readOne(project.repos, slug))
+      if (await this.readOne(featureRepos(project), slug))
         throw new ConflictException(`feature ${slug} already exists`);
       const f: FeatureFile = {
         slug,
@@ -507,7 +517,7 @@ export class FeaturesService
     )
       throw new BadRequestException('nothing to change');
     return this.serialised(`${projectId}/${slug}`, async () => {
-      const repo = await this.repoHolding(project.repos, slug);
+      const repo = await this.repoHolding(featureRepos(project), slug);
       if (!repo) throw new NotFoundException(`no feature ${slug}`);
       let before: FeatureStatus | null = null;
       const written = await modifyFeature(repo, slug, (f) => {
@@ -549,7 +559,7 @@ export class FeaturesService
         `"status" must be one of ${HUMAN_STATUSES.join(', ')}`,
       );
     return this.serialised(`${projectId}/${slug}`, async () => {
-      const repo = await this.repoHolding(project.repos, slug);
+      const repo = await this.repoHolding(featureRepos(project), slug);
       if (!repo) throw new NotFoundException(`no feature ${slug}`);
       let before: FeatureStatus | null = null;
       const heading = by ? `${today()}, ${by}` : today();

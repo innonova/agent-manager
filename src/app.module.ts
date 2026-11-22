@@ -18,6 +18,7 @@ import { FilesModule } from './files/files.module.js';
 import { HealthController } from './health.controller.js';
 import { HubModule } from './hub/hub.module.js';
 import { LearningsModule } from './learnings/learnings.module.js';
+import { StreamsModule } from './streams/streams.module.js';
 import { ProfilesController } from './profiles.controller.js';
 import { ProjectsModule } from './projects/projects.module.js';
 import { RunsModule } from './runs/runs.module.js';
@@ -49,6 +50,7 @@ export class AppModule {
         ChangesModule,
         RunsModule,
         LearningsModule,
+        StreamsModule,
       ],
       controllers: [ProfilesController, HealthController],
     };

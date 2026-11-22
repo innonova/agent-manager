@@ -9,7 +9,11 @@ import { DbService } from '../db/db.service.js';
 import { MAX_FILE_BYTES } from '../files/files.service.js';
 import { NotRegularFileError, readRegular } from '../util/read-regular.js';
 import { FeaturesService } from '../features/features.service.js';
-import { ProjectsService, Repo } from '../projects/projects.service.js';
+import {
+  codeRepos,
+  ProjectsService,
+  Repo,
+} from '../projects/projects.service.js';
 import { isSlug } from '../features/feature-file.js';
 import {
   changedFiles,
@@ -167,7 +171,7 @@ export class ChangesService {
   ): Promise<{ base: string; repos: RepoChanges[] }> {
     const project = this.projects.get(projectId);
     const repos: RepoChanges[] = [];
-    for (const repo of project.repos) {
+    for (const repo of codeRepos(project)) {
       const b = await this.baseFor(userId, projectId, repo, spec);
       const listed = b.base ? await changedFiles(repo.path, b.base) : [];
       // A failed git call is not a clean tree: say so rather than show nothing.
@@ -209,7 +213,7 @@ export class ChangesService {
         '"path" is required and may not leave the project',
       );
     const [repoName, ...rest] = rel.split('/');
-    const repo = project.repos.find((r) => r.name === repoName);
+    const repo = codeRepos(project).find((r) => r.name === repoName);
     if (!repo || rest.length === 0)
       throw new NotFoundException(`no such file: ${rel}`);
     const inRepo = rest.join('/');
@@ -321,7 +325,7 @@ export class ChangesService {
     const out: CommitRow[] = [];
     const working: WorkingRow[] = [];
     let sinceCount = 0;
-    for (const repo of project.repos) {
+    for (const repo of codeRepos(project)) {
       if (filter.repo && repo.name !== filter.repo) continue;
       const h = await head(repo.path);
       if (!h) continue; // not a git repository
@@ -480,7 +484,7 @@ export class ChangesService {
   async commitCount(userId: string, projectId: string): Promise<number> {
     const project = this.projects.get(projectId);
     let count = 0;
-    for (const repo of project.repos) {
+    for (const repo of codeRepos(project)) {
       const h = await head(repo.path);
       if (!h) continue;
       const cursor = this.cursors.get(userId, projectId, repo.name);
@@ -522,7 +526,7 @@ export class ChangesService {
     | FileDiff
   > {
     const project = this.projects.get(projectId);
-    const repo = project.repos.find((r) => r.name === repoName);
+    const repo = codeRepos(project).find((r) => r.name === repoName);
     if (!repo) throw new NotFoundException(`no such repository: ${repoName}`);
     if (!/^[0-9a-fA-F]{4,64}$/.test(hash))
       throw new BadRequestException('bad commit hash');
@@ -602,7 +606,7 @@ export class ChangesService {
     const project = this.projects.get(projectId);
     if (repoName !== undefined && typeof repoName !== 'string')
       throw new BadRequestException('"repo" must be a string');
-    if (repoName && !project.repos.some((r) => r.name === repoName))
+    if (repoName && !codeRepos(project).some((r) => r.name === repoName))
       throw new NotFoundException(`no such repository: ${repoName}`);
     return { repos: await this.cursors.markRead(userId, projectId, repoName) };
   }

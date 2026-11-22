@@ -1566,6 +1566,96 @@ in-progress ownership, outcome from state) was a source of bugs. The
 `feature_queue` and `feature_runs` tables from that version are dropped
 at startup.
 
+## Streams: work that is not tied to a repository
+
+Why, the whole model and what is still a proposal: `docs/streams.md`.
+This section is what is built (2026-11-22, the first step: the store,
+homes, clones, the registry).
+
+A **stream** is a unit of work with a folder of its own for what it
+knows and decides, and a home where its agents start and where it
+clones what it works on. It is recorded as a project of another kind
+(`projects.kind = 'stream'`), and that is the whole seam: everything
+that deals with agents (lifecycle, tokens, chat, the dialog, nudges,
+statistics, push) sees a project and is unchanged. What differs is in
+`ProjectsService.toStream` and a handful of call sites:
+
+- `path` is the stream's home, so that is where an agent starts.
+- `repos` is computed, not stored: the stream's folder in the store
+  first, named `stream` and marked `folder`, and then whatever clones
+  are in the home right now (`clonesIn`: the directories there that are
+  git repositories). **The disk is the record of clones.** One made by
+  `am use` and one an agent made with `git clone` are the same thing,
+  and one that was deleted is gone without anyone being told.
+- Features are read and written in the folder only (`featureRepos`): a
+  clone has a `features/` directory of its own, and that is other
+  work's record. The views built on commits take the clones and not the
+  folder (`codeRepos`): the folder's commits are the store's.
+- A stream keeps its name (its folder, its home and its branches are
+  called by it) and has no list of repositories to set.
+
+On disk, under `AGENT_MANAGER_STREAMS_DIR` (`~/streams`):
+
+```
+.store/                    the store: one git repository (AGENT_MANAGER_STORE_DIR)
+  <stream>/AGENTS.md       its instruction file, started from the purpose it was given
+  <stream>/features/, docs/
+<stream>/                  the home; not a repository
+  stream -> ../.store/<stream>
+  AGENTS.md, CLAUDE.md -> stream/AGENTS.md
+  <repository>/            a clone
+```
+
+Nothing is made before the first stream. Homes are mended at start (a
+link that is missing is made; a file somebody put in its place is left
+alone).
+
+**The manager commits the store, and nobody else does.** Every
+`AGENT_MANAGER_STORE_COMMIT_MS` it looks at `git status` there and
+makes one commit per stream that has changes (`<stream>: <files>`),
+under its own name, then pushes when the store has a remote. Agents and
+people write files; many agents committing into one repository sweep
+each other's folders into their commits and race on the push, which is
+why notes left the repositories. Who caused a change is not in the
+commit yet (the manager does not know which turn wrote a file).
+
+**The registry** (`repositories` table): a name, what `git clone` is
+given, and a setup command; plus a seed directory under the data
+directory (`repositories/<name>/seed/`) with the untracked files a
+clone needs, taken from a checkout by path (`PUT
+/api/repositories/:name/seed`), mode 600, never in the store. `POST
+/api/projects/:id/clones` (`am use`) clones into
+`<home>/.<name>.cloning`, copies the seed in, moves it into place and
+runs the setup with a login shell; it answers at once and `GET
+…/clones` says how far it is. The clone appears whole or not at all; a
+setup that fails leaves the clone, with what the command said, for
+whoever works there to finish. A clone's state is in memory only: what
+succeeded is on the disk.
+
+**What an agent of a stream is told**: the harness note's `{{work}}`,
+`{{featureFiles}}` and `{{featureStart}}` render for a stream or for a
+project (`harness.ts`), so one template serves both. For a stream it
+says where the home, the folder and the clones are, who commits the
+store, how a repository is taken, that each clone has its own
+instruction file to read first, and how work lands (a branch named
+`<stream>/<topic>`, rebase, the repository's gate, push; a `Feature:`
+trailer). The stream's own instruction file reaches Claude and Codex
+through the links in the home; Copilot does not follow a link to one,
+so for a vendor that reads the note from a file the stream's
+instructions are appended to it (`streamInstructions`). The folder is
+passed as an extra directory, since it lies outside the home.
+
+**Who may do what**: starting a stream is a person's. An agent's token
+reads the registry, adds to it and corrects it (it could clone by hand
+anyway), and clones into its own stream; removing a repository from the
+registry is a person's.
+
+Not built: changes and the run log by stream (the changes view shows a
+clone's whole history), the store's commits naming who caused them,
+archive and revive, streams on another machine, the fresh UI. The
+current UI shows a stream as a project whose repositories are its
+folder and its clones, which is enough to work in one.
+
 ## Runs
 
 A run is one agent's work on one feature, recorded so that models can be
@@ -1861,7 +1951,14 @@ PATCH  /api/users/me         { name }                           -> { user }; onl
 POST   /api/users/:id/password                                  -> { password }; a new generated one; ends the user's other sessions
 DELETE /api/users/:id                                           -> { ok }; not yourself, not the last user
 
-GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.host names the machine, project.sshHost how to reach it over SSH, project.workspace its VS Code workspace file; as a hub, the spokes' projects too, ids `<host>:<id>`
+POST   /api/streams                 { name, purpose?, defaultProfile?, delegation? } -> { project, agentCounts }; starts a stream (its folder in the store, its home, one commit); a person only. A stream is then a project of kind `stream` to every route below
+GET    /api/repositories                                        -> { repositories: [{ name, source, setup, seed: [path], usedBy: [stream] }] }; the registry a stream clones from
+PUT    /api/repositories/:name      { source?, setup? }          -> { repository }; adds one or changes what is said about it
+PUT    /api/repositories/:name/seed { from, files: [path] }      -> { repository }; takes untracked files from a checkout on this machine into the seed copied into every new clone
+DELETE /api/repositories/:name                                  a person only; clones of it stay
+GET    /api/projects/:id/clones                                 -> { clones: [{ name, path, state: cloning|setting up|ready|failed, branch, message }] }; a stream only
+POST   /api/projects/:id/clones     { repository }               -> 202 { clone }; clones a registered repository into the stream's home and sets it up, in the background
+GET    /api/projects                                            -> [{ project, agentCounts: { working, idle, error, ... } }]; project.kind is `project` or `stream`; project.host names the machine, project.sshHost how to reach it over SSH, project.workspace its VS Code workspace file; as a hub, the spokes' projects too, ids `<host>:<id>`
 POST   /api/projects                { name, repos: [{ name?, path }], defaultProfile?, delegation?, host? }   (`path` alone is accepted as a one-repo shorthand; `delegation` is `free` (default) or `on-request`; `host` creates on that spoke)
 GET    /api/projects/:id/profiles                               -> { profiles } of the machine the project is on
 GET    /api/projects/:id
@@ -2092,6 +2189,9 @@ swept once a minute.
 | `AGENT_MANAGER_DIALOG_WAIT_MS`            | `150000`                             | how long the hand-back waits for a weighing under way                                                                                                                                                                            |
 | `AGENT_MANAGER_DIALOG_CLASSIFIER_MS`      | `900000` (15 min)                    | how long one weighing may take                                                                                                                                                                                                   |
 | `AGENT_MANAGER_WORKSPACES_DIR`            | unset                                | where the projects' VS Code workspace files go; unset means beside each project's repositories. Every test harness sets it to a temp dir, so a test project never writes a file beside a real repository                         |
+| `AGENT_MANAGER_STREAMS_DIR`               | `~/streams`                          | where streams live: each stream's home is a directory here. Nothing is made until the first stream. Every test harness sets it to a temp dir                                                                                     |
+| `AGENT_MANAGER_STORE_DIR`                 | `<streams>/.store`                   | the store: one git repository with a folder per stream, committed by the manager                                                                                                                                                 |
+| `AGENT_MANAGER_STORE_COMMIT_MS`           | `30000`                              | how often the manager commits what changed in the store; 0 never                                                                                                                                                                 |
 | `AGENT_MANAGER_HUB_TOKEN`                 | unset                                | lets a hub act here with this bearer token (see Hub and spokes)                                                                                                                                                                  |
 | `AGENT_MANAGER_SPOKES_FILE`               | `<dataDir>/spokes.json`              | the spokes this manager fronts for; absent means not a hub                                                                                                                                                                       |
 | `AGENT_MANAGER_HARNESS_FILE`              | `~/.config/agent-manager/harness.md` | template of the note every agent gets at session start (see The harness note); seeded from the shipped `harness.md` by the installer, absent falls back to it, empty means none                                                  |

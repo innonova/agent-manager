@@ -32,6 +32,47 @@ const ctx = {
 };
 
 describe('harness note', () => {
+  it('describes a stream instead of a project when the agent is in one', () => {
+    const note = renderHarnessNote(shippedHarnessNote(SHIPPED), {
+      ...ctx,
+      project: 'tidy',
+      cwd: '/s/tidy',
+      repos: [
+        { name: 'stream', path: '/s/.store/tidy' },
+        { name: 'api', path: '/s/tidy/api' },
+      ],
+      stream: {
+        home: '/s/tidy',
+        clones: [{ name: 'api', path: '/s/tidy/api' }],
+      },
+    })!;
+    expect(note).toContain(
+      'The work is the stream "tidy": a unit of work that is not tied to a repository. Its agents start in its home, /s/tidy, which is not a repository.',
+    );
+    expect(note).toContain('the directories beside it: api (/s/tidy/api).');
+    expect(note).toContain('`am use <repository>`');
+    expect(note).toContain('a branch named `tidy/<topic>`');
+    expect(note).toContain('`Feature: tidy/<slug>`');
+    expect(note).toContain(
+      "The stream's work is tracked as files, one per unit of work: `stream/features/<slug>.md` in its home",
+    );
+    expect(note).toContain(
+      'A stream without a `features/` directory in its folder has not started',
+    );
+    expect(note).not.toContain('its repositories:');
+    expect(note).not.toContain('Work in these repositories');
+    expect(note).not.toMatch(/\{\{\w+\}\}/);
+    // and a project's note says what it said before there were streams
+    const before = renderHarnessNote(shippedHarnessNote(SHIPPED), ctx)!;
+    expect(before).toContain(
+      'Work in these repositories is tracked as files, one per unit of work: `features/<slug>.md` in the repository it belongs to; the manager lists them per project. Frontmatter',
+    );
+    expect(before).toContain(
+      'A repository without a `features/` directory has not started; the first file creates it.',
+    );
+    expect(before).not.toMatch(/\{\{\w+\}\}/);
+  });
+
   it('fills the placeholders of the shipped note', () => {
     const shipped = shippedHarnessNote(SHIPPED);
     expect(shipped).toContain('# Running under agent-manager');

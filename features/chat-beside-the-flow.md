@@ -1,8 +1,7 @@
 ---
 title: a chat with the agent, beside its work
-status: review
+status: done
 priority: 5
-dependsOn: []
 ---
 
 ## Purpose

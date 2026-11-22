@@ -406,6 +406,12 @@ export class AuthService
     // one command on a machine the hub knows: no more than the shell an agent already has on its own
     if (/^\/api\/hosts\/[^/]+\/exec$/.test(p)) return method === 'POST';
     if (p === '/api/method' || p === '/api/framing') return method === 'GET';
+    // The registry of repositories a stream can clone: to read, to add to
+    // and to correct, since an agent that needs a repository nobody
+    // registered could clone it by hand anyway. Removing one is a person's.
+    if (p === '/api/repositories') return method === 'GET';
+    if (/^\/api\/repositories\/[^/]+(\/seed)?$/.test(p))
+      return method === 'PUT';
     // the run log of its own project: the list filtered to it, and a run of it
     if (p === '/api/runs') {
       const q = new URLSearchParams(path.slice(path.indexOf('?') + 1));

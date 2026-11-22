@@ -1,8 +1,7 @@
 ---
 title: an agent of a project here can run on another machine
-status: review
+status: done
 priority: 2
-dependsOn: []
 ---
 
 ## Purpose

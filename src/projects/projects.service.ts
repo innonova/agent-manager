@@ -13,10 +13,38 @@ import { DbService } from '../db/db.service.js';
 import { MANAGER_CONFIG } from '../config/config.js';
 import type { ManagerConfig } from '../config/config.js';
 import { workspacePath, writeWorkspace } from './workspace.js';
+import {
+  clonesIn,
+  FOLDER_LINK,
+  streamFolder,
+  STREAM_NAME_RE,
+} from '../streams/streams.js';
 
 export interface Repo {
   name: string;
   path: string;
+  /** A stream's own folder in the store, standing where a repository stands: files to read and features to keep, but not a repository of its own (its commits are the store's, made by the manager). */
+  folder?: true;
+}
+
+/**
+ * The repositories whose commits are the project's work: all of a
+ * project's, and a stream's clones. Not a stream's folder: its commits
+ * are the store's, made by the manager for every stream at once.
+ */
+export function codeRepos(project: Project): Repo[] {
+  return project.repos.filter((r) => !r.folder);
+}
+
+/**
+ * Where a project's features are read and written: its repositories, or
+ * for a stream its own folder and nothing else. A stream's clones have
+ * `features/` directories of their own, and those are other work's.
+ */
+export function featureRepos(project: Project): Repo[] {
+  return project.kind === 'stream'
+    ? project.repos.filter((r) => r.folder)
+    : project.repos;
 }
 
 /** When an agent in the project may start another: on its own judgement (`free`), or only when a person asked (`on-request`). */
@@ -25,8 +53,16 @@ export type Delegation = 'free' | 'on-request';
 export interface Project {
   id: string;
   name: string;
-  /** The primary repo's path; kept for clients that think in one path. */
+  /**
+   * A list of repositories on this machine (`project`), or a unit of
+   * work with a home of its own that clones what it needs (`stream`;
+   * see `docs/streams.md`). The same thing to everything that deals
+   * with agents; different in where an agent starts and what `repos` is.
+   */
+  kind: 'project' | 'stream';
+  /** The primary repo's path, or a stream's home: where an agent starts unless told otherwise. */
   path: string;
+  /** A project's repositories as registered; a stream's own folder (named `stream`) and then whatever clones are in its home right now. */
   repos: Repo[];
   defaultProfile: string | null;
   delegation: Delegation;
@@ -38,6 +74,7 @@ export interface Project {
 interface Row {
   id: string;
   name: string;
+  kind?: string | null;
   path: string;
   default_profile: string | null;
   delegation: string | null;
@@ -45,7 +82,7 @@ interface Row {
 }
 
 /** Validates a delegation value from a request, or throws. */
-function parseDelegation(v: unknown): Delegation {
+export function parseDelegation(v: unknown): Delegation {
   if (v === 'free' || v === 'on-request') return v;
   throw new BadRequestException('"delegation" must be "free" or "on-request"');
 }
@@ -77,7 +114,11 @@ export class ProjectsService implements OnModuleInit {
   /** Best effort: a directory the manager cannot write to, or a file it cannot parse, is logged, not an error. */
   private keepWorkspace(p: Project): void {
     try {
-      const r = writeWorkspace(p.name, p.repos, this.config.workspacesDir);
+      const r = writeWorkspace(
+        p.name,
+        p.kind === 'stream' ? [{ name: '', path: p.path }] : p.repos, // a stream's one folder is its home
+        this.config.workspacesDir,
+      );
       if (r.result === 'unparseable')
         this.logger.warn(
           `${r.file} is not JSON; left alone (its folders may be stale)`,
@@ -106,6 +147,7 @@ export class ProjectsService implements OnModuleInit {
   }
 
   private toProject(r: Row): Project {
+    if (r.kind === 'stream') return this.toStream(r);
     const repos =
       (this.db
         .prepare(
@@ -115,6 +157,7 @@ export class ProjectsService implements OnModuleInit {
     return {
       id: r.id,
       name: r.name,
+      kind: 'project',
       path: repos[0]?.path ?? r.path,
       repos,
       defaultProfile: r.default_profile,
@@ -126,6 +169,72 @@ export class ProjectsService implements OnModuleInit {
         this.config.workspacesDir,
       ),
     };
+  }
+
+  /** A stream: its row holds the home, and the disk says what it has cloned. */
+  private toStream(r: Row): Project {
+    return {
+      id: r.id,
+      name: r.name,
+      kind: 'stream',
+      path: r.path,
+      repos: [
+        {
+          name: FOLDER_LINK,
+          path: streamFolder(this.config.storeDir, r.name),
+          folder: true,
+        },
+        ...clonesIn(r.path).filter((c) => c.name !== FOLDER_LINK),
+      ],
+      defaultProfile: r.default_profile,
+      delegation: r.delegation === 'on-request' ? 'on-request' : 'free',
+      createdAt: r.created_at,
+      // one folder, the home: the stream's own folder and its clones are both beneath it
+      workspace: workspacePath(
+        r.name,
+        [{ name: '', path: r.path }],
+        this.config.workspacesDir,
+      ),
+    };
+  }
+
+  /**
+   * Records a stream whose folder and home `StreamsService` has made.
+   * The name is the stream's for good: its folder, its home and its
+   * branches are called by it.
+   */
+  createStream(input: {
+    name: string;
+    home: string;
+    defaultProfile: string | null;
+    delegation: Delegation;
+  }): Project {
+    if (!STREAM_NAME_RE.test(input.name))
+      throw new BadRequestException(
+        "a stream's name is lower-case letters, digits and hyphens, at most 63, starting with a letter or digit",
+      );
+    if (
+      this.db.prepare('SELECT 1 FROM projects WHERE name = ?').get(input.name)
+    )
+      throw new BadRequestException(
+        `there is already a project or stream called "${input.name}"`,
+      );
+    const id = randomUUID();
+    this.db
+      .prepare(
+        "INSERT INTO projects (id, name, path, default_profile, delegation, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, 'stream')",
+      )
+      .run(
+        id,
+        input.name,
+        input.home,
+        input.defaultProfile,
+        input.delegation,
+        Date.now(),
+      );
+    const project = this.get(id);
+    this.keepWorkspace(project);
+    return project;
   }
 
   /** Validates a repo list from a request (`repos`, or a single `path` for the one-repo case). */
@@ -219,6 +328,7 @@ export class ProjectsService implements OnModuleInit {
     },
   ): Project {
     const current = this.get(id);
+    if (current.kind === 'stream') return this.updateStream(current, input);
     const name = input.name === undefined ? current.name : input.name;
     const defaultProfile =
       input.defaultProfile === undefined
@@ -250,6 +360,45 @@ export class ProjectsService implements OnModuleInit {
     const project = this.get(id);
     this.keepWorkspace(project);
     return project;
+  }
+
+  /** A stream's settings: its default profile and its delegation rule. Its name and what it has cloned are not settings. */
+  private updateStream(
+    current: Project,
+    input: {
+      name?: unknown;
+      defaultProfile?: unknown;
+      repos?: unknown;
+      path?: unknown;
+      delegation?: unknown;
+    },
+  ): Project {
+    if (input.name !== undefined && input.name !== current.name)
+      throw new BadRequestException(
+        'a stream keeps its name: its folder, its home and its branches are called by it',
+      );
+    if (input.repos !== undefined || input.path !== undefined)
+      throw new BadRequestException(
+        'a stream has no list of repositories to set: it clones what it works on into its home (`am use <repository>`)',
+      );
+    const defaultProfile =
+      input.defaultProfile === undefined
+        ? current.defaultProfile
+        : input.defaultProfile;
+    if (defaultProfile !== null && typeof defaultProfile !== 'string')
+      throw new BadRequestException(
+        '"defaultProfile" must be a string or null',
+      );
+    const delegation =
+      input.delegation === undefined
+        ? current.delegation
+        : parseDelegation(input.delegation);
+    this.db
+      .prepare(
+        'UPDATE projects SET default_profile = ?, delegation = ? WHERE id = ?',
+      )
+      .run(defaultProfile, delegation, current.id);
+    return this.get(current.id);
   }
 
   private saveRepos(id: string, repos: Repo[]): void {

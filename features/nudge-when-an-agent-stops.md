@@ -1,8 +1,7 @@
 ---
 title: ask an agent that stopped whether it can go on
-status: review
+status: done
 priority: 5
-dependsOn: []
 ---
 
 ## Purpose

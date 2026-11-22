@@ -30,6 +30,7 @@ import { AdaptersService } from '../adapters/adapters.service.js';
 import { HttpAdapterHost } from '@nestjs/core';
 import { AuthService } from '../auth/auth.service.js';
 import { loadHarnessTemplate, renderHarnessNote } from './harness.js';
+import type { HarnessContext } from './harness.js';
 import {
   type CachedSession,
   type CacheState,
@@ -1647,11 +1648,14 @@ export class AgentsService
     let repos: { name: string; path: string }[] = [];
     let project = agent.projectId;
     let delegation: 'free' | 'on-request' = 'free';
+    let stream: HarnessContext['stream'] = null;
     try {
       const p = this.projects.get(agent.projectId);
       repos = p.repos;
       project = p.name;
       delegation = p.delegation;
+      if (p.kind === 'stream')
+        stream = { home: p.path, clones: p.repos.filter((r) => !r.folder) };
     } catch {
       /* deleted meanwhile: the note still says who the agent is */
     }
@@ -1669,6 +1673,7 @@ export class AgentsService
         cwd: agent.cwd,
         permissions: agent.permissions,
         repos,
+        stream,
         delegation,
         startedBy: agent.createdBy,
         hosts: this.daemons.remoteHosts(),
@@ -1681,6 +1686,30 @@ export class AgentsService
         ),
       },
     );
+  }
+
+  /**
+   * A stream's instruction file, for a vendor whose loader does not find
+   * it in the home: Copilot reads an instruction file there but does not
+   * follow a link to one (tried 2026-11-22), and the home's is a link
+   * into the store. It goes with the note, through the same file, as it
+   * stood when the session started.
+   */
+  private async streamInstructions(agent: Agent): Promise<string> {
+    try {
+      const p = this.projects.get(agent.projectId);
+      const folder = p.kind === 'stream' && p.repos.find((r) => r.folder);
+      if (!folder) return '';
+      const text = await fs.readFile(
+        path.join(folder.path, 'AGENTS.md'),
+        'utf8',
+      );
+      return text.trim()
+        ? `\n\n## The stream's own instructions (stream/AGENTS.md)\n\n${text.trim()}\n`
+        : '';
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -1700,18 +1729,28 @@ export class AgentsService
       return undefined;
     }
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, adapter.noteFile), note);
+    await fs.writeFile(
+      path.join(dir, adapter.noteFile),
+      note + (await this.streamInstructions(agent)),
+    );
     return adapter.startEnv?.({ noteDir: dir });
   }
 
-  /** The project's other repositories, for agents that need to be told about them. */
+  /**
+   * The project's other repositories, for agents that need to be told
+   * about them. For a stream's agent that is its folder in the store,
+   * which it reaches through a link in its home and which lies outside
+   * it; its clones are beneath its working directory already.
+   */
   private extraDirs(agent: Agent): string[] {
     if (agent.host) return []; // the project's repositories are here, not there
     try {
       return this.projects
         .get(agent.projectId)
         .repos.map((r) => r.path)
-        .filter((p) => p !== agent.cwd);
+        .filter(
+          (p) => p !== agent.cwd && !p.startsWith(`${agent.cwd}${path.sep}`),
+        );
     } catch {
       return [];
     }

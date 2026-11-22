@@ -1,8 +1,7 @@
 ---
 title: keep an agent's conversation when the vendor deletes it
-status: review
+status: done
 priority: 5
-dependsOn: []
 ---
 
 ## Purpose

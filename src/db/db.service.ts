@@ -184,6 +184,12 @@ CREATE TABLE IF NOT EXISTS dialog_windows (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
   size INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS repositories (
+  name TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  setup TEXT,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dialog_owed (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
   at INTEGER NOT NULL
@@ -273,10 +279,17 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.db.exec(
         "ALTER TABLE projects ADD COLUMN delegation TEXT NOT NULL DEFAULT 'free'",
       );
-    // Projects created before repos existed: their path becomes the single repo.
+    // A stream is a project of another kind: the same identity for agents,
+    // tokens and chats, with a home of its own instead of a list of repositories.
+    if (!projectCols.includes('kind'))
+      this.db.exec(
+        "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'",
+      );
+    // Projects created before repos existed: their path becomes the single
+    // repo. Not a stream's: its path is its home, and it has no such list.
     const legacy = this.db
       .prepare(
-        'SELECT id, path FROM projects WHERE id NOT IN (SELECT project_id FROM project_repos)',
+        "SELECT id, path FROM projects WHERE kind != 'stream' AND id NOT IN (SELECT project_id FROM project_repos)",
       )
       .all() as { id: string; path: string }[];
     const insert = this.db.prepare(

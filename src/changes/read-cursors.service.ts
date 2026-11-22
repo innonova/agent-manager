@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DbService } from '../db/db.service.js';
-import { ProjectsService } from '../projects/projects.service.js';
+import { codeRepos, ProjectsService } from '../projects/projects.service.js';
 import { head } from './git.js';
 
 /**
@@ -32,8 +32,8 @@ export class ReadCursorsService {
   ): Promise<{ repo: string; commit: string }[]> {
     const project = this.projects.get(projectId);
     const targets = repoName
-      ? project.repos.filter((r) => r.name === repoName)
-      : project.repos;
+      ? codeRepos(project).filter((r) => r.name === repoName)
+      : codeRepos(project);
     const out: { repo: string; commit: string }[] = [];
     for (const repo of targets) {
       const h = await head(repo.path);

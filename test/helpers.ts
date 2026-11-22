@@ -114,6 +114,8 @@ export async function startManager(
       framingFile: path.join(dataDir, 'framing.md'), // nor their framing
       spokesFile: path.join(dataDir, 'spokes.json'), // nor their spokes: a test manager must not front for a real machine
       workspacesDir: path.join(dataDir, 'workspaces'), // nor a workspace file beside a real repository
+      streamsDir: path.join(dataDir, 'streams'), // nor a stream's home or the store in the developer's ~/streams
+      storeDir: path.join(dataDir, 'streams', '.store'),
       dialogClassifier: null, // nor a model call on the developer's account, unless a test brings its own command
       nudgeReader: null, // the same for the reader of last messages
       ...overrides,

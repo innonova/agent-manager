@@ -33,6 +33,12 @@ export interface ManagerConfig {
   sshHost: string;
   /** Where the projects' VS Code workspace files go; null means beside each project's repositories. */
   workspacesDir: string | null;
+  /** Where streams live: each stream's home is a directory here (see `docs/streams.md`). */
+  streamsDir: string;
+  /** The store: one git repository with a folder per stream. Beneath the streams directory unless set apart. */
+  storeDir: string;
+  /** How often the manager commits what changed in the store (ms); 0 never. */
+  storeCommitMs: number;
   /** The address an agent on another machine reaches this manager at (its `AGENT_MANAGER_URL`); null means the listening address, which is right for local agents only. */
   agentUrl: string | null;
   /** How often, at most, a Claude agent is told the time beside a tool result (ms); 0 never. */
@@ -202,6 +208,8 @@ export function loadConfig(
     throw new Error(`AGENT_MANAGER_LISTEN has an invalid port: ${listen}`);
   }
   const xdgState = baseDir(env, 'state', platform);
+  const streamsDir =
+    env.AGENT_MANAGER_STREAMS_DIR || path.join(os.homedir(), 'streams');
   const xdgConfig = baseDir(env, 'config', platform);
   return {
     host: host || '0.0.0.0',
@@ -246,6 +254,9 @@ export function loadConfig(
       os.hostname().split('.')[0] ||
       'local',
     workspacesDir: env.AGENT_MANAGER_WORKSPACES_DIR || null,
+    streamsDir,
+    storeDir: env.AGENT_MANAGER_STORE_DIR || path.join(streamsDir, '.store'),
+    storeCommitMs: Number(env.AGENT_MANAGER_STORE_COMMIT_MS ?? 30_000),
     agentUrl: env.AGENT_MANAGER_AGENT_URL?.replace(/\/$/, '') || null,
     clockMs: Number(env.AGENT_MANAGER_CLOCK_MS ?? 10 * 60_000),
     clockHook: path.resolve(
