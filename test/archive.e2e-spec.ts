@@ -259,10 +259,24 @@ describe('a stream put away and brought back', () => {
       'what is not committed in its clones is no longer what you were shown',
     );
     fs.rmSync(path.join(clone, 'later.log'));
+    // nor of more in a file that was listed: the name is the same, the work is not
+    const was = fs.readFileSync(path.join(clone, 'probe.log'));
+    fs.writeFileSync(
+      path.join(clone, 'probe.log'),
+      'what I found\nand then some\n',
+    );
+    expect(
+      (await api.post(`/api/projects/${tidy.id}/archive`, { discard: shown }))
+        .status,
+    ).toBe(409);
+    fs.writeFileSync(path.join(clone, 'probe.log'), was);
+    const seen = (await api.get(`/api/projects/${tidy.id}/archive/plan`)).body
+      .plan.uncommittedKey as string;
+    expect(seen).not.toBe(shown); // written again, it is not what was shown either
     // asked for twice at once, it is put away once
     const both = await Promise.all([
-      api.post(`/api/projects/${tidy.id}/archive`, { discard: shown }),
-      api.post(`/api/projects/${tidy.id}/archive`, { discard: shown }),
+      api.post(`/api/projects/${tidy.id}/archive`, { discard: seen }),
+      api.post(`/api/projects/${tidy.id}/archive`, { discard: seen }),
     ]);
     expect(both.map((r) => r.status).sort()).toEqual([202, 409]);
     const put = both.find((r) => r.status === 202)!;

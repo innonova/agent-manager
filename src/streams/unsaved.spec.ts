@@ -41,7 +41,9 @@ describe('what of a clone is nowhere else', () => {
     git(seed, 'add', '-A');
     git(seed, 'commit', '-qm', 'a');
     git(seed, 'push', '-q', 'origin', 'HEAD:main');
-    clone = path.join(root, 'clone');
+    // the clone in a home of its own: what would be removed is what is in there, and the remote is not
+    fs.mkdirSync(path.join(root, 'home'));
+    clone = path.join(root, 'home', 'clone');
     git(root, 'clone', '-q', remote, clone);
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -128,7 +130,7 @@ describe('what of a clone is nowhere else', () => {
     git(path.join(clone, 'sub'), 'commit', '-qm', 'only here');
     const u = await look();
     expect(u.beyond).toEqual([
-      'its submodule sub has work of its own that is nowhere else: commit and push it there first',
+      'its submodule sub has work of its own that is nowhere else, or could not be compared with its remote: commit and push it there first',
     ]);
   });
 
@@ -148,5 +150,100 @@ describe('what of a clone is nowhere else', () => {
     const l = await svc.unsaved({ name: 'lone', path: lone });
     expect(l.source).toBeNull();
     expect(l.unpushed).toEqual([{ branch: 'main', commits: 1, main: false }]);
+  });
+
+  it('does not take the clone’s own memory of the remote for news, nor let the look change a ref', async () => {
+    // the clone follows main only, and is set up to prune tags: a fetch as it is set up would leave topic stale and delete the tag
+    fs.writeFileSync(path.join(clone, 'b.txt'), 'b\n');
+    git(clone, 'add', '-A');
+    git(clone, 'checkout', '-q', '-b', 'topic');
+    git(clone, 'commit', '-qm', 'b');
+    git(clone, 'push', '-q', '-u', 'origin', 'topic');
+    git(
+      clone,
+      'config',
+      'remote.origin.fetch',
+      '+refs/heads/main:refs/remotes/origin/main',
+    );
+    git(clone, 'config', 'fetch.prune', 'true');
+    git(clone, 'config', 'fetch.pruneTags', 'true');
+    git(clone, 'tag', 'mine');
+    git(remote, 'branch', '-D', 'topic');
+    const u = await look();
+    expect(u.unpushed).toEqual([{ branch: 'topic', commits: 1, main: false }]);
+    expect(u.refs).toEqual(['tags/mine']);
+    expect(git(clone, 'tag', '--list').trim()).toBe('mine'); // still there
+    expect(git(clone, 'rev-parse', 'origin/topic').trim()).toBe(u.head); // and so is what the clone remembered
+    expect(u.unknown).toEqual([]);
+  });
+
+  it('looks at what is checked out whatever refs there are, and at what only a remembered branch holds', async () => {
+    // a repository made in place, on no branch, with no branch left
+    const lone = path.join(root, 'home', 'lone');
+    fs.mkdirSync(lone);
+    git(lone, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(lone, 'a.txt'), 'a\n');
+    git(lone, 'add', '-A');
+    git(lone, 'commit', '-qm', 'a');
+    git(lone, 'checkout', '-q', '--detach');
+    git(lone, 'branch', '-D', 'main');
+    const l = await svc.unsaved({ name: 'lone', path: lone });
+    expect(l).toMatchObject({ branch: null, detached: 1, unpushed: [] });
+    expect(l.head).toMatch(/^[0-9a-f]{40}$/);
+
+    // a commit nothing holds but the clone's memory of another remote's branch
+    git(clone, 'checkout', '-q', '--detach');
+    fs.writeFileSync(path.join(clone, 'z.txt'), 'z\n');
+    git(clone, 'add', '-A');
+    git(clone, 'commit', '-qm', 'z');
+    git(clone, 'update-ref', 'refs/remotes/backup/z', 'HEAD');
+    git(clone, 'checkout', '-q', 'main');
+    const u = await look();
+    expect(u.beyond).toHaveLength(1);
+    expect(u.beyond[0]).toContain(
+      'remotes/backup/z is the clone’s memory of a branch with 1 commit that origin does not have now and no local branch holds'.replace(
+        '’',
+        "'",
+      ),
+    );
+  });
+
+  it('takes an origin inside what goes with the clone for no other place, and says what it keeps of a submodule that is not checked out', async () => {
+    const inside = path.join(root, 'home', 'inside.git');
+    git(root, 'clone', '-q', '--bare', remote, inside);
+    git(clone, 'remote', 'set-url', 'origin', inside);
+    const u = await look();
+    expect(u.fetched).toBe(false);
+    expect(u.beyond).toEqual([
+      `its origin (${inside}) is inside what would be removed with it: that is no other place for its commits`,
+    ]);
+    expect(u.unpushed).toEqual([{ branch: 'main', commits: 1, main: false }]);
+    git(clone, 'remote', 'set-url', 'origin', remote);
+
+    git(clone, 'submodule', 'add', '-q', remote, 'sub');
+    git(clone, 'commit', '-qm', 'a submodule');
+    git(clone, 'push', '-q', 'origin', 'HEAD:main');
+    expect((await look()).beyond).toEqual([]);
+    git(clone, 'submodule', 'deinit', '-q', '-f', 'sub');
+    expect((await look()).beyond).toEqual([
+      'it keeps the repository of a submodule that is not checked out (.git/modules/sub): what that holds is not looked at. Check it out again, or remove it if nothing there is wanted',
+    ]);
+  });
+
+  it('knows what is not committed by what it is, not by its name', async () => {
+    fs.writeFileSync(path.join(clone, 'notes.txt'), 'one\n');
+    const first = (await look()).print;
+    expect((await look()).print).toBe(first);
+    fs.writeFileSync(path.join(clone, 'notes.txt'), 'one\nand more\n');
+    const second = (await look()).print;
+    expect(second).not.toBe(first);
+    git(clone, 'stash', '-u');
+    const stashed = (await look()).print;
+    expect(stashed).not.toBe(second);
+    fs.writeFileSync(path.join(clone, 'a.txt'), 'other work\n');
+    git(clone, 'stash');
+    git(clone, 'stash', 'drop', 'stash@{1}');
+    expect((await look()).stashes).toBe(1); // one stash as before, and not the same one
+    expect((await look()).print).not.toBe(stashed);
   });
 });

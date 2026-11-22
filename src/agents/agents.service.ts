@@ -1272,7 +1272,7 @@ export class AgentsService
       if (opts.forSession && agent.currentSessionId !== opts.forSession)
         return 'dropped';
       if (!agent.currentSessionId) {
-        await this.startSession(agent, live);
+        await this.startSession(agent, live, opts.archiving);
         agent = this.get(id);
       }
       const attached = live.sessions.get(agent.currentSessionId!);
@@ -1774,7 +1774,26 @@ export class AgentsService
   // ---- sessions -----------------------------------------------------------
 
   /** Starts a new daemon session for the agent. Ownership is registered before any output is consumed. */
-  private async startSession(agent: Agent, live: Live): Promise<void> {
+  private async startSession(
+    agent: Agent,
+    live: Live,
+    /** The manager's own start, for the compaction that comes before a stream is put away. */
+    archiving = false,
+  ): Promise<void> {
+    // The one door every session comes through (a turn, a restart, a new
+    // agent, a fork, a message taken back): none opens in a stream that is
+    // away or on its way. What follows up to the session's record is done
+    // in one go, so whoever puts the stream away either sees that record
+    // or has already closed this door.
+    const away = this.projects.away(agent.projectId);
+    if (
+      away &&
+      !(
+        archiving &&
+        this.projects.get(agent.projectId).archive?.state === 'archiving'
+      )
+    )
+      throw new ConflictException(away);
     const adapter = this.adapters.create(agent.profile);
     // The session id is ours and recorded first: if the reply is lost, the
     // next resync can still tell whether the process exists.

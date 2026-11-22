@@ -266,14 +266,14 @@ export class ArchiveService extends EventEmitter {
     return { blocked, pushes };
   }
 
-  /** What is not committed in a set of clones, whole, as one value to compare. */
+  /** What is not committed in a set of clones, as it is now, as one value to compare: the files with their sizes and times, the stashes by their commits. */
   private keyOf(looks: Unsaved[]): string {
     return createHash('sha256')
       .update(
         JSON.stringify(
           looks
-            .map((u) => [u.name, [...u.uncommitted].sort(), u.stashes])
-            .sort(),
+            .map((u) => [u.name, u.print])
+            .sort((a, b) => a[0]!.localeCompare(b[0]!)),
         ),
       )
       .digest('hex')
@@ -359,9 +359,11 @@ export class ArchiveService extends EventEmitter {
    * clones removed.
    *
    * `discard` is the person's word that what is not committed may go:
-   * `true` for whatever that is when the request is looked at, or the
-   * plan's `uncommittedKey` for exactly what the person was shown, in
-   * which case anything else found uncommitted refuses the request.
+   * `true` for whatever that is, up to the moment the clones are
+   * removed; or the plan's `uncommittedKey` for exactly what the person
+   * was shown, in which case anything else found uncommitted, then or
+   * later (another file, more in a file that was listed, another
+   * stash), refuses.
    */
   async archive(
     projectId: string,
@@ -373,8 +375,9 @@ export class ArchiveService extends EventEmitter {
     this.notAway(p);
     this.own(p);
     let handed = false;
+    let marked = false;
     try {
-      const { plan, looks } = await this.look(p);
+      const { plan } = await this.look(p);
       const refused = [...plan.blocked];
       const refuse = () =>
         new HttpException(
@@ -386,67 +389,78 @@ export class ArchiveService extends EventEmitter {
           },
           409,
         );
-      const discard =
-        opts.discard === true || opts.discard === plan.uncommittedKey;
-      if (
-        typeof opts.discard === 'string' &&
-        !discard &&
-        plan.uncommitted.length
-      )
-        refused.push(
-          'what is not committed in its clones is no longer what you were shown: look at it again',
-        );
-      else if (!discard)
-        for (const u of plan.uncommitted)
+      const discard: 'all' | string | null =
+        opts.discard === true
+          ? 'all'
+          : typeof opts.discard === 'string' && opts.discard
+            ? opts.discard
+            : null;
+      if (plan.uncommitted.length) {
+        if (discard === null)
+          for (const u of plan.uncommitted)
+            refused.push(
+              `${u.clone}: ${[
+                u.count
+                  ? `${u.count} file${u.count === 1 ? '' : 's'} not committed (${u.files.slice(0, 5).join(', ')}${u.count > 5 ? ', …' : ''})`
+                  : '',
+                u.stashes
+                  ? `${u.stashes} stashed change${u.stashes === 1 ? '' : 's'}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(
+                  ' and ',
+                )} would be lost: commit what is wanted, or put the stream away with "discard"`,
+            );
+        else if (discard !== 'all' && discard !== plan.uncommittedKey)
           refused.push(
-            `${u.clone}: ${[
-              u.count
-                ? `${u.count} file${u.count === 1 ? '' : 's'} not committed (${u.files.slice(0, 5).join(', ')}${u.count > 5 ? ', …' : ''})`
-                : '',
-              u.stashes
-                ? `${u.stashes} stashed change${u.stashes === 1 ? '' : 's'}`
-                : '',
-            ]
-              .filter(Boolean)
-              .join(
-                ' and ',
-              )} would be lost: commit what is wanted, or put the stream away with "discard"`,
+            'what is not committed in its clones is no longer what you were shown: look at it again',
           );
+      }
       if (refused.length) throw refuse();
-      // From here no person's turn is taken, no agent started or
-      // restarted, no clone made. What was at work is asked once more now
-      // that nothing new can begin: the look at the clones took seconds.
+      // From here no person's turn is taken, no session started, no clone
+      // made. What was at work is asked once more now that nothing new can
+      // begin: the look at the clones took seconds.
       this.projects.setArchive(p.id, 'archiving');
+      marked = true;
       const late = this.atWork(p);
       if (late.length) {
-        this.projects.setArchive(p.id, null);
         refused.push(...late);
         throw refuse();
       }
       this.say(p, { step: 'beginning', error: null, done: null });
-      handed = true;
-      void this.putAway(p, plan, this.keyOf(looks), {
+      const worker = this.putAway(p, plan, {
         discard,
         compact: opts.compact !== false,
         by,
         userId,
-      }).finally(() => this.owned.delete(p.id));
+      });
+      handed = true; // the worker settles the state and releases the stream from here on
+      void worker.finally(() => this.owned.delete(p.id));
       return this.projects.get(p.id);
     } finally {
-      if (!handed) this.owned.delete(p.id);
+      if (!handed) {
+        // whatever threw, the stream is where it was and nobody's
+        if (marked) this.projects.setArchive(p.id, null);
+        this.owned.delete(p.id);
+      }
     }
   }
 
   private async putAway(
     p: Project,
     plan: ArchivePlan,
-    key: string,
-    opts: { discard: boolean; compact: boolean; by: string; userId?: string },
+    opts: {
+      discard: 'all' | string | null;
+      compact: boolean;
+      by: string;
+      userId?: string;
+    },
   ): Promise<void> {
     let record: ArchiveRecord;
     let compacted = 0;
     try {
-      record = await this.prepare(p, plan, key, opts);
+      record = await this.prepare(p, plan, opts);
       compacted = record.agents.filter((a) => a.compacted).length;
     } catch (err) {
       // Nothing is removed before the stream is marked as away: it is where it was.
@@ -485,8 +499,12 @@ export class ArchiveService extends EventEmitter {
   private async prepare(
     p: Project,
     plan: ArchivePlan,
-    key: string,
-    opts: { discard: boolean; compact: boolean; by: string; userId?: string },
+    opts: {
+      discard: 'all' | string | null;
+      compact: boolean;
+      by: string;
+      userId?: string;
+    },
   ): Promise<ArchiveRecord> {
     const clones = clonesIn(p.path);
     const pushed = new Map<string, string[]>();
@@ -506,12 +524,14 @@ export class ArchiveService extends EventEmitter {
     // stopped, and the stop must be known to have happened, or something
     // may still be writing in a clone when it is looked at for the last
     // time. Compacting first is an economy where it is cheap; one that
-    // fails is an economy missed, and the record says which were.
+    // fails is an economy missed, and the record says which were. Every
+    // one of these is waited for, also when another has failed: nothing
+    // of this attempt goes on after it has given the stream back.
     const wanted = new Set(
       plan.agents.filter((a) => a.compact).map((a) => a.id),
     );
     const agents: ArchiveRecord['agents'] = [];
-    await Promise.all(
+    const stops = await Promise.allSettled(
       this.agentsOf(p).map(async ({ agent }) => {
         let compacted = false;
         if (wanted.has(agent.id) && opts.compact) {
@@ -539,11 +559,19 @@ export class ArchiveService extends EventEmitter {
             `the agent "${agent.name}" could not be stopped (${(err as Error).message}), so its clones are not known to be at rest`,
           );
         }
-        this.agents.note(agent.id, `the stream was put away by ${opts.by}`);
         agents.push({ id: agent.id, name: agent.name, compacted });
       }),
     );
+    const failedStop = stops.find((r) => r.status === 'rejected');
+    if (failedStop) throw (failedStop as PromiseRejectedResult).reason as Error;
+    // Nothing is at work, and no agent has a session: one whose start was
+    // under way when the stream was marked would show here, stopped or not.
     const still = this.atWork(p);
+    for (const { agent } of this.agentsOf(p))
+      if (this.agents.get(agent.id).currentSessionId)
+        still.push(
+          `the agent "${agent.name}" has a session that was being started when the stream was put away`,
+        );
     if (still.length) throw new Error(still.join('; '));
     // Looked at again, now that nothing writes in them: what the plan saw
     // is minutes old. Everything that would refuse a request refuses here
@@ -582,23 +610,25 @@ export class ArchiveService extends EventEmitter {
     }
     if (
       looks.some((u) => u.uncommitted.length || u.stashes) &&
-      (!opts.discard || this.keyOf(looks) !== key)
+      opts.discard !== 'all' &&
+      this.keyOf(looks) !== opts.discard
     )
       throw new Error(
         'what is not committed in its clones changed while it was being put away: it is no longer what was let go',
       );
     const file = this.recordFile(p);
-    await fsp.writeFile(file, `${JSON.stringify(record, null, 2)}\n`);
-    await this.streams.commitStore({
-      stream: p.name,
-      text: `put away by ${opts.by}`,
-    });
+    await this.streams.storeChange(
+      () => fsp.writeFile(file, `${JSON.stringify(record, null, 2)}\n`),
+      { stream: p.name, text: `put away by ${opts.by}` },
+    );
     if (!(await this.streams.committed(path.join(p.name, ARCHIVE_RECORD)))) {
       await fsp.rm(file, { force: true });
       throw new Error(
         'the record of what it had cloned could not be committed in the store, and nothing is removed without it',
       );
     }
+    for (const a of agents)
+      this.agents.note(a.id, `the stream was put away by ${opts.by}`);
     return record;
   }
 
@@ -625,16 +655,20 @@ export class ArchiveService extends EventEmitter {
       );
     // also while its clones are still being removed: the two would work on the same directories
     this.own(p);
-    const away = this.projects.setArchive(p.id, 'reviving');
-    this.say(p, { step: 'beginning', error: null, done: null });
-    void this.bringBack(away, record, by)
-      .catch((err: Error) => {
-        this.logger.warn(`stream ${p.name}: not brought back: ${err.message}`);
+    let handed = false;
+    try {
+      const away = this.projects.setArchive(p.id, 'reviving');
+      this.say(p, { step: 'beginning', error: null, done: null });
+      const worker = this.bringBack(away, record, by);
+      handed = true;
+      void worker.finally(() => this.owned.delete(p.id));
+      return away;
+    } finally {
+      if (!handed) {
         this.projects.setArchive(p.id, 'archived');
-        this.say(p, { step: null, error: err.message });
-      })
-      .finally(() => this.owned.delete(p.id));
-    return away;
+        this.owned.delete(p.id);
+      }
+    }
   }
 
   private async bringBack(
@@ -642,54 +676,65 @@ export class ArchiveService extends EventEmitter {
     record: ArchiveRecord,
     by: string,
   ): Promise<void> {
-    // what a removal that was cut short left beside the clones' places
-    await this.streams.sweepRemoved(p.path);
-    const lines: string[] = [];
-    const failed: string[] = [];
-    for (const c of record.clones) {
-      this.say(p, { step: `cloning ${c.name}` });
-      const made = await this.streams.bringBack(p.id, {
-        name: c.name,
-        source: c.source,
-        // the branch it was on, when that is not where a clone starts anyway
-        branch:
-          c.branch && c.branch !== c.main?.ref.replace(/^[^/]+\//, '')
-            ? c.branch
-            : null,
-        head: c.head,
-      });
-      const dest = path.join(p.path, c.name);
-      if (made.failed && !fs.existsSync(dest)) {
-        failed.push(c.name);
-        lines.push(`- ${c.name}: could not be cloned again: ${made.note}`);
-        continue;
-      }
-      lines.push(await this.since(dest, c, made));
-    }
     const away = Date.now() - record.archivedAt;
-    const notice = [
-      `This stream was put away on ${day(record.archivedAt)} and brought back on ${day(Date.now())}, ${days(away)} later, by ${by}. While it was away its clones were off the disk; they have been made again from their remotes. What was committed and pushed then is in them; what you remember of their files is from before, and may have changed.`,
-      ...(lines.length ? ['', ...lines] : []),
-    ].join('\n');
-    // One notice per absence: a revival asked for again replaces it.
-    for (const { agent } of this.agentsOf(p)) {
-      this.agents.tellAtStart(agent.id, notice);
-      this.agents.note(
-        agent.id,
-        `the stream was brought back by ${by} after ${days(away)}; the agent is told at its next start how long it was away and what landed meanwhile`,
-      );
+    const failed: string[] = [];
+    try {
+      // what a removal that was cut short left beside the clones' places
+      await this.streams.sweepRemoved(p.path);
+      const lines: string[] = [];
+      for (const c of record.clones) {
+        this.say(p, { step: `cloning ${c.name}` });
+        const made = await this.streams.bringBack(p.id, {
+          name: c.name,
+          source: c.source,
+          branch: c.branch, // also when it was main's: the remote may start a clone elsewhere by now
+          head: c.head,
+        });
+        const dest = path.join(p.path, c.name);
+        if (made.failed && !fs.existsSync(dest)) {
+          failed.push(c.name);
+          lines.push(`- ${c.name}: could not be cloned again: ${made.note}`);
+          continue;
+        }
+        lines.push(await this.since(dest, c, made));
+      }
+      const notice = [
+        `This stream was put away on ${day(record.archivedAt)} and brought back on ${day(Date.now())}, ${days(away)} later, by ${by}. While it was away its clones were off the disk; they have been made again from their remotes. What was committed and pushed then is in them; what you remember of their files is from before, and may have changed.`,
+        ...(lines.length ? ['', ...lines] : []),
+      ].join('\n');
+      // One notice per absence: a revival asked for again replaces it.
+      for (const { agent } of this.agentsOf(p)) {
+        this.agents.tellAtStart(agent.id, notice);
+        this.agents.note(
+          agent.id,
+          `the stream was brought back by ${by} after ${days(away)}; the agent is told at its next start how long it was away and what landed meanwhile`,
+        );
+      }
+      // Back from here on, whatever happens next.
+      this.projects.setArchive(p.id, null);
+    } catch (err) {
+      // not back yet: away as it was, with its record, to be asked for again
+      const why = (err as Error).message;
+      this.logger.warn(`stream ${p.name}: not brought back: ${why}`);
+      this.projects.setArchive(p.id, 'archived');
+      this.say(p, { step: null, error: why });
+      return;
     }
-    // Back first, then the record goes: stopped between the two, the
-    // stream is there with a leftover file, not away with no record to
-    // come back by.
-    this.projects.setArchive(p.id, null);
-    await fsp.rm(this.recordFile(p), { force: true }).catch(() => undefined);
-    await this.streams.commitStore({
-      stream: p.name,
-      text: `brought back by ${by}`,
-    });
+    // The record goes once the stream is back: a failure here, or a stop
+    // between the two, leaves a leftover file and a stream that is there;
+    // never a stream that is away with nothing to come back by.
     const done = `brought back by ${by} after ${days(away)}: ${record.clones.length - failed.length} of ${record.clones.length} clone${record.clones.length === 1 ? '' : 's'} made again${failed.length ? ` (not ${failed.join(', ')})` : ''}`;
     this.logger.log(`stream ${p.name}: ${done}`);
+    try {
+      await this.streams.storeChange(
+        () => fsp.rm(this.recordFile(p), { force: true }),
+        { stream: p.name, text: `brought back by ${by}` },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `stream ${p.name}: back, but its record was not tidied away: ${(err as Error).message}`,
+      );
+    }
     this.say(p, { step: null, done });
   }
 

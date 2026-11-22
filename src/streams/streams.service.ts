@@ -9,6 +9,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -88,7 +89,7 @@ export interface Unsaved {
   path: string;
   /** Where it was cloned from (`origin`); null for a repository made in place, with no such remote. */
   source: string | null;
-  /** Whether that remote could be asked just now. What it holds is the only evidence that a commit is somewhere else: another remote's refs, or `origin`'s as last seen, are not. */
+  /** Whether that remote could be asked just now. What it holds now is the only evidence that a commit is somewhere else: another remote's refs, or the clone's own memory of `origin`, are not. */
   fetched: boolean;
   /** The branch checked out; null when none is (a detached HEAD). */
   branch: string | null;
@@ -104,12 +105,17 @@ export interface Unsaved {
   uncommitted: string[];
   /** Refs that are neither branches nor the remote's, which the remote does not have as they are: tags, notes, anything else. */
   refs: string[];
-  /** State this look does not vouch for, each as a sentence: a submodule with work of its own, linked worktrees. */
+  /** What stands in the way besides, each as a sentence: a submodule with work of its own, linked worktrees, a remembered remote branch with commits `origin` lacks, an origin inside what is being removed. */
   beyond: string[];
   /** Questions git did not answer. What is not known is not safe to remove. */
   unknown: string[];
+  /** What is not committed, as it is now: the files with their sizes and times, the stashes by their commits. Changes when any of it does. */
+  print: string;
   sizeKb: number;
 }
+
+/** Where the remote's branches are fetched to when a clone is looked at: a namespace of the manager's own, so that none of the clone's refs is touched and none of them is taken for news. */
+const EVIDENCE = 'refs/agent-manager/origin';
 
 /** What a machine-readable result may grow to before it is refused rather than parsed in part. */
 const FULL_LIMIT = 32 * 1024 * 1024;
@@ -322,7 +328,29 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
    * aek"); otherwise the files changed are the message.
    */
   commitStore(why?: { stream: string; text: string }): Promise<number> {
+    return this.inStore(() => this.commitNow(why));
+  }
+
+  /**
+   * A change to the store and its commit as one step: the periodic
+   * commit cannot come between the two and take the change into a
+   * commit that does not say who caused it.
+   */
+  storeChange(
+    change: () => Promise<void>,
+    why: { stream: string; text: string },
+  ): Promise<number> {
     return this.inStore(async () => {
+      await change();
+      return this.commitNow(why);
+    });
+  }
+
+  private async commitNow(why?: {
+    stream: string;
+    text: string;
+  }): Promise<number> {
+    {
       if (!fs.existsSync(path.join(this.config.storeDir, '.git'))) return 0;
       const status = await this.git([
         'status',
@@ -390,7 +418,7 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
         }
       }
       return commits;
-    });
+    }
   }
 
   // ---- streams ------------------------------------------------------------
@@ -447,6 +475,8 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
           file,
           instructionsTemplate(name, (input.purpose as string) ?? ''),
         );
+      // committed here, with the writing: the periodic commit must not get there first and leave out who started it
+      await this.commitNow({ stream: name, text: `started by ${by}` });
     });
     linkHome(home, folder);
     const project = this.projects.createStream({
@@ -456,7 +486,6 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       delegation,
       group,
     });
-    await this.commitStore({ stream: name, text: `started by ${by}` });
     this.logger.log(`stream ${name} started by ${by}: ${home}`);
     return project;
   }
@@ -788,9 +817,14 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
     }
     // before the setup, which may depend on what is checked out
     let offBranch: string | null = null;
-    if (on) {
-      const git = (...args: string[]) =>
-        run('git', args, { cwd: making, timeoutMs: 60_000 });
+    const git = (...args: string[]) =>
+      run('git', args, { cwd: making, timeoutMs: 60_000 });
+    if (
+      on &&
+      (
+        await git('symbolic-ref', '--quiet', '--short', 'HEAD')
+      ).stdout.trim() !== on.branch
+    ) {
       let r = await git('checkout', '-q', on.branch, '--');
       // a branch that held nothing the remote lacked was never pushed by name: the commit is there, the name is not
       if (r.code !== 0 && on.head)
@@ -830,26 +864,36 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * What of a clone is nowhere else: the question before it is removed.
-   * The remote is asked first, and only what it holds now counts as
-   * somewhere else: not another remote's refs, and not this one's as
-   * the clone last saw them (a branch somebody deleted there is no
-   * longer a place the commits are). A question git does not answer is
-   * reported as unknown, never as "nothing": this answer licenses a
-   * removal. What no ref holds (commits left behind by a rebase, an
-   * amend or a reset, which only the reflog still names) is not counted
-   * as work: every rebase leaves some.
+   *
+   * Somewhere else means: on a branch of `origin` as it is now. The
+   * remote's branches are fetched for this look into a namespace of the
+   * manager's own, with a refspec and settings of its own, so that the
+   * look changes none of the clone's refs (a fetch as the clone is set
+   * up may prune tags, or leave a branch it no longer follows stale) and
+   * takes none of them for news; what was fetched must agree with what
+   * the remote lists. A tag, a note or any other ref is somewhere else
+   * when the remote lists it under the same name with the same object.
+   * An origin that is a directory inside `within` (what is being
+   * removed with the clone) is no other place.
+   *
+   * A question git does not answer is reported as unknown, never as
+   * "nothing": this answer licenses a removal. What no ref and no HEAD
+   * holds (commits left behind by a rebase, an amend or a reset, which
+   * only the reflog still names) is not counted as work: every rebase
+   * leaves some.
    */
-  async unsaved(clone: { name: string; path: string }): Promise<Unsaved> {
+  async unsaved(
+    clone: { name: string; path: string },
+    within = path.dirname(clone.path),
+  ): Promise<Unsaved> {
     const cwd = clone.path;
     const unknown: string[] = [];
-    /** A question whose failure is itself an answer (no such remote, HEAD on no branch). */
-    const quiet = async (...args: string[]) => {
-      const r = await run('git', args, { cwd, timeoutMs: 60_000 });
-      return r.code === 0 ? r.stdout.trim() : null;
-    };
+    const beyond: string[] = [];
+    const raw = (args: string[], timeoutMs = 60_000) =>
+      run('git', args, { cwd, timeoutMs });
     /** A question that must be answered. */
     const ask = async (what: string, ...args: string[]) => {
-      const r = await run('git', args, { cwd, timeoutMs: 60_000 });
+      const r = await raw(args);
       if (r.code === 0) return r.stdout;
       unknown.push(`${what} (${tail(r.out, 2) || 'git did not answer'})`);
       return null;
@@ -864,42 +908,104 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       }
       return n;
     };
+    const real = (p: string) => {
+      try {
+        return fs.realpathSync(p);
+      } catch {
+        return path.resolve(p);
+      }
+    };
 
-    const source = await quiet('remote', 'get-url', 'origin');
+    // ---- the remote, and what it holds now
+    let source: string | null = null;
+    const remotes = await ask('which remotes it has', 'remote');
+    if (remotes?.split('\n').includes('origin'))
+      source =
+        (
+          await ask('where its origin is', 'remote', 'get-url', 'origin')
+        )?.trim() || null;
+    let elsewhere = !!source;
+    if (source && !/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {
+      // a path on this machine, perhaps: one inside what goes with the clone is no other place
+      const at = real(path.resolve(cwd, source));
+      const root = real(within);
+      if (
+        fs.existsSync(at) &&
+        (at === real(cwd) || at === root || at.startsWith(root + path.sep))
+      ) {
+        elsewhere = false;
+        beyond.push(
+          `its origin (${source}) is inside what would be removed with it: that is no other place for its commits`,
+        );
+      }
+    }
     let fetched = false;
-    /** What the remote holds now, by ref name: for the refs that are not branches. */
+    /** What the remote lists now, by ref name. */
     const there = new Map<string, string>();
-    if (source) {
-      const f = await run('git', ['fetch', '--quiet', '--prune', 'origin'], {
-        cwd,
-        timeoutMs: 120_000,
-      });
+    let mainName: string | null = null;
+    if (source && elsewhere) {
+      const f = await raw(
+        [
+          '-c',
+          'fetch.prune=false',
+          '-c',
+          'fetch.pruneTags=false',
+          '-c',
+          'remote.origin.prune=false',
+          '-c',
+          'remote.origin.pruneTags=false',
+          'fetch',
+          '--quiet',
+          '--no-tags',
+          '--no-write-fetch-head',
+          '--no-recurse-submodules',
+          '--prune', // of the namespace named here, and nothing else
+          'origin',
+          `+refs/heads/*:${EVIDENCE}/heads/*`,
+        ],
+        120_000,
+      );
       const ls =
         f.code === 0
-          ? await run('git', ['ls-remote', 'origin'], {
-              cwd,
-              timeoutMs: 120_000,
-            })
+          ? await raw(['ls-remote', '--symref', 'origin'], 120_000)
           : f;
       if (ls.code === 0) {
         fetched = true;
         for (const line of ls.stdout.split('\n')) {
-          const [oid, name] = line.split('\t');
-          if (oid && name) there.set(name, oid);
+          const [a, b] = line.split('\t');
+          if (!a || !b) continue;
+          if (a.startsWith('ref: ') && b === 'HEAD')
+            mainName = a.slice('ref: refs/heads/'.length) || null;
+          else if (!a.startsWith('ref: ')) there.set(b, a);
         }
       }
     }
-    // somewhere else: on a branch of the remote as just fetched, and nowhere else
-    const saved = ['--not', '--remotes=origin'];
-    const landing = await this.landing(cwd);
-    const mainSha = landing ? await quiet('rev-parse', landing.main) : null;
-    // the local branch that is main's: what is ahead on it is unlanded work, not a branch to push
-    const mainLocal = landing ? landing.main.replace(/^[^/]+\//, '') : null;
-    const symbolic = await quiet('symbolic-ref', '--quiet', '--short', 'HEAD');
+    // somewhere else: on a branch of the remote, as just fetched into our own namespace
+    const evidence = fetched ? [`--glob=${EVIDENCE}/heads/*`] : [];
 
+    // ---- what is checked out
+    let branch: string | null = null;
+    let isDetached = false;
+    const sym = await raw(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    if (sym.code === 0) branch = sym.stdout.trim();
+    else if (sym.code === 1) isDetached = true;
+    else
+      unknown.push(
+        `what is checked out (${tail(sym.out, 2) || 'git did not answer'})`,
+      );
+    let head: string | null = null;
+    const at = await raw(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+    if (at.code === 0) head = at.stdout.trim();
+    else if (at.code !== 1)
+      // 1: no commit yet
+      unknown.push(
+        `which commit is checked out (${tail(at.out, 2) || 'git did not answer'})`,
+      );
+
+    // ---- every ref the clone has
     const unpushed: Unsaved['unpushed'] = [];
     const refs: string[] = [];
-    let any = false;
+    const fetchedHeads = new Map<string, string>();
     for (const line of (
       (await ask(
         'which refs it has',
@@ -910,39 +1016,80 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       .split('\n')
       .filter(Boolean)) {
       const [oid, name] = line.split(' ') as [string, string];
-      any = true;
-      if (name.startsWith('refs/remotes/') || name === 'refs/stash') continue;
+      if (name.startsWith(`${EVIDENCE}/`)) {
+        fetchedHeads.set(
+          `refs/heads/${name.slice(`${EVIDENCE}/heads/`.length)}`,
+          oid,
+        );
+        continue;
+      }
+      if (name === 'refs/stash') continue; // counted below
       if (name.startsWith('refs/heads/')) {
         const b = name.slice('refs/heads/'.length);
         const n = await count(
           `how many commits of ${b} the remote lacks`,
           name,
-          ...saved,
+          '--not',
+          ...evidence,
         );
-        if (n) unpushed.push({ branch: b, commits: n, main: b === mainLocal });
+        // the local branch that is main's: what is ahead on it is unlanded work, not a branch to push
+        if (n) unpushed.push({ branch: b, commits: n, main: b === mainName });
+        continue;
+      }
+      if (name.startsWith('refs/remotes/')) {
+        // The clone's memory of a remote's branch. It is no evidence; but
+        // it may be the last thing holding commits that the remote has
+        // dropped since and no local branch has either.
+        const n = await count(
+          `whether ${name.slice('refs/'.length)} holds commits nothing else does`,
+          name,
+          '--not',
+          ...evidence,
+          '--branches',
+        );
+        if (n)
+          beyond.push(
+            `${name.slice('refs/'.length)} is the clone's memory of a branch with ${n} commit${n === 1 ? '' : 's'} that origin does not have now and no local branch holds: put ${n === 1 ? 'it' : 'them'} on a branch of the stream's, or delete the ref if ${n === 1 ? 'it is' : 'they are'} not wanted`,
+          );
         continue;
       }
       // a tag, a note, anything else: kept only if the remote has it by that name, as it is here
       if (there.get(name) !== oid) refs.push(name.replace(/^refs\//, ''));
     }
-    const head = any
-      ? await quiet('rev-parse', '--verify', '--quiet', 'HEAD')
+    // what was fetched is what the remote lists: or the remote moved while it was being asked
+    if (fetched)
+      for (const [name, oid] of there)
+        if (name.startsWith('refs/heads/') && fetchedHeads.get(name) !== oid) {
+          unknown.push(
+            'what its remote holds (it changed while it was being asked: ask again)',
+          );
+          break;
+        }
+    const mainSha = mainName
+      ? (there.get(`refs/heads/${mainName}`) ?? null)
       : null;
     const detached =
-      symbolic === null && head
+      isDetached && head
         ? await count(
             'how many commits the detached HEAD holds',
             'HEAD',
-            ...saved,
+            '--not',
+            ...evidence,
             '--branches',
           )
         : 0;
-    const stashes = (
-      (await ask('whether anything is stashed', 'stash', 'list')) ?? ''
+
+    // ---- what is not committed
+    const stashed = (
+      (await ask(
+        'whether anything is stashed',
+        'stash',
+        'list',
+        '--format=%H',
+      )) ?? ''
     )
       .split('\n')
-      .filter(Boolean).length;
-
+      .filter(Boolean);
     const uncommitted: string[] = [];
     const status = await ask(
       'which files are not committed',
@@ -952,9 +1099,11 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       '--untracked-files=all',
     );
     const entries = (status ?? '').split('\0').filter(Boolean);
+    const paths: string[] = [];
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i]!;
       uncommitted.push(e.slice(3));
+      paths.push(e.slice(3));
       if (e[0] === 'R' || e[0] === 'C') i++;
     }
     // Files git was told not to look at (assume-unchanged: a lower-case
@@ -970,11 +1119,25 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       .split('\0')
       .filter(Boolean)) {
       const tag = e[0]!;
-      if (tag === 'S' || (tag >= 'a' && tag <= 'z'))
+      if (tag === 'S' || (tag >= 'a' && tag <= 'z')) {
         uncommitted.push(`${e.slice(2)} (hidden from git status)`);
+        paths.push(e.slice(2));
+      }
     }
+    const print = createHash('sha256');
+    for (const rel of [...paths].sort()) {
+      let stat = 'gone';
+      try {
+        const st = fs.lstatSync(path.join(cwd, rel));
+        stat = `${st.size}:${st.mtimeMs}`;
+      } catch {
+        /* deleted in the working tree: that is its state */
+      }
+      print.update(`${rel}\0${stat}\0`);
+    }
+    print.update(stashed.join(' '));
 
-    const beyond: string[] = [];
+    // ---- what a look at this repository alone does not cover
     const trees = (
       (await ask(
         'whether it has linked worktrees',
@@ -990,34 +1153,73 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       beyond.push(
         `it has linked worktrees (${trees.slice(1).join(', ')}): what is checked out in them is not looked at, and they break when the clone goes. Remove them first (\`git worktree remove\`)`,
       );
+    // Submodules that are checked out are looked at as the clone is, each
+    // in its own repository; one that is no longer checked out but whose
+    // repository is still kept inside the clone is not looked at, and says so.
+    const checkedOut = new Set<string>();
     for (const line of (
-      (await ask(
-        'whether it has submodules',
-        'submodule',
-        'status',
-        '--recursive',
-      )) ?? ''
+      (await ask('whether it has submodules', 'submodule', 'status')) ?? ''
     )
       .split('\n')
       .filter(Boolean)) {
-      if (line.startsWith('-')) continue; // not initialised: nothing of its own is here
+      if (line.startsWith('-')) continue; // not initialised
       const rel = line.slice(1).trim().split(' ')[1];
       if (!rel) continue;
-      const at = path.join(cwd, rel);
-      const dirty = await run('git', ['status', '--porcelain'], {
-        cwd: at,
-        timeoutMs: 60_000,
-      });
-      const own = await run(
-        'git',
-        ['rev-list', '--count', '--all', 'HEAD', '--not', '--remotes'],
-        { cwd: at, timeoutMs: 60_000 },
+      checkedOut.add(real(path.join(cwd, rel)));
+      const sub = await this.unsaved(
+        { name: rel, path: path.join(cwd, rel) },
+        within,
       );
-      if (dirty.code !== 0 || own.code !== 0)
-        unknown.push(`what its submodule ${rel} holds`);
-      else if (dirty.stdout.trim() || Number(own.stdout.trim()) > 0)
+      if (sub.unknown.length)
+        unknown.push(`what its submodule ${rel} holds (${sub.unknown[0]})`);
+      else if (
+        sub.unpushed.length ||
+        sub.detached ||
+        sub.stashes ||
+        sub.uncommitted.length ||
+        sub.refs.length ||
+        sub.beyond.length ||
+        (sub.source && !sub.fetched)
+      )
         beyond.push(
-          `its submodule ${rel} has work of its own that is nowhere else: commit and push it there first`,
+          `its submodule ${rel} has work of its own that is nowhere else, or could not be compared with its remote: commit and push it there first`,
+        );
+    }
+    const gitDir = (
+      await ask('where its repository is', 'rev-parse', '--absolute-git-dir')
+    )?.trim();
+    if (gitDir) {
+      const kept: string[] = [];
+      const walk = (dir: string, depth: number) => {
+        let names: string[] = [];
+        try {
+          names = fs.readdirSync(dir);
+        } catch {
+          return;
+        }
+        if (names.includes('HEAD')) {
+          // a repository: is it the one behind a submodule that is checked out?
+          let tree = '';
+          try {
+            tree =
+              /^\s*worktree\s*=\s*(.+)$/m
+                .exec(fs.readFileSync(path.join(dir, 'config'), 'utf8'))?.[1]
+                ?.trim() ?? '';
+          } catch {
+            /* no config: not checked out anywhere we can tell */
+          }
+          if (!tree || !checkedOut.has(real(path.resolve(dir, tree))))
+            kept.push(path.relative(cwd, dir));
+          walk(path.join(dir, 'modules'), depth + 1);
+          return;
+        }
+        if (depth < 6)
+          for (const n of names) walk(path.join(dir, n), depth + 1);
+      };
+      walk(path.join(gitDir, 'modules'), 0);
+      if (kept.length)
+        beyond.push(
+          `it keeps the repository of a submodule that is not checked out (${kept.join(', ')}): what that holds is not looked at. Check it out again, or remove it if nothing there is wanted`,
         );
     }
 
@@ -1027,16 +1229,20 @@ export class StreamsService implements OnModuleInit, OnModuleDestroy {
       path: clone.path,
       source,
       fetched,
-      branch: symbolic,
+      branch,
       head,
-      main: landing && mainSha ? { ref: landing.main, sha: mainSha } : null,
+      main:
+        mainName && mainSha
+          ? { ref: `origin/${mainName}`, sha: mainSha }
+          : null,
       unpushed,
       detached,
-      stashes,
+      stashes: stashed.length,
       uncommitted,
       refs,
       beyond,
       unknown,
+      print: print.digest('hex'),
       sizeKb: du.code === 0 ? Number(du.stdout.split(/\s/)[0]) || 0 : 0,
     };
   }
