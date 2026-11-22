@@ -278,12 +278,40 @@ Still to be said by the person:
 
 - whether an agent may start a stream. Today only a person can.
 
-To be found by running, not by deciding:
+Found by running (2026-11-22):
 
-- whether agents rebase, gate and push reliably without being walked
-  through it, and what the harness note has to say for that;
+- **Agents land on a shared main without being walked through it.**
+  Two streams, each with a clone of one scratch repository and a Haiku
+  agent, each told one sentence at the same moment ("add X to the
+  library and get it onto main; track it as a feature first"). Both
+  read the stream's and the clone's instructions, wrote the feature in
+  the stream's folder first, branched as `<stream>/<topic>`, ran the
+  repository's gate, committed with the `Feature:` trailer and pushed.
+  The second found main had moved, rebased, kept both changes in the
+  order the file asks for, ran the gate on the result and pushed; both
+  were on main 39 seconds after being asked, the gate green on what
+  landed, each feature at `review` with a report, and the store had
+  one commit per change per stream. The harness note carried all of
+  it. One agent invented a git identity for its commit; the note now
+  says whose identity commits carry.
+- **An agent can be forked into a stream with its context.** A Claude
+  conversation copied into another directory's store and resumed there
+  with `--fork-session` is a new conversation that has everything the
+  old one had and knows it is in the new directory; the original is
+  untouched and carries on. (Without the copy, a resume from another
+  directory finds nothing: Claude Code looks a conversation up by
+  working directory.) So a stream need not start from nothing: its
+  first agent can be a fork of the agent whose conversation gave rise
+  to it. Not built. What it would need beyond the fork itself: the
+  forked agent's dialog record, which the manager builds from its own
+  transcript and would have to carry over; and the system prompt,
+  which Claude Code keeps for a conversation until it is compacted.
+
+Still to be found by running:
+
 - how much friction a fresh clone's setup really is, repository by
   repository;
+- Codex and Copilot agents in a stream;
 - what the UI wants to be.
 
 ## Order
