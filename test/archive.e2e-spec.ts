@@ -180,6 +180,51 @@ describe('a stream put away and brought back', () => {
     // the commit on main goes to a branch of the stream's, which is pushed as it is
     git(clone, 'branch', 'tidy/straight', 'main');
     git(clone, 'branch', '-f', 'main', 'origin/main');
+
+    // what is somewhere else is what its remote has now: not what another remote was once seen to have
+    git(clone, 'update-ref', 'refs/remotes/backup/work', head);
+    const planOf = async () =>
+      (await api.get(`/api/projects/${tidy.id}/archive/plan`)).body.plan;
+    expect((await planOf()).pushes.map((x: any) => x.branch)).toEqual([
+      'tidy/straight',
+      'tidy/work',
+    ]);
+    git(clone, 'update-ref', '-d', 'refs/remotes/backup/work');
+    // a tag the remote does not have would go with the clone: it stands in the way, by name
+    git(clone, 'tag', '-a', 'v0', '-m', 'the first', head);
+    expect((await planOf()).blocked).toEqual([
+      'thing: tags/v0 is not on the remote as it is here: push it, or delete it if not wanted',
+    ]);
+    git(clone, 'tag', '-d', 'v0');
+    // a remote that cannot be asked proves nothing about what it holds
+    git(clone, 'remote', 'set-url', 'origin', path.join(remote, 'nowhere'));
+    expect((await planOf()).blocked).toContain(
+      'thing: its remote could not be asked, so it cannot be told which of its commits are there',
+    );
+    git(clone, 'remote', 'set-url', 'origin', remote);
+    // a question git does not answer is not "nothing to save"
+    const index = path.join(clone, '.git', 'index');
+    const good = fs.readFileSync(index);
+    fs.writeFileSync(index, 'not an index');
+    expect(
+      ((await planOf()).blocked as string[]).some((b) =>
+        b.startsWith(
+          'thing: it could not be told which files are not committed (',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      (await api.post(`/api/projects/${tidy.id}/archive`, { discard: true }))
+        .status,
+    ).toBe(409);
+    fs.writeFileSync(index, good);
+    // a file git was told not to look at may have changed unseen: it is listed with the rest
+    git(clone, 'update-index', '--assume-unchanged', 'lib.txt');
+    expect((await planOf()).uncommitted[0].files).toEqual([
+      'probe.log',
+      'lib.txt (hidden from git status)',
+    ]);
+    git(clone, 'update-index', '--no-assume-unchanged', 'lib.txt');
     const again = await api.post(`/api/projects/${tidy.id}/archive`, {});
     expect(again.status).toBe(409);
     expect(again.body.message).toContain(
@@ -202,9 +247,25 @@ describe('a stream put away and brought back', () => {
   }, 60000);
 
   it('goes away with its clones off the disk, its branches pushed, its agents compacted and stopped, and a record in its folder', async () => {
-    const put = await api.post(`/api/projects/${tidy.id}/archive`, {
-      discard: true,
+    // letting go of what was shown is not letting go of what turned up since
+    const shown = (await api.get(`/api/projects/${tidy.id}/archive/plan`)).body
+      .plan.uncommittedKey as string;
+    fs.writeFileSync(path.join(clone, 'later.log'), 'after the look\n');
+    const stale = await api.post(`/api/projects/${tidy.id}/archive`, {
+      discard: shown,
     });
+    expect(stale.status).toBe(409);
+    expect(stale.body.message).toContain(
+      'what is not committed in its clones is no longer what you were shown',
+    );
+    fs.rmSync(path.join(clone, 'later.log'));
+    // asked for twice at once, it is put away once
+    const both = await Promise.all([
+      api.post(`/api/projects/${tidy.id}/archive`, { discard: shown }),
+      api.post(`/api/projects/${tidy.id}/archive`, { discard: shown }),
+    ]);
+    expect(both.map((r) => r.status).sort()).toEqual([202, 409]);
+    const put = both.find((r) => r.status === 202)!;
     expect(put.status).toBe(202);
     expect(put.body.project.archive.state).toBe('archiving');
     const away = await until('the stream to be away', async () => {
@@ -283,6 +344,10 @@ describe('a stream put away and brought back', () => {
     expect(
       (await api.post(`/api/projects/${tidy.id}/archive`, {})).status,
     ).toBe(409);
+    // nor is a session of one of its agents started
+    const restarted = await api.post(`/api/agents/${agent.id}/restart`);
+    expect(restarted.status).toBe(409);
+    expect(restarted.body.message).toContain('is put away');
   }, 60000);
 
   it('is not an agent’s to put away or bring back', async () => {
@@ -305,6 +370,13 @@ describe('a stream put away and brought back', () => {
     expect(
       (await its.post(`/api/projects/${other.id}/revive`, {})).status,
     ).toBe(403);
+    // however the address is spelled
+    for (const tail of ['archive/', 'ARCHIVE', 'revive/', 'Revive'])
+      expect(
+        (await its.post(`/api/projects/${other.id}/${tail}`, { discard: true }))
+          .status,
+      ).toBe(403);
+    expect((await archiveOf(other.id)).archive).toBeNull();
   }, 30000);
 
   it('comes back with its clones made again and its agents told what landed meanwhile', async () => {
@@ -379,25 +451,48 @@ describe('a stream put away and brought back', () => {
     ).toBe(true);
   }, 60000);
 
-  it('tells an agent it has no hooks in ahead of the first thing said to it, and puts away a stream that has cloned nothing', async () => {
+  it('tells an agent it has no hooks in ahead of the first thing said to it, once however often it was away; restores a branch the remote never had by name; puts away a stream that has cloned nothing', async () => {
     const other = ((await api.get('/api/projects')).body as any[]).find(
       (x) => x.project.name === 'other',
     ).project;
     const a = (await api.get(`/api/projects/${other.id}/agents`)).body[0].agent;
-    expect(
-      (await api.post(`/api/projects/${other.id}/archive`, {})).status,
-    ).toBe(202);
-    await until(
-      'the stream to be away',
-      async () => (await archiveOf(other.id)).archive?.state === 'archived',
+    // a clone on a branch that holds nothing the remote lacks: nothing to push, and the name is its own
+    await api.post(`/api/projects/${other.id}/clones`, { repository: 'thing' });
+    const idle = path.join(other.path, 'thing');
+    await until('the clone', async () =>
+      (
+        (await api.get(`/api/projects/${other.id}/clones`)).body.clones as any[]
+      ).some((c) => c.name === 'thing' && c.state === 'ready'),
     );
-    expect((await api.post(`/api/projects/${other.id}/revive`)).status).toBe(
-      202,
+    git(idle, 'checkout', '-q', '-b', 'other/idle');
+    const at = git(idle, 'rev-parse', 'HEAD').trim();
+    const cycle = async () => {
+      expect(
+        (await api.post(`/api/projects/${other.id}/archive`, {})).status,
+      ).toBe(202);
+      await until('the stream to be away', async () => {
+        const s = await archiveOf(other.id);
+        if (s.progress.error) throw new Error(s.progress.error);
+        return s.archive?.state === 'archived' && !s.progress.step;
+      });
+      expect(fs.existsSync(idle)).toBe(false);
+      expect((await api.post(`/api/projects/${other.id}/revive`)).status).toBe(
+        202,
+      );
+      await until('the stream to be back', async () => {
+        const s = await archiveOf(other.id);
+        if (s.progress.error) throw new Error(s.progress.error);
+        return !s.archive && !s.progress.step;
+      });
+    };
+    // away and back twice before a word is said to its agent
+    await cycle();
+    expect(git(idle, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe(
+      'other/idle',
     );
-    await until(
-      'the stream to be back',
-      async () => !(await archiveOf(other.id)).archive,
-    );
+    expect(git(idle, 'rev-parse', 'HEAD').trim()).toBe(at);
+    expect(git(remote, 'branch', '--list', 'other/*').trim()).toBe(''); // never pushed: it held nothing
+    await cycle();
     process.env.AGENT_MANAGER_FAKE_NO_HOOKS = '1';
     try {
       await turn(a.id, 'where were we');
@@ -412,6 +507,21 @@ describe('a stream put away and brought back', () => {
     expect(said[0]).toMatch(
       /^\[From the manager, not from a person\]\nThis stream was put away on \d{4}-\d\d-\d\d and brought back on [^]*\n\nwhere were we$/,
     );
+    expect(said[0]!.split('This stream was put away on ')).toHaveLength(2); // the last absence, once
+    expect(said[0]).toContain('- thing: was at ');
     expect(said[1]).toBe('and now');
-  }, 30000);
+
+    const bare = (await api.post('/api/streams', { name: 'bare' })).body
+      .project;
+    expect(
+      (await api.post(`/api/projects/${bare.id}/archive`, {})).status,
+    ).toBe(202);
+    const gone = await until('the stream to be away', async () => {
+      const s = await archiveOf(bare.id);
+      return s.archive?.state === 'archived' && !s.progress.step ? s : null;
+    });
+    expect(gone.progress.done).toBe(
+      'put away by admin: 0 clones removed (under 1 MB), 0 of 0 agents compacted',
+    );
+  }, 60000);
 });

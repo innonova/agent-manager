@@ -375,7 +375,10 @@ export class AuthService
    * process runs as the same user as the manager.
    */
   scopeAllows(scope: AgentScope, method: string, path: string): boolean {
-    const p = path.replace(/\?.*$/, '');
+    // As the router reads it: a trailing slash and the case of a route's
+    // own words make no difference to which route answers, so they must
+    // make none to what is allowed.
+    const p = path.replace(/\?.*$/, '').replace(/\/+$/, '') || '/';
     if (p === '/api/auth/me' || p === '/api/health' || p === '/api/profiles')
       return true;
     if (p === '/api/events') return true;
@@ -388,7 +391,9 @@ export class AuthService
       `^/api/projects/${escapeRe(scope.projectId)}(/|$)`,
     );
     if (inProject.test(p)) {
-      const rest = p.slice(`/api/projects/${scope.projectId}`.length);
+      const rest = p
+        .slice(`/api/projects/${scope.projectId}`.length)
+        .toLowerCase();
       if (rest === '' || rest === '/') return method === 'GET';
       if (rest === '/agents/restart') return false;
       // putting its stream away and bringing it back are a person's to do; where it stands, anyone may ask

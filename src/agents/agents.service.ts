@@ -1174,42 +1174,43 @@ export class AgentsService
    * be told.
    */
   takeForkNotice(id: string): string | null {
-    const row = this.db
-      .prepare('SELECT fork_notice FROM agents WHERE id = ?')
-      .get(id) as { fork_notice: string | null } | undefined;
-    if (!row?.fork_notice) return null;
+    const notice = this.startNotice(id);
+    if (!notice) return null;
     if (!this.hooked(this.get(id))) return null; // told with its first turn instead
     // Handed over, not yet known to have arrived: the answer may be lost
     // on its way to the hook. It is given again at every start until the
     // agent has ended a turn in a session that asked (see the ingest path).
     const session = this.get(id).currentSessionId;
     if (session) this.forkNoticeAsked.set(id, session);
-    return row.fork_notice;
+    return notice;
   }
   /** Forks whose notice was asked for by a session of theirs since the manager started. */
   private readonly forkNoticeAsked = new Map<string, string>();
 
   /**
-   * Something the agent is to be told when it next starts, after what
-   * it is already owed: that it was away with its stream, for how long,
-   * and what changed meanwhile. It travels the way a fork's notice does
-   * (the column is named for that first use): through the hook of the
-   * session that starts, until a turn has ended in a session that asked;
-   * or, for an agent the manager has no such hook in, ahead of the
-   * first message sent to it.
+   * What the agent is to be told when it next starts about its stream
+   * having been away: for how long, and what changed meanwhile. One per
+   * absence: written again (a revival that was cut short and asked for
+   * once more) it replaces what was there. It travels the way a fork's
+   * notice does, after it: through the hook of the session that starts,
+   * until a turn has ended in a session that asked; or, for an agent the
+   * manager has no such hook in, ahead of the first message sent to it.
    */
   tellAtStart(id: string, text: string): void {
-    const waiting = this.startNotice(id);
     this.db
-      .prepare('UPDATE agents SET fork_notice = ? WHERE id = ?')
-      .run(waiting ? `${waiting}\n\n${text}` : text, id);
+      .prepare('UPDATE agents SET away_notice = ? WHERE id = ?')
+      .run(text, id);
   }
 
+  /** Everything the agent is still to be told at a start: that it is a fork, then that it was away. */
   private startNotice(id: string): string | null {
     const row = this.db
-      .prepare('SELECT fork_notice FROM agents WHERE id = ?')
-      .get(id) as { fork_notice: string | null } | undefined;
-    return row?.fork_notice || null;
+      .prepare('SELECT fork_notice, away_notice FROM agents WHERE id = ?')
+      .get(id) as
+      { fork_notice: string | null; away_notice: string | null } | undefined;
+    return (
+      [row?.fork_notice, row?.away_notice].filter(Boolean).join('\n\n') || null
+    );
   }
 
   /** Whether the agent's sessions start with the manager's hooks: a vendor that has them, on this machine (the hook file is on this disk). */
@@ -1381,7 +1382,9 @@ export class AgentsService
       }
       if (told)
         this.db
-          .prepare('UPDATE agents SET fork_notice = NULL WHERE id = ?')
+          .prepare(
+            'UPDATE agents SET fork_notice = NULL, away_notice = NULL WHERE id = ?',
+          )
           .run(agent.id);
       return 'sent';
     });
@@ -1537,6 +1540,9 @@ export class AgentsService
     await this.awaitSynced(live);
     await this.withLock(live, async () => {
       const agent = this.get(id);
+      // no session starts in a stream that is away, or on its way: what it is told at its start is not written yet
+      const away = this.projects.away(agent.projectId);
+      if (away) throw new ConflictException(away);
       if (agent.currentSessionId && live.status.state !== 'idle')
         throw new ConflictException(`agent is ${live.status.state}`);
       if (live.status.background > 0)
@@ -1558,6 +1564,8 @@ export class AgentsService
   ): Promise<{ restarted: string[]; skipped: { id: string; why: string }[] }> {
     const restarted: string[] = [];
     const skipped: { id: string; why: string }[] = [];
+    const away = this.projects.away(projectId);
+    if (away) throw new ConflictException(away);
     for (const { agent } of this.list(projectId)) {
       const live = this.ensureLive(agent);
       await this.awaitSynced(live);
@@ -2343,7 +2351,9 @@ export class AgentsService
       if (this.forkNoticeAsked.get(agent.id) === sl.id) {
         this.forkNoticeAsked.delete(agent.id);
         this.db
-          .prepare('UPDATE agents SET fork_notice = NULL WHERE id = ?')
+          .prepare(
+            'UPDATE agents SET fork_notice = NULL, away_notice = NULL WHERE id = ?',
+          )
           .run(agent.id);
       }
     }

@@ -168,3 +168,92 @@ projects` afterwards; `am projects --archived` and a line under the
 - The run-log end-to-end tests failed once under load during this
   work's first gate (a 23 s timeout) and passed alone and in two full
   reruns since.
+
+## Report (2026-11-22, after the review)
+
+A read-only review by Codex of the first version found fifteen things,
+most of them real, before any stream had been put away with it. All
+are fixed and deployed; the first version was live for about twenty
+minutes, on a machine with no stream on it.
+
+### What the first version got wrong
+
+- **A question git did not answer was read as "nothing to save".** A
+  failed `git status` gave zero uncommitted files. It now refuses,
+  saying what could not be told.
+- **Only branches were looked at.** A tag, a note or any other ref the
+  remote does not have, linked worktrees, and a submodule with work of
+  its own now refuse, each by name. A file hidden from `git status`
+  (assume-unchanged, skip-worktree) is listed with the uncommitted
+  ones.
+- **Another remote's stale refs counted as "pushed".** Only `origin`,
+  as just fetched, is evidence now, and a remote that cannot be asked
+  refuses instead of warning.
+- **Things could slip in between the look and the start**: a turn, a
+  new agent, a clone, or a second request. A request now owns its
+  stream from the first look to the last step, what is at work is
+  asked again once nothing new can begin, and every agent the stream
+  has by then is stopped, not the ones the plan listed.
+- **A stop that failed was ignored.** It refuses now: something might
+  still be writing in a clone.
+- **A revival could begin while clones were still being removed**, and
+  the removal would then delete a clone that was in use again. Refused
+  now, by the same ownership.
+- **A removal that failed half way put the stream back as if it were
+  there.** It stays away, says what was left, and a clone is moved out
+  of its place in one step before it is deleted, so there is never
+  half a clone where a whole one is expected.
+- **A manager stopped at the wrong moment of a revival left a stream
+  away with no record to come back by.** The stream is marked as back
+  before the record is removed.
+- **The record was not required to be committed.** It is.
+- **A branch the remote never had by name was not restored**, silently.
+  It is made again at the recorded commit; if that fails too, the
+  notice says so.
+- **An agent's session could be restarted while its stream was away**,
+  and would then miss its notice. Refused.
+- **An agent's token got past "a person only" with a trailing slash in
+  the address.** The scope now reads a path as the router does, and
+  the two routes refuse an agent's token themselves.
+- **A revival asked for twice doubled the notice.** One per absence
+  now, in a column of its own.
+
+### One thing added that the review did not ask for
+
+Letting uncommitted files go is now tied to what was shown: the dialog
+sends back a key for the list it displayed, and if anything else is
+uncommitted by the time the request arrives, it is refused and shown
+again. `am stream archive --discard` still means "whatever is there",
+since nothing was shown.
+
+### Decided, and worth knowing
+
+- **Commits no ref holds are not counted as work**: what a rebase, an
+  amend or a reset leaves behind for the reflog. Every rebase leaves
+  some, so counting them would refuse nearly every stream. They go
+  with the clone.
+- **These refuse rather than being handled**: tags and notes that are
+  not on the remote, worktrees, submodules with their own work. Each
+  needs a decision in the clone (push, delete, remove) that the
+  manager does not make. If that turns out to refuse too often in
+  practice, pushing tags is the first to automate.
+- **A remote that is down means the stream cannot be put away** until
+  it is back.
+
+### Verified
+
+New tests for each of the above that can be provoked from outside: a
+unit file for the look at a clone (`src/streams/unsaved.spec.ts`:
+deleted remote branches, a detached HEAD, stashes, notes, tags,
+worktrees, a submodule's own commit, a corrupt index, no remote), and
+in the end-to-end file a stale ref of another remote, a tag, an
+unreachable remote, a corrupt index, a hidden file, the key for what
+was shown, two requests at once, a restart while away, the address
+spelled four ways, a branch restored at its commit, and a stream away
+twice told once. Manager 192 unit and 172 end-to-end; CLI 22 and 11;
+new UI 30 and 11.
+
+Not provoked by a test: a stop that cannot be confirmed, a removal
+that fails, a record that cannot be committed, a revival asked for
+while clones are being removed. Each is a few lines read twice, not a
+test.

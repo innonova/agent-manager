@@ -263,6 +263,8 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       ['fork_conversation', 'TEXT'],
       ['fork_copy', 'TEXT'],
       ['fork_notice', 'TEXT'],
+      // what an agent is told at its next start about its stream having been away: one per absence, replaced if written again
+      ['away_notice', 'TEXT'],
     ])
       if (!agentCols.includes(name!))
         this.db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);

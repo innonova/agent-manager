@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   Inject,
@@ -131,10 +132,11 @@ export class StreamsController {
   @Post('projects/:id/archive')
   @HttpCode(202)
   async putAway(
-    @Req() req: Request & { user?: User },
+    @Req() req: Request & { user?: User; agentScope?: unknown },
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ): Promise<{ project: Project }> {
+    this.personOnly(req);
     return {
       project: await this.archive.archive(
         id,
@@ -149,9 +151,18 @@ export class StreamsController {
   @Post('projects/:id/revive')
   @HttpCode(202)
   revive(
-    @Req() req: Request & { user?: User },
+    @Req() req: Request & { user?: User; agentScope?: unknown },
     @Param('id') id: string,
   ): { project: Project } {
+    this.personOnly(req);
     return { project: this.archive.revive(id, req.user?.name ?? 'someone') };
+  }
+
+  /** Said here as well as in what an agent's token is allowed: a rule about losing work does not rest on how an address is spelled. */
+  private personOnly(req: { agentScope?: unknown }): void {
+    if (req.agentScope)
+      throw new ForbiddenException(
+        "putting a stream away and bringing it back are a person's to do",
+      );
   }
 }

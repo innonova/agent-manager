@@ -1776,38 +1776,74 @@ agents and everything the manager holds of them (transcripts, chats,
 the dialog record, the link to each conversation), and removes its
 clones. Bringing it back (`POST …/revive`, `am stream revive`) makes
 the clones again. Both are a person's to do: an agent's token is
-refused. `ArchiveService` (`src/streams/archive.service.ts`).
+refused, by what its scope allows and again in the routes themselves,
+so the rule does not rest on how an address is spelled (the scope now
+reads a path as the router does: a trailing slash and the case of a
+route's own words make no difference). `ArchiveService`
+(`src/streams/archive.service.ts`).
 
 - **Nothing that exists only in a clone goes with it.** Before
-  anything is done the clones are looked at, each remote asked first
-  (`git fetch --prune`: a branch somebody deleted there is no longer a
-  place the commits are; a remote that cannot be reached is said, and
-  the clone judged by what it last knew). A branch with commits no
-  remote branch has is pushed, under its own name, which for a
-  stream's branches (`<stream>/<topic>`) is what its agents would
-  have done. Three things are not the manager's to settle and refuse
-  the whole request, each named: commits on the local branch that is
-  main's (pushing them would be landing without the gate: land them,
-  or move them to a branch), commits on a detached HEAD, and a clone
-  with commits and no remote. Files that are changed or new and not
-  committed, and stashes, are listed and go only with `discard: true`,
-  the person's word; ignored files are not counted, since dependencies
-  and build output are what is being reclaimed. An agent in a turn or
-  with a background job, and a clone still being made, refuse it too.
-  The refusal is one 409 (`archive-refused`) with every reason and the
-  plan; `GET …/archive/plan` gives the same without asking for
-  anything.
-- **The order makes it safe to fail.** The stream is marked
-  `archiving` (from here no person's turn is taken, no agent started,
-  no clone made); branches are pushed; agents are compacted and
-  stopped; the clones are looked at again, since minutes may have
-  passed; the record is written and committed in the store; the
-  stream is marked `archived`; and only then are the clones removed.
-  A failure before the mark leaves the stream where it was, with the
-  reason in `progress.error`. A manager restarted on the way finds an
-  `archiving` stream simply there and a `reviving` one `archived`
-  again (the clones it made are kept, and a second revival goes on
-  from them).
+  anything is done each clone is looked at (`StreamsService.unsaved`),
+  and the look is strict, because its answer licenses a removal:
+  - _Somewhere else_ means on a branch of `origin` as just fetched
+    (`git fetch --prune`), and for a tag, a note or any other ref,
+    held by `origin` under the same name with the same object
+    (`git ls-remote`). Not another remote's refs, and not `origin`'s
+    as the clone last saw them. A remote that cannot be asked refuses
+    the request.
+  - _A question git does not answer_ (a corrupt index, a timeout) is
+    reported as unknown and refuses the request; it is never read as
+    "nothing to save".
+  - A branch with commits the remote lacks is pushed, under its own
+    name, which for a stream's branches (`<stream>/<topic>`) is what
+    its agents would have done.
+  - Not the manager's to settle, and so refusing the whole request,
+    each named with what would change it: commits on the local branch
+    that is main's (pushing them would be landing without the gate),
+    commits on a detached HEAD, a clone with commits and no `origin`,
+    a tag or other ref the remote does not have as it is here, linked
+    worktrees (what is checked out in them is not looked at, and they
+    break when the clone goes), and a submodule with commits or files
+    of its own that are nowhere else.
+  - Files that are changed or new and not committed, stashes, and
+    files hidden from `git status` (assume-unchanged, skip-worktree:
+    they may have changed unseen) are listed and go only with
+    `discard`, the person's word. `discard: true` is that word for
+    whatever is found; the plan's `uncommittedKey` sent as `discard`
+    lets go of exactly what the person was shown, and the request is
+    refused if something else is uncommitted by then (the UI sends
+    the key).
+  - Not counted as work: ignored files (dependencies and build output
+    are what is being reclaimed), and commits no ref holds (what a
+    rebase, an amend or a reset leaves behind for the reflog: every
+    rebase leaves some).
+    An agent in a turn or with a background job, and a clone still being
+    made, refuse it too. The refusal is one 409 (`archive-refused`) with
+    every reason and the plan; `GET …/archive/plan` gives the same
+    without asking for anything.
+- **One operation per stream, and an order that is safe to fail.** A
+  request owns the stream from its first look to its last step
+  (`ArchiveService.owned`): a second one, of either kind, is refused
+  at once, so a revival cannot begin while clones are still being
+  removed. Then: the stream is marked `archiving` (from here no
+  person's turn is taken, no agent started or restarted, no clone
+  made), and what was at work is asked once more now that nothing new
+  can begin; branches are pushed; every agent the stream has by then
+  is compacted where that is cheap and stopped, and a stop that cannot
+  be confirmed refuses (something may still be writing); the clones
+  are looked at again, as strictly as before, and what is uncommitted
+  must be what was let go; the record is written and must be committed
+  in the store; the stream is marked `archived`; and only then are the
+  clones removed, each moved out of its place in one step first
+  (`.<name>.removing`), so that a removal cut short leaves no half of
+  a clone where a whole one is expected. A failure before the mark
+  leaves the stream where it was, with the reason in `progress.error`.
+  A failure after it leaves the stream away, with what could not be
+  removed said: a stream never looks as if it were there with part of
+  its clones gone. A manager restarted on the way finds an `archiving`
+  stream simply there and a `reviving` one `archived` again; a second
+  revival keeps the clones that are whole and sweeps what a removal
+  left behind.
 - **The record is in the stream's folder**, `archived.json`: when, by
   whom, each clone's source, branch, head and where main stood, the
   branches that were pushed, and which agents were compacted. It
@@ -1836,15 +1872,24 @@ refused. `ArchiveService` (`src/streams/archive.service.ts`).
 - **Back, each agent knows what it missed.** A revival clones each
   repository in the record again (as the registry describes it now:
   source, seed, setup; one the registry does not know, from where the
-  clone came, with no setup), checks out the branch the clone was on,
-  and gives each agent a notice for its next start: how long the
+  clone came, with no setup), checks out the branch the clone was on
+  (made again at the recorded commit when the remote never had it by
+  name, which is the case for a branch that held nothing to push; if
+  neither works the clone is on the branch a clone starts on and the
+  notice says so), and gives each agent a notice for its next start: how long the
   stream was away, and for each clone where it stood, where it is,
   and what landed on main between (the count and the newest fifteen
   subjects). The notice travels as a fork's does (the hook of the
   starting session, until a turn has ended in a session that asked
   for it); an agent the manager has no hook in (Codex, Copilot, one
   on another machine) gets it ahead of the first message sent to it,
-  marked as the manager's, where the person sees it too. A clone that
+  marked as the manager's, where the person sees it too. It is one
+  notice per absence (`agents.away_notice`): a revival asked for again
+  replaces it, and a stream away twice before a word is said to its
+  agent tells of the last absence, once. The stream is marked as back
+  before its record is removed, so that a stop between the two leaves
+  a leftover file and not a stream that is away with nothing to come
+  back by. A clone that
   cannot be made does not keep the stream away: it is back without
   it, and the notice and the result say so.
 - **How far it is** is `GET …/archive` (`{ archive, progress: { step,
@@ -2159,8 +2204,8 @@ PUT    /api/repositories/:name      { source?, setup? }          -> { repository
 PUT    /api/repositories/:name/seed { from, files: [path] }      -> { repository }; takes untracked files from a checkout on this machine into the seed copied into every new clone
 DELETE /api/repositories/:name                                  a person only; clones of it stay
 GET    /api/projects/:id/archive                                -> { archive: { state: archiving|archived|reviving, at } | null, progress: { step, error, done }, record }; where a stream is, how the last attempt to move it went, and (away) what it had cloned
-GET    /api/projects/:id/archive/plan                           -> { plan: { blocked: [reason], uncommitted: [{ clone, count, files, stashes }], pushes: [{ clone, branch, commits }], unreachable: [clone], clones, agents: [{ id, name, state, compact, why }], reclaimKb } }; what putting the stream away would do; asks the clones' remotes
-POST   /api/projects/:id/archive    { discard?, compact? }       -> 202 { project }; puts a stream away, in the background; 409 `archive-refused` with every reason and the plan; a person only
+GET    /api/projects/:id/archive/plan                           -> { plan: { blocked: [reason], uncommitted: [{ clone, count, files, stashes }], uncommittedKey, pushes: [{ clone, branch, commits }], clones, agents: [{ id, name, state, compact, why }], reclaimKb } }; what putting the stream away would do; asks the clones' remotes
+POST   /api/projects/:id/archive    { discard?, compact? }       -> 202 { project }; puts a stream away, in the background; `discard` is `true` or the plan's `uncommittedKey`; 409 `archive-refused` with every reason and the plan; a person only
 POST   /api/projects/:id/revive                                 -> 202 { project }; brings it back, in the background; a person only
 GET    /api/projects/:id/clones                                 -> { clones: [{ name, path, state: cloning|setting up|ready|failed, branch, message, landing: { main, unlanded, behind, uncommitted } | null }] }; a stream only
 POST   /api/projects/:id/clones     { repository, again? }       -> 202 { clone }; clones a registered repository into the stream's home and sets it up, in the background; `again` runs the setup of a clone that is there once more
