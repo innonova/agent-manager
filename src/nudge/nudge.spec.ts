@@ -3,7 +3,7 @@ import {
   due,
   lastTurn,
   NUDGE_MARK,
-  nudgeText,
+  NUDGE_TEXT,
   parseReading,
   readerInput,
 } from './nudge.js';
@@ -89,8 +89,6 @@ describe('the reader of last messages', () => {
       '<agent>\nDoors work. Remaining: sandbags, the sedan.\n</agent>',
     );
     expect(input).toContain('"verdict": "<needs_person|done|paused>"');
-    // and is asked for what the message leaves open, in the agent's words
-    expect(input).toContain('"open": [');
   });
 
   it('is read leniently, and an answer that cannot be read means the agent is asked', () => {
@@ -101,64 +99,38 @@ describe('the reader of last messages', () => {
     ).toEqual({
       verdict: 'needs_person',
       why: 'Asks whether xcom.innonova.ch should redirect.',
-      open: [],
     });
     expect(parseReading('{"verdict":"done","why":"x"}').verdict).toBe('done');
     expect(parseReading('I think it is fine.')).toEqual({
       verdict: 'paused',
       why: 'it is not clear why it stopped',
-      open: [],
     });
     expect(parseReading('{"verdict":"maybe"}').verdict).toBe('paused');
-    // what it leaves open: strings only, tidied, no more than eight
-    expect(
-      parseReading(
-        JSON.stringify({
-          verdict: 'paused',
-          why: 'open items',
-          open: [' night maps:\n fog has no effect ', 7, '', 'rain is missing'],
-        }),
-      ).open,
-    ).toEqual(['night maps: fog has no effect', 'rain is missing']);
-    expect(
-      parseReading(
-        JSON.stringify({
-          verdict: 'paused',
-          why: 'x',
-          open: Array.from({ length: 12 }, (_, i) => `item ${i}`),
-        }),
-      ).open,
-    ).toHaveLength(8);
-    expect(
-      parseReading('{"verdict":"paused","why":"x","open":"all"}').open,
-    ).toEqual([]);
   });
 });
 
 describe('when a nudge is due', () => {
-  const rules = { restMs: 30 * MIN, maxInRow: 3 };
-  it('always at the first stop after a person wrote, at once', () => {
-    expect(due(null, 1000, rules)).toEqual({
+  const rules = { workMs: 30 * MIN, maxInRow: 3 };
+  it('always at the first stop after a person wrote, however short the work', () => {
+    expect(due(null, 1000, 0, rules)).toEqual({ ok: true, inRow: 1 });
+    expect(due({ at: 1000, inRow: 3 }, 2000, 0, rules)).toEqual({
       ok: true,
       inRow: 1,
-      notBefore: 0,
-    });
-    expect(due({ at: 1000, inRow: 3 }, 2000, rules)).toEqual({
-      ok: true,
-      inRow: 1,
-      notBefore: 0,
     });
   });
-  it('after a nudge, again, and no sooner than half an hour after it', () => {
-    // it took up one item for ten minutes and stopped: that is no reason never to ask again
-    expect(due({ at: 1000, inRow: 1 }, 500, rules)).toEqual({
+  it('after a nudge, only once the agent has worked half an hour more', () => {
+    // it answered in a minute: it cannot do more, and is left alone
+    expect(due({ at: 1000, inRow: 1 }, 500, MIN, rules)).toEqual({
+      ok: false,
+      why: 'it has worked 1 min since it was last asked',
+    });
+    expect(due({ at: 1000, inRow: 1 }, 500, 31 * MIN, rules)).toEqual({
       ok: true,
       inRow: 2,
-      notBefore: 1000 + 30 * MIN,
     });
   });
   it('and not for ever: a number of nudges in a row without a word from a person is the end', () => {
-    expect(due({ at: 1000, inRow: 3 }, null, rules)).toEqual({
+    expect(due({ at: 1000, inRow: 3 }, null, 60 * MIN, rules)).toEqual({
       ok: false,
       why: 'it has been asked 3 times in a row without a word from a person',
     });
@@ -166,33 +138,10 @@ describe('when a nudge is due', () => {
 });
 
 describe('the nudge', () => {
-  it("shows the agent, in the manager's name, what it left open in its own words, and asks which of it needs the person", () => {
-    const text = nudgeText(
-      ['Night maps: fog has no effect', 'the navigation map, one level deeper'],
-      8 * 60 * MIN,
+  it("is one short question in the manager's name about the stop itself, and no instruction", () => {
+    expect(NUDGE_TEXT).toBe(
+      'The manager, not a person: did you mean to stop here, or was that reflex? If it was reflex, feel free to continue.',
     );
-    expect(text.startsWith(NUDGE_MARK)).toBe(true);
-    expect(text).toContain('Nobody has written to you for 8 hours.');
-    expect(text).toContain(
-      'Your last message leaves this open, in your words:\n- Night maps: fog has no effect\n- the navigation map, one level deeper\n',
-    );
-    expect(text).toContain('Which of it needs the person, and for what?');
-    expect(text).toContain('am say --question');
-    // the way out asks for a reason for each, and is still a way out
-    expect(text).toContain('say for each of these why it is not');
-    expect(text).toContain('you are not asked again until they write');
-    // no order to continue
-    expect(text).not.toMatch(
-      /\b(must|continue working|keep going|do not stop)\b/i,
-    );
-  });
-  it('asks what is left when the message did not say, and says nothing of a person who never wrote', () => {
-    const text = nudgeText([], null);
-    expect(text.startsWith(NUDGE_MARK)).toBe(true);
-    expect(text).not.toContain('Nobody has written to you for');
-    expect(text).toContain('Your last message does not say what is left.');
-    expect(text).toContain('say so in a line');
-    expect(nudgeText([], 5 * MIN)).toContain('for 5 minutes.');
-    expect(nudgeText([], 3 * 24 * 60 * MIN)).toContain('for 3 days.');
+    expect(NUDGE_TEXT.startsWith(NUDGE_MARK)).toBe(true);
   });
 });

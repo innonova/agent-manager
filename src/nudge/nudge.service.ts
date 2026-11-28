@@ -17,7 +17,7 @@ import { runModel } from '../util/run-model.js';
 import {
   due,
   lastTurn,
-  nudgeText,
+  NUDGE_TEXT,
   parseReading,
   readerInput,
 } from './nudge.js';
@@ -41,10 +41,11 @@ const hhmm = (at: number): string => {
  * reads the agent's last message: if it needs the person they are
  * paged, if it says the work is done nothing happens, and otherwise,
  * a few minutes later and unless a person says something first, the
- * manager shows the agent, in its own name, what its last message left
- * open and asks which of it needs the person. Never an order; and two
- * nudges are at least half an hour apart, so one that cannot do more is
- * not pressed again and again.
+ * manager asks the agent in its own name whether it meant to stop or
+ * stopped by reflex. A question, never an order; and not asked again
+ * until the agent has worked half an hour more, so that the asking
+ * cannot become a loop: one that cannot do more is asked once and then
+ * left alone.
  *
  * What is pending is kept (`agent_nudges_due`): a manager restarted
  * while a nudge waits sends it when its time comes.
@@ -239,11 +240,7 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
               timeoutMs: this.config.nudgeReaderMs,
             }),
           )
-        : {
-            verdict: 'paused' as const,
-            why: 'it stopped without a word',
-            open: [],
-          };
+        : { verdict: 'paused' as const, why: 'it stopped without a word' };
     } catch (err) {
       // an agent is not asked on the strength of a reading that did not happen
       this.logger.warn(
@@ -280,11 +277,14 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const last = this.last(agentId);
-    const { personAt } = await this.stats.since(agentId, last?.at ?? 0);
+    const { workedMs, personAt } = await this.stats.since(
+      agentId,
+      last?.at ?? 0,
+    );
     if (!still()) return;
     this.reading.delete(agentId);
-    const ok = due(last, personAt, {
-      restMs: this.config.nudgeRestMs,
+    const ok = due(last, personAt, workedMs, {
+      workMs: this.config.nudgeWorkMs,
       maxInRow: this.config.nudgeMaxInRow,
     });
     if (!ok.ok) {
@@ -295,18 +295,12 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
-    // a person gets the usual wait to say something first; after a nudge, the next keeps its distance from it
-    const at = Math.max(Date.now() + this.config.nudgeDelayMs, ok.notBefore);
+    const at = Date.now() + this.config.nudgeDelayMs;
     this.agents.note(
       agentId,
       `stopped with work left (${read.why}); the manager asks it at ${hhmm(at)} whether it can go on, unless a person says something first`,
     );
-    this.schedule(
-      agentId,
-      at,
-      ok.inRow,
-      nudgeText(read.open, personAt === null ? null : Date.now() - personAt),
-    );
+    this.schedule(agentId, at, ok.inRow, NUDGE_TEXT);
   }
 
   /** The wait is over: the question goes, as a turn of the manager's own. */

@@ -94,8 +94,8 @@ export interface ManagerConfig {
   nudgeReaderMs: number;
   /** How long after a stop the nudge goes, the time a person has to say something first (ms). */
   nudgeDelayMs: number;
-  /** Two nudges of one agent are at least this far apart (ms). */
-  nudgeRestMs: number;
+  /** An agent is nudged again only after this much work since the last nudge (ms). */
+  nudgeWorkMs: number;
   /** No more than this many nudges in a row without a word from a person. */
   nudgeMaxInRow: number;
   /** While a working agent has unread chat messages it is told so again this often (ms). */
@@ -320,7 +320,7 @@ export function loadConfig(
     ),
     nudgeReaderMs: Number(env.AGENT_MANAGER_NUDGE_READER_MS ?? 90_000),
     nudgeDelayMs: Number(env.AGENT_MANAGER_NUDGE_DELAY_MS ?? 5 * 60_000),
-    nudgeRestMs: Number(env.AGENT_MANAGER_NUDGE_REST_MS ?? 30 * 60_000),
+    nudgeWorkMs: Number(env.AGENT_MANAGER_NUDGE_WORK_MS ?? 30 * 60_000),
     nudgeMaxInRow: Number(env.AGENT_MANAGER_NUDGE_MAX ?? 20),
     chatRepeatMs: Number(env.AGENT_MANAGER_CHAT_REPEAT_MS ?? 5 * 60_000),
     chatSweepMs: Number(env.AGENT_MANAGER_CHAT_SWEEP_MS ?? 15_000),

@@ -303,3 +303,31 @@ day, it would otherwise be lost most of the time.
 - A session a person ends while a nudge waits no longer cancels the
   nudge at once (the manager cannot tell it from a dropped link); it
   is simply not sent to an agent that is not idle when its time comes.
+
+## Response (2026-11-28, on the report above)
+
+aek, in the conversation: the rule of thirty minutes of work "was
+intentional the object of that was to prevent an infinite loop of
+nudges, it was a safety measure, and not the cause of the problem. The
+core problem is that the agent doesn't take the hint - and reflecting
+the open list also invites a 'solve that particular list and stop'
+mode. I think maybe it should simply say something more like 'Did you
+intent to stop here or was that reflex, if not feel free to continue'".
+
+## Report (2026-11-28, the second)
+
+Changed as said, and deployed. My report above had the cause wrong.
+
+- **The rule is back as it was**: after a nudge, an agent is asked
+  again only once it has worked thirty minutes more. It is the guard
+  against a loop, and stays.
+- **The message is one short question about the stop itself**, in your
+  wording: "The manager, not a person: did you mean to stop here, or
+  was that reflex? If it was reflex, feel free to continue." The list
+  of open items is gone from it, and the reader no longer makes one.
+- **Kept from this morning**: a nudge that is waiting survives a
+  restart of the manager.
+
+Tests follow: the text, the rule as before, the restart. Manager 201
+unit and 178 end-to-end. Not seen: how an agent reacts to the new
+wording; the xcom agent's next stop will show.
