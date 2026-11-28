@@ -189,6 +189,14 @@ CREATE TABLE IF NOT EXISTS agent_nudges (
   last_at INTEGER NOT NULL,
   in_row INTEGER NOT NULL
 );
+-- A nudge that waits to go: when, which in a row it will be, and its
+-- words. Kept so that a restart of the manager does not lose it.
+CREATE TABLE IF NOT EXISTS agent_nudges_due (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  due_at INTEGER NOT NULL,
+  in_row INTEGER NOT NULL,
+  text TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dialog_windows (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
   size INTEGER NOT NULL

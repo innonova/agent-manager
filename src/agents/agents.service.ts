@@ -3441,7 +3441,10 @@ export class AgentsService
         const cached = sl.fromCache ? sl.settled?.status : null;
         if (cached) {
           this.setState(agent, live, cached.state, cached.error, true);
-          live.status = { ...cached, queued: 0, nudge: null }; // neither a held message nor a pending nudge survives a restart
+          // A held message does not survive a restart. A nudge that waits
+          // does, and is the nudge service's to say: what it has said in
+          // this process stands, not what the cache remembers.
+          live.status = { ...cached, queued: 0, nudge: live.status.nudge };
           live.stateHeld = true;
           if (cached.usage) this.noteUsage(agent, cached.usage); // the account's state as of the cache
         } else

@@ -1,6 +1,6 @@
 ---
 title: ask an agent that stopped whether it can go on
-status: done
+status: review
 priority: 5
 ---
 
@@ -41,9 +41,9 @@ These are requirements; the reasoning stands beside each.
     the chat, reaches nobody.
   - _the work is done_: nothing happens.
   - _it paused with work left_ (or it is not clear): the nudge.
-  Its mistakes are cheap both ways because the nudge is a question: a
-  blocker it missed gets a nudge and the agent answers "page them"; a
-  blocker it imagined pages the person, which is no worse than today.
+    Its mistakes are cheap both ways because the nudge is a question: a
+    blocker it missed gets a nudge and the agent answers "page them"; a
+    blocker it imagined pages the person, which is no worse than today.
 - **The nudge is a question with three answers**: carry on, have the
   person paged, or the work is done. It says it comes from the
   manager and that nobody is watching. Never an instruction to
@@ -134,7 +134,7 @@ turns it on, in the agent's edit form or with `am set <agent> --nudge`.
   the rule, the words of the nudge (`nudge.ts`, pure), and the service
   that listens for a turn's end, reads, pages, waits, asks
   (`nudge.service.ts`). The agent has `nudge`, the status has `nudge:
-  { state, at }`, `POST /api/agents/:id/nudge/hold` calls a pending
+{ state, at }`, `POST /api/agents/:id/nudge/hold` calls a pending
   question off. Five `AGENT_MANAGER_NUDGE_*` settings. The model call
   shared with the dialog's classifier moved to `src/util/run-model.ts`.
   The statistics give the rule its "work since" (`StatsService.since`).
@@ -206,3 +206,100 @@ feature is for.
 
 - The harness note says nothing about this. An agent learns of it
   from the question itself.
+
+## Response (2026-11-28)
+
+aek, in the conversation: "that function we built to get the agent to
+continue on long jobs are not working have a look at how the xcom agent
+reacts to it". And to the xcom agent itself, three days earlier:
+"clearly the manager input is not working".
+
+## Report (2026-11-28)
+
+It did not work, for two reasons, and both are changed and deployed.
+
+### What the xcom agent's flow shows
+
+Three nudges in a week (22, 23 and 25 November). After each the agent
+said "carrying on", did one small item (4, 14 and 7 minutes) and
+stopped again with work it named as open. The manager read that
+correctly ("stopped with work left") and then did not ask again: "it
+has worked 14 min since it was last asked". After the second it sat
+for 37 hours until you wrote.
+
+### Cause one: my rule was not yours
+
+You said "30 minutes since last nudge". I built "only after thirty
+more minutes of the agent's work", and told you so at the time, as a
+refinement. It turned the pause into an end: an agent that stops
+again after ten minutes can never reach thirty, so every nudge was the
+last. It is now what you said: two nudges are at least thirty minutes
+apart, and the next one is scheduled, not dropped. What ends the
+asking is the agent saying it is done or needs you, you writing, or
+twenty in a row.
+
+### Cause two: the question
+
+It asked the agent to say which of three things its stop was. The
+xcom agent, asked by you, explained why that fails: the question goes
+to the same judgement that just decided to stop, and "I can always
+produce a plausible 'waiting for the person' or 'done'"; it proposed
+showing it its own list of open items instead. That is what the nudge
+does now. The model that reads the last message also lists what it
+leaves open, in the agent's words, and the nudge is:
+
+> The manager, not a person: you stopped, and nobody is watching.
+> Nobody has written to you for 8 hours. A turn that ends stops the
+> work until someone writes; you are asked at that point so that what
+> is open and needs no person gets done while nobody is here.
+>
+> Your last message leaves this open, in your words:
+>
+> - Night maps: EW's warm fog has no effect in XCOM 2
+> - Night maps: EW's rain is missing
+> - Central's lines at the base: stopped and logged, but not yet seen happening in the game
+> - Navigation map: walk doesn't yet go one level deeper into each screen's own lists and buttons
+>
+> Which of it needs the person, and for what?
+>
+> What needs them goes in the chat: `am say --question "<what you
+need>"` reaches their phone, and you carry on with the rest
+> meanwhile. What does not is yours to take up, one thing after the
+> other; say what you finished with `am say` and go on to the next,
+> since ending the turn to report is what stops the work.
+>
+> If you are at the end of what is worth doing without them, say for
+> each of these why it is not. That is a fine answer, and you are not
+> asked again until they write.
+
+(That list is what the reader made of the xcom agent's real last
+message of 25 November.) It is still not an order to continue, which
+you had asked for; the way out is there, and costs a reason per item.
+
+### Also
+
+A nudge that waits now survives a restart of the manager. With up to
+half an hour between two, and the manager redeployed several times a
+day, it would otherwise be lost most of the time.
+
+### Verified, and not
+
+- The reader with its new instructions on three of the xcom agent's
+  real last messages: the lists are its own open items, with one stray
+  line in one of them.
+- Tests: the pace, the cap, the text, a restart with a nudge waiting.
+  Manager 202 unit and 178 end-to-end.
+- **Not seen: whether an agent reacts better to it.** That needs the
+  xcom agent's next stop, which I have not provoked. Its flow will
+  show it: "the manager asks it at …" followed by what it does.
+
+### Left open
+
+- If the new text also buys only one item at a time, the agent is now
+  asked again every half hour, so the worst case is one item per half
+  hour instead of one per visit of yours. The next thing to try then
+  is the vendor's stop hook, which can refuse a stop inside the turn;
+  we set it aside because it reads as an order.
+- A session a person ends while a nudge waits no longer cancels the
+  nudge at once (the manager cannot tell it from a dropped link); it
+  is simply not sent to an agent that is not idle when its time comes.

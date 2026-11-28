@@ -14,6 +14,8 @@ export interface Reading {
   verdict: Verdict;
   /** One line: what it needs, or what it says is done, or what is left. */
   why: string;
+  /** What its last message leaves open, each thing in the agent's own words: what the nudge shows it. */
+  open: string[];
 }
 
 /** What the end of the transcript says about the turn that just ended. */
@@ -29,18 +31,58 @@ export interface LastTurn {
 /** The words every nudge begins with, so that one can be told from any other message of the manager's. */
 export const NUDGE_MARK = 'The manager, not a person:';
 
+const ago = (ms: number): string => {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  if (m < 90) return `${m} minute${m === 1 ? '' : 's'}`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} hours`;
+  return `${Math.round(h / 24)} days`;
+};
+
 /**
- * The nudge. A question with three answers, in the manager's own name:
- * the agent is the one who knows whether there is work left, and an
- * order to continue would press one that has none into inventing some.
+ * The nudge, in the manager's own name. It is information more than a
+ * question: what the agent itself left open, in its own words, and how
+ * the harness works (a turn that ends stops the work). The first
+ * version asked the agent to say which of three things its stop was,
+ * and it never worked: asked of the judgement that had just decided to
+ * stop, at the moment it was most committed to its reason, the answer
+ * was one more small item and then "done for now" (the xcom agent,
+ * three times of three, and its own account of why: "I can always
+ * produce a plausible 'waiting for the person' or 'done'. … It's much
+ * harder to call the work done next to my own list saying otherwise").
+ * So the list is put in front of it, and the way out asks for a reason
+ * per item. Still no order to continue: an agent with nothing left is
+ * not pressed into inventing work.
  */
-export const NUDGE_TEXT = `${NUDGE_MARK} you stopped, and nobody is watching right now. Which of these is it?
+export function nudgeText(
+  open: string[],
+  /** How long since a person last wrote to it (ms); null when nobody has. */
+  quietMs: number | null,
+): string {
+  const quiet =
+    quietMs === null ? '' : ` Nobody has written to you for ${ago(quietMs)}.`;
+  const head = `${NUDGE_MARK} you stopped, and nobody is watching.${quiet} A turn that ends stops the work until someone writes; you are asked at that point so that what is open and needs no person gets done while nobody is here.`;
+  const tail =
+    'What needs them goes in the chat: `am say --question "<what you need>"` reaches their phone, and you carry on with the rest meanwhile. What does not is yours to take up, one thing after the other; say what you finished with `am say` and go on to the next, since ending the turn to report is what stops the work.';
+  if (!open.length)
+    return `${head}
 
-- There is meaningful work left that you can do without the person: then carry on with it. You need not answer this message first.
-- You need the person for something (a decision, an answer, a look, access): say what in one or two lines, and they will be paged. \`am say --question "<what you need>"\` puts it in the chat and on their phone.
-- The work is done, or nothing that is left is worth doing without them: say so in a line. That is a fine answer, and you will not be asked again until the person writes.
+Your last message does not say what is left. What is, and which of it needs the person, and for what?
 
-This is a question, not an instruction to continue.`;
+${tail}
+
+If nothing is left that is worth doing without them, say so in a line. That is a fine answer, and you are not asked again until they write.`;
+  return `${head}
+
+Your last message leaves this open, in your words:
+${open.map((o) => `- ${o}`).join('\n')}
+
+Which of it needs the person, and for what?
+
+${tail}
+
+If you are at the end of what is worth doing without them, say for each of these why it is not. That is a fine answer, and you are not asked again until they write.`;
+}
 
 /**
  * The end of a transcript, walked back from the last item to the start
@@ -90,8 +132,10 @@ paused: anything else. It reports a milestone, a result or progress, and there i
 
 When in doubt between needs_person and paused, say paused: the agent will be asked, and can say that it needs the person. When in doubt between done and paused, say paused.
 
+Whatever the verdict, also list what the message leaves open: each piece of work it names as not done, not checked, still open, remaining, next, or offered ("I can also…"), as a short phrase in the agent's own words, without your judgement of it. Only work somebody could still do: not a fact about how things stand ("the release is still a draft", "setup takes an hour"), not something it reports as finished, not something it explains it deliberately did not do. At most 8, most important first; none if it names none.
+
 Answer with exactly one line of JSON and nothing else:
-{"verdict": "<needs_person|done|paused>", "why": "<at most 20 words: what it needs from the person, or what it says is done, or what is left>"}
+{"verdict": "<needs_person|done|paused>", "why": "<at most 20 words: what it needs from the person, or what it says is done, or what is left>", "open": ["<a thing it leaves open, at most 25 words>", …]}
 
 ${turn.asked ? `What the person last wrote to it:\n<person>\n${clip(turn.asked, 3000)}\n</person>\n\n` : ''}The agent's last message:
 <agent>
@@ -110,6 +154,7 @@ export function parseReading(out: string): Reading {
       const o = JSON.parse(line.slice(from, line.lastIndexOf('}') + 1)) as {
         verdict?: unknown;
         why?: unknown;
+        open?: unknown;
       };
       if (
         o.verdict === 'needs_person' ||
@@ -122,48 +167,52 @@ export function parseReading(out: string): Reading {
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 240),
+          open: (Array.isArray(o.open) ? o.open : [])
+            .filter((x): x is string => typeof x === 'string')
+            .map((x) => x.replace(/\s+/g, ' ').trim().slice(0, 300))
+            .filter(Boolean)
+            .slice(0, 8),
         };
     } catch {
       /* not this line */
     }
   }
-  return { verdict: 'paused', why: 'it is not clear why it stopped' };
+  return { verdict: 'paused', why: 'it is not clear why it stopped', open: [] };
 }
 
 export interface NudgeRules {
-  /** An agent is nudged again only after this much work since the last nudge (ms). */
-  workMs: number;
+  /** Two nudges are at least this far apart (ms). */
+  restMs: number;
   /** No more than this many nudges in a row without a word from a person. */
   maxInRow: number;
 }
 
 /**
- * Whether a nudge is due, or why not. `last` is the last nudge sent
- * and how many in a row it made, `personAt` when a person last wrote
- * (flow or chat), `workedSince` the agent's work since that nudge.
+ * Whether a nudge is due, and no earlier than when; or why not. `last`
+ * is the last nudge sent and how many in a row it made, `personAt` when
+ * a person last wrote (flow or chat).
  *
- * The first stop after a person's message can always be nudged,
- * however short the work. After a nudge, only once the agent has
- * worked `workMs` more: one that answered in a minute cannot do more,
- * and is left alone until a person writes.
+ * The first stop after a person's message can always be nudged. After a
+ * nudge, the next is at least `restMs` later: the person's rule, "30
+ * minutes since last nudge", so that a model that cannot do more is not
+ * pressed again and again. It was first built as "only after thirty
+ * minutes more of work", which made one nudge the last: an agent that
+ * took up one item for ten minutes and stopped again was never asked
+ * again, and sat until a person came (once for 37 hours). The pause is
+ * a pace now, not an end: what ends it is the agent saying it is done
+ * or needs the person, a person writing, or `maxInRow`.
  */
 export function due(
   last: { at: number; inRow: number } | null,
   personAt: number | null,
-  workedSince: number,
   rules: NudgeRules,
-): { ok: true; inRow: number } | { ok: false; why: string } {
+): { ok: true; inRow: number; notBefore: number } | { ok: false; why: string } {
   if (!last || (personAt !== null && personAt > last.at))
-    return { ok: true, inRow: 1 };
-  if (workedSince < rules.workMs)
-    return {
-      ok: false,
-      why: `it has worked ${Math.round(workedSince / 60_000)} min since it was last asked`,
-    };
+    return { ok: true, inRow: 1, notBefore: 0 };
   if (last.inRow >= rules.maxInRow)
     return {
       ok: false,
       why: `it has been asked ${last.inRow} times in a row without a word from a person`,
     };
-  return { ok: true, inRow: last.inRow + 1 };
+  return { ok: true, inRow: last.inRow + 1, notBefore: last.at + rules.restMs };
 }

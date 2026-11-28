@@ -1175,15 +1175,19 @@ line of why:
 - `paused`, or an answer that cannot be read: the nudge, if one is due.
 
 A nudge is due at the first stop after a person wrote, however short
-the work, and after a nudge only once the agent has worked
-`AGENT_MANAGER_NUDGE_WORK_MS` more (thirty minutes; the work is the
-statistics' turn time), and never more than
-`AGENT_MANAGER_NUDGE_MAX` times in a row without a word from a person.
-The person's reason for the rule: "to prevent a model that really
-isn't able to do more to keep being pressured". An agent that answers
-a nudge in a minute has said what there is to say, and is left alone
-until a person writes. When none is due the flow says why ("not asked
-whether it can go on: it has worked 3 min since it was last asked").
+the work. After a nudge the next is due again, no sooner than
+`AGENT_MANAGER_NUDGE_REST_MS` (thirty minutes) after the last one, and
+never more than `AGENT_MANAGER_NUDGE_MAX` times in a row without a
+word from a person. The person's rule, in their words: "30 minutes
+since last nudge", "to prevent a model that really isn't able to do
+more to keep being pressured". It was first built as "only after
+thirty minutes more of the agent's work", and that made every nudge
+the last one: an agent that took up one item for ten minutes and
+stopped again was never asked again, and sat until a person came (the
+xcom agent: three nudges, 4, 14 and 7 minutes of work after them, then
+silence, once for 37 hours). The pause is a pace now, not an end. What
+ends the asking is the agent saying it is done or that it needs the
+person, a person writing, or the count.
 
 A due nudge waits `AGENT_MANAGER_NUDGE_DELAY_MS` (five minutes), so a
 person who is there can read the last message and answer it
@@ -1194,21 +1198,43 @@ off (`POST /api/agents/:id/nudge/hold`; the flow then says who called
 it off): to type there a person presses it first, so their message
 and the manager's cannot cross. Any turn that starts in the meantime
 (a message by another way, a chat message that wakes the agent) drops
-the question too. Then the question goes as a turn in the manager's
-name, like the background poke:
+the question too. Then it goes as a turn in the manager's name, like
+the background poke. The reader, besides its verdict, lists what the
+agent's last message leaves open, each thing in the agent's own words,
+and the nudge puts that list in front of it:
 
-> The manager, not a person: you stopped, and nobody is watching right
-> now. Which of these is it? There is meaningful work left that you
-> can do without the person: then carry on with it. … You need the
-> person for something: say what … and they will be paged. … The work
-> is done, or nothing that is left is worth doing without them: say so
-> in a line. That is a fine answer … This is a question, not an
-> instruction to continue.
+> The manager, not a person: you stopped, and nobody is watching.
+> Nobody has written to you for 8 hours. A turn that ends stops the
+> work until someone writes; you are asked at that point so that what
+> is open and needs no person gets done while nobody is here.
+>
+> Your last message leaves this open, in your words: (its list)
+>
+> Which of it needs the person, and for what? What needs them goes in
+> the chat … What does not is yours to take up, one thing after the
+> other; say what you finished with `am say` and go on to the next,
+> since ending the turn to report is what stops the work.
+>
+> If you are at the end of what is worth doing without them, say for
+> each of these why it is not. That is a fine answer, and you are not
+> asked again until they write.
 
-Three answers and no instruction: an order to continue would press an
-agent with nothing left into inventing work. The agent's answer is a
-turn like any other, and its end is read like any other: "page them"
-is read as `needs_person` and pages.
+Information, and one question about it, rather than a question about
+the stop. The first version asked the agent which of three things its
+stop was (work left, needs the person, done) and said it was "a
+question, not an instruction to continue". It bought one small item
+each time and never changed the decision. The agent it failed on said
+why, asked: the question went to the same judgement that had just
+decided to stop, at the moment it was most committed to its reason,
+and "I can always produce a plausible 'waiting for the person' or
+'done'. … It's much harder to call the work done next to my own list
+saying otherwise." So the list is shown, the way out asks for a reason
+per item, and the harness's own fact is said plainly: a turn that ends
+to report is what stops the work. It is still no order to continue: an
+agent with nothing left is not pressed into inventing some. With no
+list (the message named nothing), the nudge asks what is left. The
+agent's answer is a turn like any other, and its end is read like any
+other: "page them" is read as `needs_person` and pages.
 
 Nothing is read or asked after a turn a person stopped or whose
 message they took back (the flow's "interrupt requested" or
@@ -1230,9 +1256,14 @@ the question form makes the remaining mistakes cheap (a missed blocker
 is nudged and says "page them"; an imagined one pages the person). A
 reading takes a few seconds and costs about a cent.
 
-What is pending lives in memory: a restart of the manager drops a
-waiting nudge, and the agent's next stop is read afresh. The last
-nudge and the count in a row are kept (`agent_nudges`). Considered and
+A nudge that waits is kept (`agent_nudges_due`: when, which in a row,
+its words), so a restart of the manager does not lose it, which with
+half an hour between two of them would be often: it goes when its time
+comes, once the agents have been found again. A session that ends
+while one waits, or a daemon link that drops, does not cancel it: it
+goes only to an agent that is idle when its time comes, and the flow
+says so when it is not. The last nudge and the count in a row are kept
+too (`agent_nudges`). Considered and
 not taken: Claude Code's `Stop` hook, which can refuse a stop and feed
 the agent a reason to go on within the turn; it is Claude only, cannot
 wait for the person, and reads as an order.
@@ -2519,7 +2550,7 @@ swept once a minute.
 | `AGENT_MANAGER_NUDGE_MODEL`                | `claude-sonnet-5-5`                  | the model that reads a stopped agent's last message, for agents with `nudge` on (see Nudge); `off`: nobody is asked                                                                                                              |
 | `AGENT_MANAGER_NUDGE_READER`               | unset                                | the whole command instead, a JSON array: the instructions and the message on stdin, one line of JSON back; `off` as above                                                                                                        |
 | `AGENT_MANAGER_NUDGE_DELAY_MS`             | `300000` (5 min)                     | how long after a stop the question goes, the time a person has to say something first                                                                                                                                            |
-| `AGENT_MANAGER_NUDGE_WORK_MS`              | `1800000` (30 min)                   | an agent is asked again only after this much work since it was last asked                                                                                                                                                        |
+| `AGENT_MANAGER_NUDGE_REST_MS`              | `1800000` (30 min)                   | two nudges of one agent are at least this far apart                                                                                                                                                                              |
 | `AGENT_MANAGER_NUDGE_MAX`                  | `20`                                 | no more than this many questions in a row without a word from a person                                                                                                                                                           |
 | `AGENT_MANAGER_DIALOG_CLASSIFIER_MODEL`    | `fable[1m]`                          | the model that weighs an agent's dialog, in the default command (see The dialog after a compaction); `off`: nothing is weighed, and only the recent exchanges are handed back whole                                              |
 | `AGENT_MANAGER_DIALOG_CLASSIFIER`          | unset                                | the whole command instead, a JSON array of program and arguments: it gets the instructions and the dialog on stdin and answers on stdout; `off` as above                                                                         |

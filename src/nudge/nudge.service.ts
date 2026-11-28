@@ -17,13 +17,15 @@ import { runModel } from '../util/run-model.js';
 import {
   due,
   lastTurn,
-  NUDGE_TEXT,
+  nudgeText,
   parseReading,
   readerInput,
 } from './nudge.js';
 
 /** How far back the end of a transcript is read for the turn that just ended. */
 const TAIL = 600;
+/** For this long after the manager starts, an agent that does not look idle may simply not have been found again yet: a nudge whose time has come waits for it. */
+const RESTART_GRACE_MS = 60_000;
 /** At this share of an account's usage window nobody is asked to go on: the work would stop half-way. */
 const NEARLY_SPENT = 95;
 
@@ -39,17 +41,18 @@ const hhmm = (at: number): string => {
  * reads the agent's last message: if it needs the person they are
  * paged, if it says the work is done nothing happens, and otherwise,
  * a few minutes later and unless a person says something first, the
- * manager asks the agent in its own name whether it can carry on,
- * needs the person, or is done. A question, never an order; and not
- * asked again until the agent has worked half an hour more, so one
- * that cannot do more is asked once and then left alone.
+ * manager shows the agent, in its own name, what its last message left
+ * open and asks which of it needs the person. Never an order; and two
+ * nudges are at least half an hour apart, so one that cannot do more is
+ * not pressed again and again.
  *
- * What is pending is in memory: a restart of the manager drops a
- * nudge that was waiting, and the agent's next stop is read afresh.
+ * What is pending is kept (`agent_nudges_due`): a manager restarted
+ * while a nudge waits sends it when its time comes.
  */
 @Injectable()
 export class NudgeService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NudgeService.name);
+  private readonly startedAt = Date.now();
   /** Each agent's state as last seen, to tell a turn's end from any other change while idle. */
   private readonly was = new Map<string, AgentState>();
   /** Agents whose last message is being read; a reading that comes back for one no longer here is dropped. */
@@ -57,7 +60,7 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
   /** Nudges waiting to go. */
   private readonly pending = new Map<
     string,
-    { timer: NodeJS.Timeout; inRow: number }
+    { timer: NodeJS.Timeout; inRow: number; text: string }
   >();
 
   constructor(
@@ -84,16 +87,81 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
       this.was.delete(agentId);
     });
     this.agents.on('archived', (agentId) => this.drop(agentId));
+    // What was waiting when the manager stopped: sent when its time
+    // comes, and not before the agents have been found again (a turn
+    // under way then shows as one, and drops it like any other).
+    for (const r of this.db
+      .prepare('SELECT agent_id, due_at, in_row, text FROM agent_nudges_due')
+      .all() as {
+      agent_id: string;
+      due_at: number;
+      in_row: number;
+      text: string;
+    }[]) {
+      const at = Math.max(r.due_at, Date.now() + 1000);
+      try {
+        this.schedule(r.agent_id, at, r.in_row, r.text);
+      } catch {
+        // the agent is gone
+        this.db
+          .prepare('DELETE FROM agent_nudges_due WHERE agent_id = ?')
+          .run(r.agent_id);
+      }
+    }
   }
 
+  /** Sets a nudge to go at `at`, on record and on the status. */
+  private schedule(
+    agentId: string,
+    at: number,
+    inRow: number,
+    text: string,
+  ): void {
+    this.agents.get(agentId); // throws for one that is gone
+    const old = this.pending.get(agentId);
+    if (old) clearTimeout(old.timer);
+    this.db
+      .prepare(
+        'INSERT INTO agent_nudges_due (agent_id, due_at, in_row, text) VALUES (?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET due_at = excluded.due_at, in_row = excluded.in_row, text = excluded.text',
+      )
+      .run(agentId, at, inRow, text);
+    const timer = setTimeout(
+      () =>
+        void this.fire(agentId).catch((err: Error) =>
+          this.logger.warn(`agent ${agentId}: nudge failed: ${err.message}`),
+        ),
+      Math.max(0, at - Date.now()),
+    );
+    timer.unref();
+    this.pending.set(agentId, { timer, inRow, text });
+    this.agents.setNudge(agentId, { state: 'waiting', at });
+  }
+
+  /** The manager is going down: what waits stays on record for the next one, and nothing more is done here. */
+  private closed = false;
+
   onModuleDestroy(): void {
+    this.closed = true;
     for (const p of this.pending.values()) clearTimeout(p.timer);
     this.pending.clear();
   }
 
   private onState(agentId: string, status: AgentStatus): void {
+    if (this.closed) return;
     const before = this.was.get(agentId);
     this.was.set(agentId, status.state);
+    // The session ended, or the link to the daemon dropped (which looks the
+    // same from here, and is what a manager going down sees last): no
+    // turn began. Whether a question that waits still goes is settled
+    // when its time comes: it goes only to an agent that is idle then.
+    if (status.state === 'exited' || status.state === 'error') return;
+    // just after a start an agent being found again passes through `starting`: no news either
+    if (
+      status.state === 'starting' &&
+      before === undefined &&
+      Date.now() - this.startedAt < RESTART_GRACE_MS
+    )
+      return;
     if (status.state !== 'idle') {
       // a turn began (a person wrote, or the nudge went) or the session ended: nothing is waiting any more
       this.drop(agentId);
@@ -111,6 +179,9 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
     if (p) clearTimeout(p.timer);
     this.pending.delete(agentId);
     this.reading.delete(agentId);
+    this.db
+      .prepare('DELETE FROM agent_nudges_due WHERE agent_id = ?')
+      .run(agentId);
     this.agents.setNudge(agentId, null);
   }
 
@@ -168,7 +239,11 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
               timeoutMs: this.config.nudgeReaderMs,
             }),
           )
-        : { verdict: 'paused' as const, why: 'it stopped without a word' };
+        : {
+            verdict: 'paused' as const,
+            why: 'it stopped without a word',
+            open: [],
+          };
     } catch (err) {
       // an agent is not asked on the strength of a reading that did not happen
       this.logger.warn(
@@ -205,14 +280,11 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const last = this.last(agentId);
-    const { workedMs, personAt } = await this.stats.since(
-      agentId,
-      last?.at ?? 0,
-    );
+    const { personAt } = await this.stats.since(agentId, last?.at ?? 0);
     if (!still()) return;
     this.reading.delete(agentId);
-    const ok = due(last, personAt, workedMs, {
-      workMs: this.config.nudgeWorkMs,
+    const ok = due(last, personAt, {
+      restMs: this.config.nudgeRestMs,
       maxInRow: this.config.nudgeMaxInRow,
     });
     if (!ok.ok) {
@@ -223,41 +295,54 @@ export class NudgeService implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
-    const at = Date.now() + this.config.nudgeDelayMs;
+    // a person gets the usual wait to say something first; after a nudge, the next keeps its distance from it
+    const at = Math.max(Date.now() + this.config.nudgeDelayMs, ok.notBefore);
     this.agents.note(
       agentId,
       `stopped with work left (${read.why}); the manager asks it at ${hhmm(at)} whether it can go on, unless a person says something first`,
     );
-    this.pending.set(agentId, {
-      inRow: ok.inRow,
-      timer: setTimeout(
-        () =>
-          void this.fire(agentId).catch((err: Error) =>
-            this.logger.warn(`agent ${agentId}: nudge failed: ${err.message}`),
-          ),
-        this.config.nudgeDelayMs,
-      ),
-    });
-    this.agents.setNudge(agentId, { state: 'waiting', at });
+    this.schedule(
+      agentId,
+      at,
+      ok.inRow,
+      nudgeText(read.open, personAt === null ? null : Date.now() - personAt),
+    );
   }
 
   /** The wait is over: the question goes, as a turn of the manager's own. */
   private async fire(agentId: string): Promise<void> {
     const p = this.pending.get(agentId);
-    if (!p) return;
+    if (!p || this.closed) return;
+    // just after a start the agents are still being found again: not idle yet is not "in a turn"
+    if (
+      Date.now() - this.startedAt < RESTART_GRACE_MS &&
+      this.agents.status(agentId).state !== 'idle'
+    ) {
+      this.schedule(agentId, Date.now() + 1000, p.inRow, p.text);
+      return;
+    }
     // taken off the list before the turn starts: the turn's own change of state must not read as a person stepping in
     this.pending.delete(agentId);
+    this.db
+      .prepare('DELETE FROM agent_nudges_due WHERE agent_id = ?')
+      .run(agentId);
     this.agents.setNudge(agentId, null);
     const agent = this.agents.get(agentId);
     const status = this.agents.status(agentId);
-    if (!agent.nudge || status.state !== 'idle' || status.background > 0)
+    if (!agent.nudge || status.background > 0) return;
+    if (status.state !== 'idle') {
+      this.agents.note(
+        agentId,
+        `not asked whether it can go on: it is ${status.state === 'exited' ? 'not running' : status.state} now`,
+      );
       return;
+    }
     this.db
       .prepare(
         'INSERT INTO agent_nudges (agent_id, last_at, in_row) VALUES (?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET last_at = excluded.last_at, in_row = excluded.in_row',
       )
       .run(agentId, Date.now(), p.inRow);
-    await this.agents.turn(agentId, NUDGE_TEXT, MANAGER_AUTHOR);
+    await this.agents.turn(agentId, p.text, MANAGER_AUTHOR);
   }
 
   /** The last nudge sent to an agent, and how many in a row it made. */

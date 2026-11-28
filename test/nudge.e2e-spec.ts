@@ -16,6 +16,7 @@ let m: TestManager;
 let api: Api;
 let project: { id: string };
 let read: string;
+let script: string;
 
 async function until<T>(
   what: string,
@@ -76,7 +77,7 @@ beforeAll(async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-nudge-'));
   read = path.join(dir, 'readings.txt');
   // A reader that goes by a word in the agent's last message, which echoes the person's.
-  const script = path.join(dir, 'reader.mjs');
+  script = path.join(dir, 'reader.mjs');
   fs.writeFileSync(
     script,
     `import fs from 'node:fs';
@@ -87,13 +88,15 @@ process.stdin.on('end', () => {
   const said = input.slice(input.lastIndexOf('<agent>'));
   fs.appendFileSync(${JSON.stringify(read)}, said.replace(/\\n/g, ' ') + '\\n');
   const verdict = said.includes('BLOCKED') ? 'needs_person' : said.includes('FINISHED') ? 'done' : 'paused';
-  console.log(JSON.stringify({ verdict, why: verdict === 'paused' ? 'the doors are next' : verdict === 'done' ? 'all maps converted' : 'which site to keep' }));
+  console.log(JSON.stringify({ verdict, why: verdict === 'paused' ? 'the doors are next' : verdict === 'done' ? 'all maps converted' : 'which site to keep', open: verdict === 'paused' ? ['the doors', 'the sandbags on the farm'] : [] }));
 });
 `,
   );
   m = await startManager(daemon.url, undefined, {
     nudgeReader: [process.execPath, script],
     nudgeDelayMs: 600,
+    nudgeRestMs: 2500, // two questions are this far apart
+    nudgeMaxInRow: 2,
   });
   api = new Api(m.url);
   await api.login();
@@ -125,7 +128,7 @@ describe('asking an agent that stopped whether it can go on', () => {
     ).toBe(400);
   });
 
-  it('asks after a short wait, says so meanwhile, and does not ask again when the answer was short', async () => {
+  it('asks after a short wait with what the agent left open, asks again at its pace when the agent stops again, and not for ever', async () => {
     const id = await agent('keeper', true);
     await turn(id, 'convert the maps');
     // read, then waiting: the status says when the question goes, and the flow says why
@@ -138,27 +141,80 @@ describe('asking an agent that stopped whether it can go on', () => {
       /^stopped with work left \(the doors are next\); the manager asks it at \d\d:\d\d whether it can go on, unless a person says something first$/,
     );
     expect(await nudges(id)).toBe(0);
-    // the question, in the manager's name, as a turn
+    // the question, in the manager's name, as a turn: the agent's own list, and which of it needs the person
     await until('the nudge', async () => (await nudges(id)) === 1);
+    const first = Date.now();
+    const asked = (await itemsOf(id)).filter(
+      (i) => i.kind === 'user' && i.by === 'manager',
+    );
+    expect(asked[0].text).toContain(
+      'Your last message leaves this open, in your words:\n- the doors\n- the sandbags on the farm\n',
+    );
+    expect(asked[0].text).toContain('Which of it needs the person');
+    expect(asked[0].text).toMatch(/Nobody has written to you for 1 minute\./);
     expect((await statusOf(id)).nudge).toBeNull();
-    // the fake agent answers it in an instant: asked once, and then left alone
-    await until('the second reading', async () =>
+    // The fake agent answers in an instant and stops again with work left.
+    // That is no reason to fall silent: it is asked again, no sooner than
+    // the pause between two questions.
+    const again = await until('the second wait', async () => {
+      const n = (await statusOf(id)).nudge;
+      return n?.state === 'waiting' ? n : null;
+    });
+    expect(again.at).toBeGreaterThanOrEqual(first + 2500 - 200);
+    await until(
+      'the second nudge',
+      async () => (await nudges(id)) === 2,
+      15_000,
+    );
+    expect(Date.now() - first).toBeGreaterThanOrEqual(2300);
+    // and not for ever: twice in a row without a word from a person is the end here
+    await until('the last reading', async () =>
       (await system(id)).some((t) =>
         t.includes('not asked whether it can go on'),
       ),
     );
     expect((await system(id)).pop()).toBe(
-      'stopped with work left (the doors are next); not asked whether it can go on: it has worked 0 min since it was last asked',
+      'stopped with work left (the doors are next); not asked whether it can go on: it has been asked 2 times in a row without a word from a person',
     );
     await sleep(900);
-    expect(await nudges(id)).toBe(1);
-    // a person writes: the next stop can be asked about again
+    expect(await nudges(id)).toBe(2);
+    // a person writes: the next stop can be asked about again, at once
     await turn(id, 'and the doors');
     await until(
       'the nudge after a person wrote',
-      async () => (await nudges(id)) === 2,
+      async () => (await nudges(id)) === 3,
     );
-  }, 30000);
+  }, 40000);
+
+  it('keeps a question that waits across a restart of the manager', async () => {
+    const id = await agent('patient', true);
+    await turn(id, 'convert the maps');
+    await until('the first nudge', async () => (await nudges(id)) === 1);
+    // stopped again: the next is some seconds away; the manager goes down meanwhile
+    await until(
+      'the second wait',
+      async () => (await statusOf(id)).nudge?.state === 'waiting',
+    );
+    await m.stop();
+    m = await startManager(daemon.url, m.dataDir, {
+      nudgeReader: [process.execPath, script],
+      nudgeDelayMs: 600,
+      nudgeRestMs: 2500,
+      nudgeMaxInRow: 2,
+    });
+    api = new Api(m.url);
+    await api.login();
+    // still waiting, and said so
+    await until(
+      'the wait to be back',
+      async () => (await statusOf(id)).nudge?.state === 'waiting',
+    );
+    await until(
+      'the second nudge, after the restart',
+      async () => (await nudges(id)) === 2,
+      90_000,
+    );
+  }, 120000);
 
   it('pages the person and asks nothing when the agent needs them; leaves an agent alone that says it is done', async () => {
     const id = await agent('asker', true);
@@ -216,11 +272,14 @@ describe('asking an agent that stopped whether it can go on', () => {
     );
     expect((await statusOf(id)).nudge).toBeNull();
     // and a turn the person stopped is not read at all
-    const before = readings();
+    // (by this agent's own flow: other agents of this file are still being asked at their pace)
+    const verdicts = async () =>
+      (await system(id)).filter((t) => t.startsWith('stopped')).length;
+    const before = await verdicts();
     await api.post(`/api/agents/${id}/interrupt`);
     await until('idle', async () => (await statusOf(id)).state === 'idle');
     await sleep(900);
-    expect(readings()).toBe(before);
+    expect(await verdicts()).toBe(before);
     expect(await nudges(id)).toBe(0);
   }, 30000);
 });
