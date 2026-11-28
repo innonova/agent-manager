@@ -1235,9 +1235,8 @@ is nudged and says "page them"; an imagined one pages the person). A
 reading takes a few seconds and costs about a cent.
 
 A nudge that waits is kept (`agent_nudges_due`: when, which in a row,
-its words), so a restart of the manager does not lose it, which with
-half an hour between two of them would be often: it goes when its time
-comes, once the agents have been found again. A session that ends
+its words), so a restart of the manager does not lose it (the manager is
+redeployed several times a day): it goes when its time comes, once the agents have been found again. A session that ends
 while one waits, or a daemon link that drops, does not cancel it: it
 goes only to an agent that is idle when its time comes, and the flow
 says so when it is not. The last nudge and the count in a row are kept
